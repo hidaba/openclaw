@@ -14,7 +14,7 @@ import { getRegistryWorktree } from "../agents/worktrees/registry.test-support.j
 import { managedWorktrees, ManagedWorktreeService } from "../agents/worktrees/service.js";
 import { getRuntimeConfig } from "../config/io.js";
 import type { SessionEntry } from "../config/sessions.js";
-import { loadSessionEntry } from "../config/sessions/session-accessor.js";
+import { loadSessionEntry, upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { isSessionMutationActive } from "../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -351,6 +351,22 @@ test("sessions.create reset-in-place detaches the prior worktree permission boun
     worktree?.path,
   );
 
+  const scope = { agentId: "main", sessionKey: "agent:main:main", storePath };
+  const priorWorkspace = {
+    worktreeId: worktree!.id,
+    sessionId: created.payload!.entry.sessionId,
+    workspaceDir: workspace,
+    fileRoot: workspace,
+    through: { generation: "before-adoption", maxSeq: 1 },
+  };
+  await upsertSessionEntryCore(scope, { ...loadSessionEntry(scope)!, priorWorkspace });
+  const ordinaryReset = await directSessionReq("sessions.reset", {
+    key: scope.sessionKey,
+    reason: "reset",
+  });
+  expect(ordinaryReset.ok).toBe(true);
+  expect(loadSessionEntry(scope)?.priorWorkspace).toEqual(priorWorkspace);
+
   // Pause the exact old-binding removal before destructive work. A same-key
   // worktree reset must remain fenced until that prior generation is gone.
   const originalRemoveIfLossless = captureMethodCall("removeIfLossless")(
@@ -409,6 +425,7 @@ test("sessions.create reset-in-place detaches the prior worktree permission boun
     },
   });
   expect(getRegistryWorktree(process.env, successorWorktree.id)?.removedAt).toBeUndefined();
+  expect(loadSessionEntry(scope)?.priorWorkspace).toBeUndefined();
 });
 
 test("an open Files editor cannot save into a replacement managed workspace", async () => {

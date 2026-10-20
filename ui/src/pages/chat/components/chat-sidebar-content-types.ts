@@ -274,7 +274,12 @@ export type FileSidebarNavigation =
   | { line: number; view?: FileReaderViewRequest }
   | { line?: number; view: FileReaderViewRequest };
 
-export type SessionFileSource = { sessionKey: string; agentId?: string; path: string };
+export type SessionFileSource = {
+  sessionKey: string;
+  agentId?: string;
+  path: string;
+  messageEntryId?: string;
+};
 
 export type FileReaderDownload = SessionFileDownload | { blob: Blob; filename: string };
 
