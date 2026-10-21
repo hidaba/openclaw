@@ -673,3 +673,24 @@ it.each([
     }
   },
 );
+
+it.each([
+  { surface: "with a synchronous wait tool", syncTool: true, expected: true },
+  { surface: "without a synchronous wait tool", syncTool: false, expected: false },
+])("requests async tool execution only $surface", async ({ syncTool, expected }) => {
+  const requested: Array<boolean | undefined> = [];
+  const lookup = tool("lookup", async () => ({ content: [], details: {} }));
+  const waitTool = {
+    ...tool("wait", async () => ({ content: [], details: {} })),
+    async: false as const,
+  };
+  const { run } = runFixture({
+    tools: syncTool ? [lookup, waitTool] : [lookup],
+    streamFn: (_model, _context, options) => {
+      requested.push(options?.asyncToolExecution);
+      return completedResponse();
+    },
+  });
+  await run;
+  expect(requested).toEqual([expected]);
+});

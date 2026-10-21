@@ -517,7 +517,10 @@ describe("native OpenAI Responses SSE continuation", () => {
       initialState: {
         model: astra,
         thinkingLevel: "low",
-        tools: [{ ...functionTool("lookup"), label: "lookup", execute }],
+        tools: [
+          { ...functionTool("lookup"), label: "lookup", execute },
+          { ...functionTool("wait"), label: "wait", async: false, execute: vi.fn() },
+        ],
       },
       streamFn: createOpenAIResponsesTransportStreamFn(),
       getApiKey: () => "test-key",
@@ -535,6 +538,7 @@ describe("native OpenAI Responses SSE continuation", () => {
       expect(sseState.requests).toHaveLength(1);
       expect(sseState.requests[0]?.tools).toEqual([
         expect.objectContaining({ name: "lookup", async: true }),
+        expect.not.objectContaining({ async: true }),
       ]);
       releaseTool.resolve();
       await prompt;

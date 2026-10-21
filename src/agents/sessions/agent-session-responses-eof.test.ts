@@ -88,6 +88,8 @@ function createRetrySession(execute?: ToolDefinition["execute"], enabled = true)
             ...createStubTool("record"),
             execute,
           },
+          // Async tool calls need a synchronous tool the model can wait with.
+          { ...createStubTool("wait"), async: false },
         ]
       : undefined,
   });

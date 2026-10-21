@@ -272,7 +272,9 @@ export async function streamAgentResponse(
       apiKey: resolvedApiKey,
       signal: requestSignal,
       onActiveResponse: steering.onActiveResponse,
-      asyncToolExecution: true,
+      // Async results reach the model only after it waits with a synchronous tool
+      // (sessions_yield). Without one it answers before seeing any result.
+      asyncToolExecution: llmContext.tools?.some((tool) => tool.async === false) === true,
     });
 
     return await runAgentCoreStream(
