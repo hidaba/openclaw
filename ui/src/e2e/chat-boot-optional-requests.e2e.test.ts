@@ -7,7 +7,7 @@ import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts"
 const suite = createControlUiE2eSuite({ name: "Chat boot optional requests" });
 
 suite.define(() => {
-  it("defers login modules and hidden topbar artwork until their surfaces are needed", async () => {
+  it("defers media, login modules and hidden topbar artwork until their surfaces are needed", async () => {
     await suite.withPage(
       { viewport: { width: 1440, height: 900 }, serviceWorkers: "block" },
       async ({ page }) => {
@@ -17,6 +17,13 @@ suite.define(() => {
           "ui/src/components/login-gate.ts",
         );
         const loginRequests = () => requested.filter((path) => loginModuleRequest.test(path));
+        const mediaModules = [
+          "chat-message-images-solid.tsx",
+          "chat-message-attachments-solid.tsx",
+          "widget-card-view.tsx",
+        ].map((file) => controlUiE2eBuiltModuleRequest(`ui/src/pages/chat/components/${file}`));
+        const mediaRequests = () =>
+          requested.filter((path) => mediaModules.some((module) => module.test(path)));
         const iconRequests = () =>
           requested.filter((path) => path.endsWith("/apple-touch-icon.png"));
         const sessionKey = "agent:main:dashboard:12345678-90ab-cdef-1234-567890abcdef";
@@ -36,6 +43,28 @@ suite.define(() => {
         expect(await page.locator(".topbar").isVisible()).toBe(false);
         expect(iconRequests()).toEqual([]);
         expect(loginRequests()).toEqual([]);
+        expect(mediaRequests()).toEqual([]);
+
+        const imageMessage = {
+          role: "assistant",
+          content: [
+            {
+              type: "image",
+              url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=",
+              alt: "Deferred transcript image",
+            },
+          ],
+        };
+        await gateway.emitGatewayEvent("session.message", {
+          message: imageMessage,
+          sessionKey,
+          messageId: "deferred-image",
+          messageSeq: 2,
+          activeRunIds: [],
+          hasActiveRun: false,
+        });
+        await page.locator('.chat-message-images img[alt="Deferred transcript image"]').waitFor();
+        expect(mediaRequests().length).toBeGreaterThan(0);
 
         await page.setViewportSize({ width: 600, height: 900 });
         await page.goto(`${suite.server.baseUrl}new`);
