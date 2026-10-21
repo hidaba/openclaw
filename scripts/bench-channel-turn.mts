@@ -18,6 +18,7 @@ import { startQaBusServer, createQaBusState } from "../extensions/qa-lab/bus-api
 import type { OpenClawConfig } from "../src/config/types.openclaw.js";
 import type { ExecApprovalUsageAuthorization } from "../src/infra/exec-approvals-contracts.js";
 import type { ExecApprovalsFile } from "../src/infra/exec-approvals-core.js";
+import { buildCwdBoundHashedArgPattern } from "../src/infra/exec-command-resolution.js";
 import { applyMockOpenAiModelConfig } from "./e2e/lib/fixtures/mock-openai-config.mjs";
 import { stopChild } from "./lib/gateway-bench-child.ts";
 import { getFreePort } from "./lib/gateway-bench-probes.ts";
@@ -30,6 +31,7 @@ import {
   waitForInitialProbe,
   writeGatewayBenchConfig,
 } from "./lib/gateway-bench-runtime.ts";
+const EXEC_POLICY_MARKER = "synthetic-exec-policy";
 const { values } = parseArgs({
   options: {
     entry: { type: "string", default: "dist/entry.js" },
@@ -68,9 +70,15 @@ if (values["exec-policy-only"] && ruleCount !== undefined) {
 }
 
 function syntheticExecPolicy(count: number): ExecApprovalsFile {
+  const executable = realpathSync("/bin/echo");
+  const argPattern = buildCwdBoundHashedArgPattern(
+    [executable, EXEC_POLICY_MARKER],
+    path.join(fixture, "workspace"),
+  );
   const allowlist = Array.from({ length: count }, (_, index) => ({
     id: `synthetic-rule-${index}`,
-    pattern: index === 0 ? realpathSync("/bin/echo") : `/synthetic/bin/tool-${index}`,
+    pattern: index === 0 ? executable : `/synthetic/bin/tool-${index}`,
+    argPattern,
     ...(index % 2 === 0 ? { source: "allow-always" as const } : {}),
   }));
   return {
@@ -127,7 +135,7 @@ async function measureExecPolicy(count: number) {
     recordAllowlistMatchesUse(
       {
         agentId: "main",
-        command: `${entry.pattern} synthetic-exec-policy`,
+        command: `${entry.pattern} ${EXEC_POLICY_MARKER}`,
         matches: [entry],
         authorization: {
           source,
@@ -325,7 +333,7 @@ async function waitForBenchmarkStart() {
 }
 
 function execToolResponse(turn: number) {
-  const marker = `synthetic-exec-policy-${turn}`;
+  const marker = EXEC_POLICY_MARKER;
   const item = {
     type: "function_call",
     id: `fc_exec_${turn}`,
