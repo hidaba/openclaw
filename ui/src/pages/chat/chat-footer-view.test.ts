@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import type { ExecApprovalRequest } from "../../app/exec-approval.ts";
 import type { SolidBridgeElement } from "../../lib/solid-bridge.ts";
-import { flush } from "../../test-helpers/solid-settle.ts";
+import { flush, waitForSolid } from "../../test-helpers/solid-settle.ts";
 import { resetChatViewState } from "./chat-view-state.test-support.ts";
 import { renderChatView, requireElement } from "./chat-view.test-helpers.ts";
 import {
@@ -34,7 +34,7 @@ function expectFooterContext(container: Element, surface: Element) {
   expect(surface.compareDocumentPosition(input)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
 }
 
-it("keeps Swarm progress between the transcript and composer", () => {
+it("keeps Swarm progress between the transcript and composer", async () => {
   const sessionKey = "agent:main:parent";
   const childKey = "agent:main:subagent:worker";
   const groupId = `swarm:${sessionKey}:turn-42`;
@@ -57,7 +57,9 @@ it("keeps Swarm progress between the transcript and composer", () => {
     showNewMessages: true,
     swarm: { sessionKey, sessions },
   });
-  const widget = requireElement(container, "[data-test-id=chat-swarm]", "Swarm progress");
+  const widget = await waitForSolid(() =>
+    requireElement(container, "[data-test-id=chat-swarm]", "Swarm progress"),
+  );
   expectFooterContext(container, widget);
   expect(container.querySelector(".chat-swarm__task-name")?.textContent).toBe("Worker A");
 });
@@ -80,10 +82,13 @@ it("places inline approval above the composer and enforces its grant projection"
     const container = renderChatView({ ...approvalProps, approvalCanGrant, approvalErrors });
     document.body.append(container);
     onTestFinished(() => container.remove());
-    await expectDefined(
-      container.querySelector<SolidBridgeElement<object>>("openclaw-exec-approval-card"),
-      "inline approval host",
-    ).updateComplete;
+    const host = await waitForSolid(() =>
+      expectDefined(
+        container.querySelector<SolidBridgeElement<object>>("openclaw-exec-approval-card"),
+        "inline approval host",
+      ),
+    );
+    await host.updateComplete;
     return container;
   };
   const container = await render(

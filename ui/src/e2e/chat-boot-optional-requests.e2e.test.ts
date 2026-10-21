@@ -27,10 +27,15 @@ suite.define(() => {
         const iconRequests = () =>
           requested.filter((path) => path.endsWith("/apple-touch-icon.png"));
         const sessionKey = "agent:main:dashboard:12345678-90ab-cdef-1234-567890abcdef";
+        const initialMessage = {
+          role: "assistant",
+          content: "Cold chat request proof.",
+          __openclaw: { id: "boot-text", seq: 1 },
+        };
         const gateway = await installMockGateway(page, {
           sessionKey,
           deferredMethods: ["connect"],
-          historyMessages: [{ role: "assistant", content: "Cold chat request proof." }],
+          historyMessages: [initialMessage],
         });
         await page.goto(
           `${controlUiSessionUrl(suite.server.baseUrl, sessionKey)}#token=synthetic-boot-token`,
@@ -47,6 +52,7 @@ suite.define(() => {
 
         const imageMessage = {
           role: "assistant",
+          __openclaw: { id: "deferred-image", seq: 2 },
           content: [
             {
               type: "image",
@@ -55,6 +61,7 @@ suite.define(() => {
             },
           ],
         };
+        await gateway.setHistoryMessages([initialMessage, imageMessage]);
         await gateway.emitGatewayEvent("session.message", {
           message: imageMessage,
           sessionKey,

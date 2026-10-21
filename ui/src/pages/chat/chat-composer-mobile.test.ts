@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
-import { flush } from "../../test-helpers/solid-settle.ts";
+import { flush, waitForSolid } from "../../test-helpers/solid-settle.ts";
 import {
   createComposerControlsFixture,
   renderComposerFixture,
@@ -22,7 +22,7 @@ beforeEach(() => {
 });
 afterEach(() => resetComposerFixture());
 
-it("keeps the draft and caret through mobile editing, own controls and outside focus", () => {
+it("keeps the draft and caret through mobile editing, own controls and outside focus", async () => {
   const onComposerEditingChange = vi.fn();
   const { container, props } = renderComposerFixture({
     mobileComposer: true,
@@ -32,6 +32,7 @@ it("keeps the draft and caret through mobile editing, own controls and outside f
     onComposerEditingChange,
   });
   document.body.append(container);
+  await waitForSolid(() => expect(container.querySelector(".chat-queue__remove")).not.toBeNull());
   const textarea = container.querySelector<HTMLTextAreaElement>("textarea")!;
   const queueControl = container.querySelector<HTMLButtonElement>(".chat-queue__remove")!;
   const outside = document.createElement("button");
