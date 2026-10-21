@@ -3,6 +3,7 @@
 
 import { createEffect, flush } from "solid-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { SessionTypingEvent } from "../../../../packages/gateway-protocol/src/index.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import type { PresencePayload } from "../../app/user-profile.ts";
@@ -50,6 +51,21 @@ function typingDom() {
   };
 }
 
+function typingEvent(
+  sessionKey: string,
+  extra: Partial<SessionTypingEvent> = {},
+): SessionTypingEvent {
+  return {
+    sessionKey,
+    sessionId: "session-a",
+    agentId: "work",
+    actor: { type: "human", id: "alice", label: "Alice" },
+    typing: true,
+    ts: 1,
+    ...extra,
+  };
+}
+
 function createTypingPane() {
   const request = vi.fn().mockResolvedValue({ ok: true, broadcast: true });
   const fixture = createTestChatPane({
@@ -80,16 +96,7 @@ describe("chat pane typing presence", () => {
     vi.useFakeTimers();
     const { pane, state } = createTypingPane();
     const preview = "First line\n😀 second line\nLast line  \n";
-    const event = {
-      sessionKey: state.sessionKey,
-      sessionId: "session-a",
-      agentId: "work",
-      actor: { type: "human" as const, id: "alice", label: "Alice" },
-      typing: true,
-      preview,
-      cursor: 14,
-      ts: 1,
-    };
+    const event = typingEvent(state.sessionKey, { preview, cursor: 14 });
     const container = document.createElement("div");
     for (const cursor of [14, 0, preview.length]) {
       pane.handleSessionTypingEvent({ ...event, cursor });
@@ -141,15 +148,12 @@ describe("chat pane typing presence", () => {
     state.chatHasAutoScrolled = true;
     state.chatUserNearBottom = true;
     scheduleCommittedChatScroll(state, false, true, { source: "manual" });
-    const typing = {
-      sessionKey: state.sessionKey,
+    const typing = typingEvent(state.sessionKey, {
       sessionId: "typing-scroll",
       agentId: "main",
       actor: { type: "human", id: "writer", label: "Writer" },
-      typing: true,
       preview: "A draft that has not been submitted",
-      ts: 1,
-    } as const;
+    });
     pane.handleSessionTypingEvent(typing);
     expect(pane.collaboration.typingViews).toHaveLength(1);
     extent += 83;
@@ -194,15 +198,12 @@ describe("chat pane typing presence", () => {
       { id: aliceId, label: "Alice", preview: "Alice's ephemeral draft" },
       { id: "bob", label: "Bob" },
     ]) {
-      pane.handleSessionTypingEvent({
-        sessionKey: state.sessionKey,
-        sessionId: "session-a",
-        agentId: "work",
-        actor: { type: "human", ...actor },
-        typing: true,
-        ...(actor.preview ? { preview: actor.preview } : {}),
-        ts: 1,
-      });
+      pane.handleSessionTypingEvent(
+        typingEvent(state.sessionKey, {
+          actor: { type: "human", ...actor },
+          ...(actor.preview ? { preview: actor.preview } : {}),
+        }),
+      );
     }
     expect(pane.collaboration.typingViews).toEqual([
       { id: aliceId, label: "Alice", preview: "Alice's ephemeral draft" },
@@ -259,15 +260,7 @@ describe("chat pane typing presence", () => {
   it.each([false, true])("bounds draft exit deadlines (delayed callback: %s)", (delayed) => {
     vi.useFakeTimers();
     const { pane, state } = createTypingPane();
-    const typing = {
-      sessionKey: state.sessionKey,
-      sessionId: "session-a",
-      agentId: "work",
-      actor: { type: "human", id: "alice", label: "Alice" },
-      typing: true,
-      preview: "A draft",
-      ts: 1,
-    } as const;
+    const typing = typingEvent(state.sessionKey, { preview: "A draft" });
     pane.handleSessionTypingEvent(typing);
     if (delayed) {
       vi.setSystemTime(Date.now() + 19_800);
@@ -323,15 +316,13 @@ describe("chat pane typing presence", () => {
     });
     pane.presence.update({ presence: [viewer("alice"), viewer("bob")] });
     for (const id of ["alice", "bob"]) {
-      pane.handleSessionTypingEvent({
-        sessionKey: state.sessionKey,
-        sessionId: "pause",
-        agentId: "work",
-        actor: { type: "human", id, label: id },
-        typing: true,
-        preview: id + " draft",
-        ts: 1,
-      });
+      pane.handleSessionTypingEvent(
+        typingEvent(state.sessionKey, {
+          sessionId: "pause",
+          actor: { type: "human", id, label: id },
+          preview: id + " draft",
+        }),
+      );
     }
     vi.advanceTimersByTime(10_000);
     pane.pruneTypingActors();
@@ -409,16 +400,20 @@ describe("chat pane typing presence", () => {
   it("keeps two preview drafts while only active overflow people own the shared row", () => {
     vi.useFakeTimers();
     const { pane, state } = createTypingPane();
-    const event = (index: number, typing = true) => ({
-      sessionKey: state.sessionKey,
-      sessionId: "session-a",
-      agentId: "work",
-      actor: { type: "human" as const, id: "peer-" + index, label: "Peer " + index },
-      typing,
-      preview: "Draft " + index,
-      ts: 1,
-    });
+    const event = (index: number, typing = true) =>
+      typingEvent(state.sessionKey, {
+        actor: { type: "human", id: "peer-" + index, label: "Peer " + index },
+        typing,
+        preview: "Draft " + index,
+      });
     const { render, query, all, text } = typingDom();
+    const summaries = [
+      "Peer 3 is typing…",
+      "Peer 3 and Peer 4 are typing…",
+      "Peer 3, Peer 4, and Peer 5 are typing…",
+      "Peer 3, Peer 4, and 2 others are typing…",
+      "Peer 3, Peer 4, and 3 others are typing…",
+    ];
     for (let count = 1; count <= 8; count += 1) {
       pane.handleSessionTypingEvent(event(count));
       render(pane.collaboration.typingViews, "gutter", pane.collaboration.typingOverflow);
@@ -427,6 +422,9 @@ describe("chat pane typing presence", () => {
       expect(pane.collaboration.typingViews.filter((actor) => actor.preview)).toHaveLength(
         Math.min(2, count),
       );
+      if (count >= 3 && count <= 7) {
+        expect(text(".agent-chat__typing-summary")).toBe(summaries[count - 3]);
+      }
     }
     expect(text(".agent-chat__typing-summary")).toBe("Several people are typing…");
     expect(text("[role=status]")).toBe("Several people are typing…");
@@ -451,6 +449,7 @@ describe("chat pane typing presence", () => {
     expect(all(".chat-bubble")).toHaveLength(2);
     expect(query(".agent-chat__typing-group")).toBeNull();
     expect(all(".agent-chat__typing-state")[0]?.textContent).toBe("Draft");
+    expect(text("[role=status]")).toBe("");
     pane.handleSessionTypingEvent(event(7));
     render(pane.collaboration.typingViews);
     expect(text(".agent-chat__typing-summary")).toBe("Peer 7 is typing…");
@@ -472,15 +471,11 @@ describe("chat pane typing presence", () => {
   it("retires simultaneous expirations together without promoting expired peers or removing a renewed draft", () => {
     vi.useFakeTimers();
     const { pane, state } = createTypingPane();
-    const event = (index: number) => ({
-      sessionKey: state.sessionKey,
-      sessionId: "session-a",
-      agentId: "work",
-      actor: { type: "human" as const, id: "peer-" + index, label: "Peer " + index },
-      typing: true,
-      preview: "Draft " + index,
-      ts: 1,
-    });
+    const event = (index: number) =>
+      typingEvent(state.sessionKey, {
+        actor: { type: "human", id: "peer-" + index, label: "Peer " + index },
+        preview: "Draft " + index,
+      });
     for (let index = 0; index < 1000; index += 1) {
       pane.handleSessionTypingEvent(event(index));
     }
@@ -523,23 +518,12 @@ describe("chat pane typing presence", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("names one to five active overflow people, bounds avatars, and shimmers only live text", () => {
-    const { render, query, all, text } = typingDom();
+  it("retains overflow avatars, shimmers live text, and renders unsafe names as text", () => {
+    const { render, query, all } = typingDom();
     const actors = ["Alice", "Ben", "Camila", "Dev", "Emilia", "Farid", "Grace"].map(
       (label, index) => ({ id: "peer-" + index, label, preview: "Draft" }),
     );
-    const expected = [
-      "Camila is typing…",
-      "Camila and Dev are typing…",
-      "Camila, Dev, and Emilia are typing…",
-      "Camila, Dev, and 2 others are typing…",
-      "Camila, Dev, and 3 others are typing…",
-    ];
-    for (let count = 3; count <= 7; count += 1) {
-      render(actors.slice(0, count));
-      expect(text(".agent-chat__typing-summary")).toBe(expected[count - 3]);
-      expect(all(".agent-chat__typing-person")).toHaveLength(count - 2);
-    }
+    render(actors);
     const group = query(".agent-chat__typing-group");
     const summary = query(".agent-chat__typing-summary");
     const stack = query(".agent-chat__typing-identities");
@@ -559,13 +543,6 @@ describe("chat pane typing presence", () => {
     expect(summary?.textContent).toBe(longName + " is typing…");
     expect(query(".agent-chat__typing-name")?.getAttribute("title")).toBe(longName);
     expect(all("script")).toHaveLength(0);
-    render([
-      { ...actors[0]!, paused: true },
-      { ...actors[1]!, paused: true },
-    ]);
-    expect(query(".agent-chat__typing-group")).toBeNull();
-    expect(all(".agent-chat__typing-state")[0]?.textContent).toBe("Draft");
-    expect(text("[role=status]")).toBe("");
   });
 
   it("sends the last 300 draft code points including whitespace and omits previews when typing stops", () => {

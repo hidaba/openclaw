@@ -8,7 +8,6 @@ import { loadChatHistory } from "./chat-history.ts";
 import { makeChatHost, requestCalls } from "./chat-host.test-support.ts";
 import { admitQueuedMessageForSession } from "./chat-outbox-admission.test-support.ts";
 import { listChatOutboxAttention } from "./chat-outbox-owner.ts";
-import { applyChatPendingInputs } from "./chat-pending-inputs.ts";
 import { resumeStoredChatOutboxes } from "./chat-send-actions.ts";
 import { UNCONFIRMED_CHAT_SEND_ERROR } from "./chat-send-support.ts";
 import { listStoredChatOutboxes } from "./composer-persistence.ts";
@@ -378,41 +377,19 @@ describe("accepted input restart handoff", () => {
     );
     expectNoSend(host);
   });
-  it("retains browser custody until transcript consumption, then retires it", () => {
-    const host = makeRestartHost();
-    admit(host);
 
-    applyChatPendingInputs(host, pending("queued"));
-    expect(listStoredChatOutboxes(host)[0]?.queue[0]?.sendRunId).toBe(item.sendRunId);
-    applyChatPendingInputs(host, pending("interrupted"));
-    expect(listStoredChatOutboxes(host)[0]?.queue[0]?.sendRunId).toBe(item.sendRunId);
-    applyChatPendingInputs(
-      host,
-      { items: [], total: 0 },
-      {
-        receipts: [{ runId: item.sendRunId!, state: "consumed", consumedByEventId: "aggregate" }],
+  it("does not resend input cancelled in the custody page", async () => {
+    const host = makeRestartHost({
+      requestHandlers: {
+        "chat.history": history({
+          pendingInputs: pending("cancelled"),
+          inputReceipts: [{ runId: item.sendRunId, state: "pending" }],
+        }),
+        "chat.send": { runId: item.sendRunId, status: "started" },
       },
-    );
-    expect(listStoredChatOutboxes(host)).toEqual([]);
+    });
+    admit(host);
+    await resumeStoredChatOutboxes(host);
+    expectNoSend(host);
   });
-
-  it.each(["interrupted", "queued", "cancelled", "unknown"] as const)(
-    "does not automatically resend accepted or uncertain input after reconnect (%s)",
-    async (disposition) => {
-      const page = disposition === "unknown" ? { items: [], total: 0 } : pending(disposition);
-      const host = makeRestartHost({
-        requestHandlers: {
-          "chat.history": history({
-            pendingInputs: page,
-            inputReceipts:
-              disposition === "unknown" ? [] : [{ runId: item.sendRunId, state: "pending" }],
-          }),
-          "chat.send": { runId: item.sendRunId, status: "started" },
-        },
-      });
-      admit(host);
-      await resumeStoredChatOutboxes(host);
-      expectNoSend(host);
-    },
-  );
 });

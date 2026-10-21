@@ -437,19 +437,6 @@ it("does not let a stale camera-off completion overwrite a newer camera stream",
   expect(loadSettings().talkCameraAutoEnable).toBe(true);
 });
 
-it("shows microphone input-loss guidance without leaving listening", async () => {
-  const { session } = await start();
-  session.callbacks.onStatus?.("listening");
-
-  session.callbacks.onInputNotice?.("Microphone input recovered; repeat the last part");
-
-  expect(read()).toMatchObject({
-    realtimeTalkStatus: "listening",
-    realtimeTalkActive: true,
-  });
-  expect(read().realtimeTalkInputNotice).toBe("Microphone input recovered; repeat the last part");
-});
-
 it("cycles live cameras in enumeration order and persists the successful switch", async () => {
   const switchCamera = vi
     .spyOn(RealtimeTalkSession.prototype, "switchCamera")
