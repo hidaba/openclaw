@@ -329,29 +329,34 @@ it("reads companion visibility while an unrelated writer remains admitted", asyn
   });
 });
 
-it("hides a foreign draft before dispatching ask", async () => {
-  await withProfiles(async () => {
-    const owner = ensureProfileForEmail("owner@example.test");
-    using _ = {
-      [Symbol.dispose]: (await profileReader.prepareUserProfileCatalog()).release,
-    };
-    const sessionKey = "agent:main:owner-private";
-    await createDraft(sessionKey, "owner-private-session", owner.id);
-    const ask = vi.fn(async () => ({ answer: "private", ts: 1 }));
-    const respond = await invoke(
-      "ask",
-      { sessionKey, question: "Why?" },
-      { ask },
-      {
-        client: viewer("foreign-viewer", "viewer-connection"),
-        config: rolePolicyConfig(),
-      },
-    );
+it.each(["ask", "state"] as const)(
+  "hides a foreign draft before dispatching %s",
+  async (method) => {
+    await withProfiles(async () => {
+      const owner = ensureProfileForEmail("owner@example.test");
+      using _ = {
+        [Symbol.dispose]: (await profileReader.prepareUserProfileCatalog()).release,
+      };
+      const sessionKey = "agent:main:owner-private";
+      await createDraft(sessionKey, "owner-private-session", owner.id);
+      const ask = vi.fn(async () => ({ answer: "private", ts: 1 }));
+      const state = vi.fn(() => ({ exchanges: [] }));
+      const respond = await invoke(
+        method,
+        { sessionKey, ...(method === "ask" ? { question: "Why?" } : {}) },
+        { ask, state },
+        {
+          client: viewer("foreign-viewer", "viewer-connection"),
+          config: rolePolicyConfig(),
+        },
+      );
 
-    expect(ask).not.toHaveBeenCalled();
-    expectError(respond, "INVALID_REQUEST");
-  });
-});
+      expect(ask).not.toHaveBeenCalled();
+      expect(state).not.toHaveBeenCalled();
+      expectError(respond, "INVALID_REQUEST");
+    });
+  },
+);
 
 it("threads an explicit owner for a bare key and returns typed selection errors", async () => {
   const config = { agents: { ownership: "explicit", entries: { main: {}, work: {} } } };

@@ -434,7 +434,10 @@ export function createFollowupRun(overrides: Partial<FollowupRun["run"]> = {}): 
   return followup;
 }
 
-export function createRunResult(text = "final", meta: EmbeddedAgentRunResult["meta"] = {}) {
+export function createRunResult(
+  text = "final",
+  meta: EmbeddedAgentRunResult["meta"] = { durationMs: 0 },
+) {
   return { payloads: [{ text }], meta };
 }
 

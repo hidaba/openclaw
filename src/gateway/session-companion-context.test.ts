@@ -1,6 +1,8 @@
+import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { resetPreparedModelRuntimeSnapshotsForTest } from "../agents/prepared-model-runtime.test-support.js";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
@@ -13,8 +15,28 @@ import {
 import { memorySessionActorOwners } from "../config/sessions/session-actor-memory-owner.js";
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
 import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
 import { defaultSessionCompanionContextReader } from "./session-companion-context.js";
+import {
+  companionRuntimeConfig,
+  observeCompanionCleanup,
+  publishCompanionRuntime,
+} from "./session-companion-runtime.test-support.js";
+import { createSessionCompanion } from "./session-companion.js";
+import { notifyGatewaySessionReset } from "./session-reset-notifications.js";
+const runLoop = vi.hoisted(() =>
+  vi.fn<
+    (typeof import("../agents/embedded-agent-runner/run-loop.js"))["runPreparedEmbeddedLoop"]
+  >(),
+);
+// mock-isolation: Retain native companion/session preparation; stop before provider I/O.
+vi.mock("../agents/embedded-agent-runner/run-loop.js", () => ({
+  runPreparedEmbeddedLoop: runLoop,
+}));
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -112,6 +134,86 @@ it("reads replaced session identities without host SQL", async () => {
     }
   }
 });
+
+it.each(
+  [false, true].flatMap((warm) =>
+    (["reset", "dispose", "request-abort", "backing-reset"] as const).map((cancellation) => ({
+      warm,
+      cancellation,
+    })),
+  ),
+)(
+  "cancels $cancellation before prepared context resumes (warm=$warm)",
+  async ({ warm, cancellation }) => {
+    const scope = await seedScope(`companion-cancel-${cancellation}-${warm}`);
+    const cfg = companionRuntimeConfig(
+      { agents: { entries: { main: {} } } },
+      path.join(scope.env.OPENCLAW_STATE_DIR!, "workspace"),
+    );
+    vi.stubEnv("OPENCLAW_CONFIG_PATH", path.join(scope.env.OPENCLAW_STATE_DIR!, "openclaw.json"));
+    await publishCompanionRuntime(cfg, process.env.OPENCLAW_CONFIG_PATH);
+    const settleCleanup = observeCompanionCleanup();
+    runLoop.mockReset().mockResolvedValue({
+      meta: { durationMs: 1, finalAssistantVisibleText: "Existing answer." },
+    });
+    const service = createSessionCompanion({
+      scheduler: createTestGatewayScheduler(createGatewaySchedulerClock(123).clock),
+      getConfig: () => cfg,
+      contextReader: defaultSessionCompanionContextReader,
+      sessionObserver: {
+        getCompanionSnapshotAsync: async () => ({ agentId: "main", notes: [] }),
+      },
+    });
+    const request = {
+      agentId: scope.agentId,
+      sessionKey: scope.sessionKey,
+      question: "Why?",
+      connId: "conn-1",
+    };
+    try {
+      if (warm) {
+        await service.ask(request);
+      }
+      const controller = new AbortController();
+      const pending = service
+        .ask({ ...request, signal: controller.signal })
+        .catch((error: unknown) => error);
+      if (cancellation === "reset") {
+        service.reset(request);
+      } else if (cancellation === "dispose") {
+        service.dispose();
+      } else if (cancellation === "backing-reset") {
+        notifyGatewaySessionReset(scope.sessionKey, scope.agentId);
+      } else {
+        controller.abort();
+      }
+      await expect(pending).resolves.toMatchObject({
+        reason: cancellation === "backing-reset" ? "context-unavailable" : "unavailable",
+        message:
+          cancellation === "backing-reset"
+            ? "The selected session changed before Side chat could answer."
+            : cancellation === "reset"
+              ? "The Side chat request was cancelled."
+              : "Side chat could not answer right now.",
+      });
+      expect(runLoop).toHaveBeenCalledTimes(warm ? 1 : 0);
+      expect(service.state(request).exchanges).toEqual(
+        warm && cancellation === "request-abort"
+          ? [{ question: "Why?", answer: "Existing answer.", ts: 123 }]
+          : [],
+      );
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+    } finally {
+      service.dispose();
+      await settleCleanup();
+      vi.restoreAllMocks();
+      runLoop.mockReset();
+      await resetPreparedModelRuntimeSnapshotsForTest();
+    }
+  },
+);
 
 it("distinguishes a missing session from an empty selected transcript", async () => {
   const scope = createScope("companion-context-empty");

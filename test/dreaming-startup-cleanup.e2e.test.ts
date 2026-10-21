@@ -22,10 +22,12 @@ async function seedSession(
   {
     agentId = "main",
     updatedAt = Date.now() - STALE_AGE_MS,
+    pluginOwnerId = "memory-core",
     transcript = false,
   }: {
     agentId?: string;
     updatedAt?: number;
+    pluginOwnerId?: string | null;
     transcript?: boolean;
   } = {},
 ): Promise<string> {
@@ -34,7 +36,7 @@ async function seedSession(
   await upsertSessionEntry({
     agentId,
     sessionKey,
-    entry: { sessionId, updatedAt, pluginOwnerId: "memory-core" },
+    entry: { sessionId, updatedAt, ...(pluginOwnerId ? { pluginOwnerId } : {}) },
   });
   if (transcript) {
     await appendSqliteSessionTranscriptEventForTest({
@@ -103,25 +105,38 @@ it("removes stale child sessions after a real restart even when dreaming and cro
 
       const now = Date.now();
       const stale = await Promise.all([
-        seedSession("dreaming-narrative-light-interrupted", { transcript: true }),
+        ...["light", "rem", "deep", "consolidation"].map(async (phase) =>
+          seedSession(`dreaming-narrative-${phase}-interrupted`, {
+            transcript: true,
+            pluginOwnerId: phase === "rem" ? null : "memory-core",
+          }),
+        ),
         seedSession("dreaming-narrative-worker-interrupted", { agentId: "worker" }),
       ]);
-      const preserved = await seedSession("dreaming-narrative-active-with-transcript", {
-        updatedAt: now,
-        transcript: true,
-      });
+      const preserved = await Promise.all([
+        seedSession("dreaming-narrative-active-with-transcript", {
+          updatedAt: now,
+          transcript: true,
+        }),
+        seedSession("dreaming-narrative-active-before-transcript", { updatedAt: now }),
+        seedSession("dreaming-narrative-foreign", {
+          pluginOwnerId: "other-plugin",
+          transcript: true,
+        }),
+        seedSession("telegram:group:dreaming-narrative-conversation", { pluginOwnerId: null }),
+      ]);
 
       const seededKeys = ["main", "worker"].flatMap((agentId) =>
         listSessionEntries({ agentId, readOnly: true }).map(({ sessionKey }) => sessionKey),
       );
-      expect(seededKeys).toEqual(expect.arrayContaining([...stale, preserved]));
+      expect(seededKeys).toEqual(expect.arrayContaining([...stale, ...preserved]));
 
       await instance.startGateway();
       client = await connect();
 
       await vi.waitFor(async () => {
         const keys = await listSessionKeys(client);
-        expect(keys, instance.logs()).toContain(preserved);
+        expect(keys, instance.logs()).toEqual(expect.arrayContaining(preserved));
         for (const sessionKey of stale) {
           expect(keys, instance.logs()).not.toContain(sessionKey);
         }

@@ -26,6 +26,29 @@ const model = (
 });
 
 describe("applyProviderAuthConfigPatchWithNormalization", () => {
+  const base = {
+    agents: {
+      defaults: {
+        model: { primary: "anthropic/claude-sonnet-4-6", fallbacks: ["openai/gpt-5.2"] },
+        models: {
+          "anthropic/claude-sonnet-4-6": { alias: "Sonnet" },
+          "anthropic/claude-opus-4-6": { alias: "Opus" },
+          "openai/gpt-5.2": {},
+        },
+      },
+    },
+  };
+
+  it("merges default model maps by default so other providers survive login", () => {
+    const patch = { agents: { defaults: { models: { "openai/gpt-5.5": {} } } } };
+    const next = applyAuthPatch(base, patch);
+    expect(next.agents?.defaults?.models).toEqual({
+      ...base.agents.defaults.models,
+      "openai/gpt-5.5": {},
+    });
+    expect(next.agents?.defaults?.model).toEqual(base.agents.defaults.model);
+  });
+
   it("ignores undefined deletions under blocked __proto__ keys without mutating input", () => {
     const blockedKey = "__proto__";
     const config = { [blockedKey]: { retained: "before" } };
@@ -42,7 +65,7 @@ describe("applyProviderAuthConfigPatchWithNormalization", () => {
     const patch = JSON.parse(
       '{"agents":{"defaults":{"models":{"__proto__":{"polluted":true},"claude-cli/claude-sonnet-4-6":{"alias":"Sonnet","params":{"constructor":{"polluted":true},"maxTokens":12000}}}}}}',
     );
-    const next = applyAuthPatch({ agents: { defaults: { models: { "old/model": {} } } } }, patch, {
+    const next = applyAuthPatch(base, patch, {
       replaceDefaultModels: true,
     });
     const models = next.agents?.defaults?.models;

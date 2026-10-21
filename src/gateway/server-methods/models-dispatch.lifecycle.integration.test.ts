@@ -181,7 +181,6 @@ async function withDispatchLifecycle(
       agents: {
         defaults: {
           skipBootstrap: true,
-          heartbeat: { every: "0m" },
           modelPolicy: { allow: ["opencode/*"] },
         },
       },

@@ -26,11 +26,6 @@ import { createPluginRegistry } from "../src/plugins/registry.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../src/plugins/runtime.js";
 import type { PluginRuntime } from "../src/plugins/runtime/types.js";
 import { createPluginRecord } from "../src/plugins/status.test-fixtures.js";
-import {
-  closeHttpServer,
-  listenLoopback,
-  respondJson,
-} from "./helpers/gateway-integration-fixtures.js";
 
 const endpointPreparation = vi.hoisted(() => ({
   beforeLookup: undefined as (() => void) | undefined,
@@ -133,7 +128,7 @@ const slackTarget = "C0123456789";
 
 function registerProvider(
   channel: "discord" | "slack",
-  registration: "official" | "bundled" | "unverified",
+  registration: "official" | "bundled" | "legacy" | "unverified",
 ) {
   const owner = createPluginRegistry({
     logger: { info() {}, warn() {}, error() {}, debug() {} },
@@ -152,6 +147,11 @@ function registerProvider(
       ...provider,
       // Status probes have provider-specific generics, unrelated to message dispatch.
       status: undefined,
+      actions: {
+        ...provider.actions!,
+        readAuthorityActions:
+          registration === "legacy" ? undefined : provider.actions?.readAuthorityActions,
+      },
     },
   });
   setActivePluginRegistry(owner.registry);
@@ -283,7 +283,14 @@ describe.each(["discord", "slack"] as const)("official %s provider read boundary
       });
       response.end(JSON.stringify(body));
     });
-    const baseUrl = await listenLoopback(server);
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected loopback TCP address");
+    }
+    const baseUrl = `http://127.0.0.1:${address.port}`;
     let endpointLookups = 0;
     if (mode.startsWith("endpoint-")) {
       vi.stubEnv("DISCORD_API_URL", `${baseUrl}/api/v10`);
@@ -391,7 +398,9 @@ describe.each(["discord", "slack"] as const)("official %s provider read boundary
       }
     } finally {
       run?.dispose();
-      await closeHttpServer(server);
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
     }
   });
 });
@@ -415,7 +424,7 @@ type SlackMetadataHarness = {
 async function withSlackMetadataHarness(
   exercise: (harness: SlackMetadataHarness) => Promise<void>,
   options: {
-    registration?: "official" | "bundled" | "unverified";
+    registration?: "official" | "bundled" | "legacy" | "unverified";
     claim?: boolean;
   } = {},
 ) {
@@ -458,12 +467,20 @@ async function withSlackMetadataHarness(
           : path === "/api/emoji.list"
             ? { ok: true, emoji: emojis }
             : { ok: false, error: "unexpected_fixture_endpoint" };
-      respondJson(reply, payload);
+      reply.writeHead(200, { "content-type": "application/json" });
+      reply.end(JSON.stringify(payload));
     });
   });
   let run: ReturnType<typeof createOriginatingRun> | undefined;
   try {
-    confineProviderFetch("slack", await listenLoopback(server));
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected loopback TCP address");
+    }
+    confineProviderFetch("slack", `http://127.0.0.1:${address.port}`);
     setRuntimeConfigSnapshot(cfg, cfg);
     run = createOriginatingRun("slack", options.claim ? "metadata-claim" : "metadata", {
       accountId: "ops",
@@ -496,7 +513,9 @@ async function withSlackMetadataHarness(
   } finally {
     run?.dispose();
     if (server.listening) {
-      await closeHttpServer(server);
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
     }
   }
 }
@@ -602,31 +621,63 @@ describe("official Slack metadata read boundary", () => {
     });
   });
 
-  it("preserves direct operator metadata reads", async () => {
-    await withSlackMetadataHarness(
-      async (harness) => {
-        for (const action of slackMetadataActions) {
-          const result = await dispatchChannelMessageAction({
-            ...harness.context,
-            action,
-            params: { userId: slackOtherMember },
-            conversationReadOrigin: "direct-operator",
-            requesterAccountId: undefined,
-            requesterSenderId: undefined,
-            toolContext: undefined,
-            assertDirectAdapterHandoff: undefined,
-          });
-          expect(result).toMatchObject({ details: { ok: true } });
-        }
-        expect(harness.requests.map((request) => request.path)).toEqual([
-          "/api/users.info",
-          "/api/emoji.list",
-        ]);
-        expect(harness.requests[0]?.fields.user).toBe(slackOtherMember);
-      },
-      { registration: "unverified" },
-    );
-  });
+  it.each(["legacy", "unverified"] as const)(
+    "keeps targetless %s adapters restricted",
+    async (registration) => {
+      await withSlackMetadataHarness(
+        async (harness) => {
+          for (const action of slackMetadataActions) {
+            await expect(invokeSlackMetadata(harness, action)).rejects.toThrow(
+              "exact current conversation",
+            );
+          }
+          expect(harness.requests).toEqual([]);
+        },
+        { registration },
+      );
+    },
+  );
+
+  it.each(["direct", "legacy", "bundled"] as const)(
+    "preserves positive %s metadata reads",
+    async (entry) => {
+      await withSlackMetadataHarness(
+        async (harness) => {
+          for (const action of slackMetadataActions) {
+            const result =
+              entry === "bundled"
+                ? await invokeSlackMetadata(harness, action)
+                : await dispatchChannelMessageAction({
+                    ...harness.context,
+                    action,
+                    params:
+                      entry === "direct"
+                        ? { userId: slackOtherMember }
+                        : { to: slackCurrentTarget },
+                    ...(entry === "direct"
+                      ? {
+                          conversationReadOrigin: "direct-operator" as const,
+                          requesterAccountId: undefined,
+                          requesterSenderId: undefined,
+                          toolContext: undefined,
+                          assertDirectAdapterHandoff: undefined,
+                        }
+                      : {}),
+                  });
+            expect(result).toMatchObject({ details: { ok: true } });
+          }
+          expect(harness.requests.map((request) => request.path)).toEqual([
+            "/api/users.info",
+            "/api/emoji.list",
+          ]);
+          expect(harness.requests[0]?.fields.user).toBe(
+            entry === "direct" ? slackOtherMember : slackRequester,
+          );
+        },
+        { registration: entry === "direct" ? "unverified" : entry },
+      );
+    },
+  );
 
   it("fences metadata preparation before the SDK can issue a request", async () => {
     await withSlackMetadataHarness(async (harness) => {

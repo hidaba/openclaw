@@ -1,4 +1,8 @@
 import { expect, it, vi } from "vitest";
+import {
+  captureAnthropicRequest,
+  registerParityHostLifecycle,
+} from "../../../../packages/ai/src/provider-transport-parity.test-support.js";
 import type { AgentMessage } from "../../runtime/index.js";
 import { guardSessionManager } from "../../session-tool-result-guard-wrapper.js";
 import type { AgentSession } from "../../sessions/index.js";
@@ -9,6 +13,8 @@ import {
   buildRuntimeContextCustomMessage,
   shouldRetainSteeringRuntimeContext,
 } from "./runtime-context-prompt.js";
+
+registerParityHostLifecycle();
 
 it.each([3, 4] as const)(
   "preserves shipped version-%s carrier bytes before signed thinking",
@@ -61,6 +67,13 @@ it.each([3, 4] as const)(
       signedReply,
       { role: "user", content: "Continue", timestamp: 4 },
     ]);
+    const { payload } = await captureAnthropicRequest("transport", {
+      model: { id: "claude-opus-5" },
+      cacheRetention: "none",
+      context: { systemPrompt: "Be exact.", messages: converted },
+    });
+    const serialized = JSON.stringify(payload.messages);
+
     const expectedText = version === 4 ? shippedProjection : legacyText;
     expect(converted[1]).toMatchObject({
       role: "user",
@@ -70,5 +83,10 @@ it.each([3, 4] as const)(
       runtimeContextCarrierRetained: true,
     });
     expect(converted[2]).toBe(signedReply);
+    expect(serialized).toContain(JSON.stringify(expectedText).slice(1, -1));
+    if (version === 3) {
+      expect(serialized).not.toContain("OpenClaw runtime context:");
+    }
+    expect(serialized).toContain("signature");
   },
 );
