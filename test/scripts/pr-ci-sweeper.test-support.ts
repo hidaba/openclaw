@@ -111,7 +111,6 @@ export function fakeGithub(options: {
 }
 
 export const context = { repo: { owner: "openclaw", repo: "openclaw" } };
-export const core = { info: () => {}, warning: () => {}, setFailed: () => {} };
 
 export function recordingCore() {
   const logs: string[] = [];
