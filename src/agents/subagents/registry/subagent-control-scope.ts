@@ -85,35 +85,36 @@ export async function prepareSessionSubagentKillSelection(params: {
   for (const entry of runs.values()) {
     if (
       entry.execution.status !== "terminal" ||
-      entry.execution.suppressSessionEffects !== true ||
       entry.pauseReason === "sessions_yield" ||
       !ownsRoot(entry)
     ) {
       continue;
     }
-    // The old task owns only its notice, never the replacement child's work.
-    const assertCurrent = () => {
-      params.assertCurrent?.();
-      const current = getCurrentSubagentRunOwner(subagentRuns, entry);
-      if (
-        !current ||
-        !ownsRoot(current) ||
-        current.execution.status !== "terminal" ||
-        current.execution.suppressSessionEffects !== true ||
-        current.pauseReason === "sessions_yield"
-      ) {
-        throw new Error("Subagent completion changed during session cleanup; retry.");
+    if (entry.execution.suppressSessionEffects === true) {
+      // The old task owns only its notice, never the replacement child's work.
+      const assertCurrent = () => {
+        params.assertCurrent?.();
+        const current = getCurrentSubagentRunOwner(subagentRuns, entry);
+        if (
+          !current ||
+          !ownsRoot(current) ||
+          current.execution.status !== "terminal" ||
+          current.execution.suppressSessionEffects !== true ||
+          current.pauseReason === "sessions_yield"
+        ) {
+          throw new Error("Subagent completion changed during session cleanup; retry.");
+        }
+      };
+      try {
+        const { retireSubagentObligations } = await import("./subagent-registry.js");
+        assertCurrent();
+        await retireSubagentObligations(entry, assertCurrent, { requesterNotified: true });
+      } catch (error) {
+        if (hasSqliteWorkerOutcomeUnknown(error)) {
+          throw error;
+        }
+        preparationErrors.push(`${resolveSubagentLabel(entry)}: ${formatErrorMessage(error)}`);
       }
-    };
-    try {
-      const { retireSubagentObligations } = await import("./subagent-registry.js");
-      assertCurrent();
-      await retireSubagentObligations(entry, assertCurrent, { requesterNotified: true });
-    } catch (error) {
-      if (hasSqliteWorkerOutcomeUnknown(error)) {
-        throw error;
-      }
-      preparationErrors.push(`${resolveSubagentLabel(entry)}: ${formatErrorMessage(error)}`);
     }
     runs.delete(entry.runId);
   }
