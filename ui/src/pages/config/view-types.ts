@@ -5,9 +5,10 @@ import type { SettingsMediaDeviceState } from "./view-state.ts";
 import type { TabIconViewProps } from "./view-tab-icon.tsx";
 
 type ConfigPageProps = ReturnType<ReturnType<typeof createConfigPage>["configProps"]>;
-// Web Push commands retain their admitted completion for Solid action presentation.
+// Async presenters retain their owners' admitted completions.
 type ConfigData = {
   [Key in keyof ConfigPageProps]: Key extends
+    | "onImportCustomTheme"
     | "onWebPushSubscribe"
     | "onWebPushUnsubscribe"
     | "onWebPushTest"
