@@ -15,6 +15,7 @@ import { withTempDir } from "../test-utils/temp-dir.js";
 import {
   buildPluginNodeCapabilityScopedHostUrl,
   mintPluginNodeCapabilityToken,
+  refreshClientPluginNodeCapability,
   setClientPluginNodeCapability,
 } from "./plugin-node-capability.js";
 import { createGatewayHttpServer } from "./server-http.js";
@@ -89,6 +90,14 @@ function connectCanvasClient({ clients, document, origin }: HostedDocumentContex
   return { client, capability, surface, url: `${scopedUrl}${document.entryUrl}` };
 }
 
+async function withCanvasClient(
+  run: (context: ReturnType<typeof connectCanvasClient> & { entryUrl: string }) => Promise<void>,
+) {
+  await withHostedDocumentServer({ config: {} }, async (context) => {
+    await run({ ...connectCanvasClient(context), entryUrl: context.document.entryUrl });
+  });
+}
+
 async function expectHosted(url: string) {
   const response = await fetch(url);
   expect(response.status).toBe(200);
@@ -117,16 +126,37 @@ describe("core Canvas Gateway", () => {
       expect(response.status).toBe(404);
     });
   });
-  it("returns the production unauthorized response after the capability expires", async () => {
-    await withHostedDocumentServer({ config: {} }, async (context) => {
-      const { client, capability, surface, url } = connectCanvasClient(context);
+  it("rejects an invalidated client's capability without extending its expiry", async () => {
+    await withCanvasClient(async ({ client, url }) => {
       await expectHosted(url);
+      client.invalidated = true;
+      const expiryBeforeRejectedRequest = client.pluginNodeCapabilities?.canvas?.expiresAtMs;
+      await expectUnauthorized(await fetch(url));
+      expect(client.pluginNodeCapabilities?.canvas?.expiresAtMs).toBe(expiryBeforeRejectedRequest);
+    });
+  });
+
+  it("returns the production unauthorized response after the capability expires", async () => {
+    await withCanvasClient(async ({ client, capability, surface, url }) => {
+      expect((await fetch(url)).status).toBe(200);
       setClientPluginNodeCapability({
         client,
         surface,
         capability,
         expiresAtMs: Date.now() - 1,
       });
+      await expectUnauthorized(await fetch(url));
+    });
+  });
+
+  it("serves a rotated capability URL and rejects the previous URL", async () => {
+    await withCanvasClient(async ({ client, surface, url, entryUrl }) => {
+      expect((await fetch(url)).status).toBe(200);
+      const refreshed = refreshClientPluginNodeCapability({ client, surface });
+      if (!refreshed) {
+        throw new Error("expected refreshed Canvas capability");
+      }
+      await expectHosted(`${refreshed.scopedUrl}${entryUrl}`);
       await expectUnauthorized(await fetch(url));
     });
   });

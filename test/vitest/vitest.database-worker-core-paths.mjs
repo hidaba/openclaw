@@ -1134,6 +1134,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugins/management-service.policy-imports.test.ts",
   "src/plugins/management-service.install.test.ts",
 
+  "src/plugins/installed-plugin-index-generation-precedence.test.ts",
   "src/plugins/installed-plugin-index-store.availability.test.ts",
   "src/plugins/installed-plugin-index-store.test.ts",
   "src/plugins/install-record-commit.sqlite.test.ts",
@@ -1174,6 +1175,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/state/openclaw-state-db-readonly.warm-source.test.ts",
   "src/infra/session-cost-usage-metadata.test.ts",
   "src/infra/session-cost-usage-partitions.worker.test.ts",
+  "src/plugins/installed-plugin-index-records.managed-npm.test.ts",
   "src/plugins/installed-plugin-index-records.test.ts",
   "src/acp/runtime/session-meta-doctor.test.ts",
   "src/agents/agent-tools.at-prefixed-remote-paths.test.ts",

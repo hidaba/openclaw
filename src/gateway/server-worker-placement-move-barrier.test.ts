@@ -51,7 +51,6 @@ import {
   resolveGatewaySessionStoreTargetInWorker,
 } from "./session-utils.js";
 import type { WorkerPlacementMoveBarrier } from "./worker-environments/placement-move-service.js";
-import { localPlacement } from "./worker-environments/placement-suite.test-support.js";
 
 const session = {
   sessionId: "session-move-source",
@@ -68,6 +67,15 @@ const loadSessionRuntime = async () => sessionRuntime;
 const beginMove = async () => createMoveBarrierBeginFixture(session.sessionId, session.sessionKey);
 const sourceInspection = ["authorize", "inspect-intent", "validate-source"];
 const persistedClaim = [...sourceInspection, "persist", "authorize", "validate-claim"];
+const abandonmentErrors = {
+  "persist-error": { message: "transcript append failed", order: [...sourceInspection, "persist"] },
+  "stale-source": { message: "placement source changed", order: [...persistedClaim, "begin"] },
+  "revoked-authority": {
+    message: "session access revoked",
+    order: [...sourceInspection, "persist", "authorize"],
+  },
+  "rotated-claim": { message: "worker turn changed", order: persistedClaim },
+};
 
 type MoveTarget = Awaited<ReturnType<typeof resolveGatewaySessionStoreTargetInWorker>>;
 async function withMoveSession(run: (target: MoveTarget) => Promise<void>) {
@@ -79,25 +87,6 @@ async function withMoveSession(run: (target: MoveTarget) => Promise<void>) {
     });
     await run(target);
   });
-}
-
-function enqueueFixtureFollowup(
-  identity: { agentId: string; sessionId: string; sessionKey: string },
-  storePath: string,
-  prompt: string,
-) {
-  const { agentId, sessionId, sessionKey } = identity;
-  const followup = createQueueTestRun({ prompt });
-  followup.run = { ...followup.run, agentId, sessionId, config: { session: { store: storePath } } };
-  enqueueFollowupRun(
-    sessionKey,
-    followup,
-    { mode: "collect", debounceMs: 0, cap: 20, dropPolicy: "summarize" },
-    "none",
-    undefined,
-    false,
-  );
-  return getExistingFollowupQueue(sessionKey, followup.controllerInput!.target);
 }
 
 function createMoveBarrierBeginFixture(sessionId: string, sessionKey: string, agentId = "main") {
@@ -114,9 +103,10 @@ function createMoveBarrierBeginFixture(sessionId: string, sessionKey: string, ag
       updatedAtMs: 1,
     },
     placement: {
-      ...localPlacement(sessionId),
+      sessionId,
       sessionKey,
       agentId,
+      executionMode: "worker-turn",
       state: "draining",
       generation: 5,
       environmentId: source.environmentId,
@@ -124,6 +114,13 @@ function createMoveBarrierBeginFixture(sessionId: string, sessionKey: string, ag
       workspaceBaseManifestRef: "manifest-source",
       remoteWorkspaceDir: "/worker/session-source",
       workerBundleHash: "c".repeat(64),
+      lastTranscriptAckCursor: null,
+      lastLiveEventAckCursor: null,
+      recoveryError: null,
+      terminalReason: null,
+      terminalAtMs: null,
+      turnClaim: null,
+      createdAtMs: 1,
       updatedAtMs: 2,
       stateChangedAtMs: 2,
     },
@@ -176,15 +173,43 @@ describe("worker placement move destination", () => {
             effects.push("main interrupt");
           },
         });
-        const mainQueue = enqueueFixtureFollowup(
-          { sessionKey, agentId: "main", sessionId: "main-global" },
-          mainStorePath,
-          "keep main follow-up",
+        const mainFollowup = createQueueTestRun({ prompt: "keep main follow-up" });
+        mainFollowup.run = {
+          ...mainFollowup.run,
+          agentId: "main",
+          sessionId: "main-global",
+          config: { session: { store: mainStorePath } },
+        };
+        enqueueFollowupRun(
+          sessionKey,
+          mainFollowup,
+          { mode: "collect", debounceMs: 0, cap: 20, dropPolicy: "summarize" },
+          "none",
+          undefined,
+          false,
         );
-        const researchQueue = enqueueFixtureFollowup(
-          researchSession,
-          target.storePath,
-          "keep required first input",
+        const mainQueue = getExistingFollowupQueue(
+          sessionKey,
+          mainFollowup.controllerInput!.target,
+        );
+        const researchFollowup = createQueueTestRun({ prompt: "keep required first input" });
+        researchFollowup.run = {
+          ...researchFollowup.run,
+          agentId,
+          sessionId,
+          config: { session: { store: target.storePath } },
+        };
+        enqueueFollowupRun(
+          sessionKey,
+          researchFollowup,
+          { mode: "collect", debounceMs: 0, cap: 20, dropPolicy: "summarize" },
+          "none",
+          undefined,
+          false,
+        );
+        const researchQueue = getExistingFollowupQueue(
+          sessionKey,
+          researchFollowup.controllerInput!.target,
         );
         let releaseAdmission = () => {};
         const admission =
@@ -323,7 +348,15 @@ describe("worker placement move destination", () => {
 
   it.each([
     ["persists the claimed partial", "worker-run", "success"],
+    [
+      "joins an existing decision without new-source validation or persistence",
+      "worker-run",
+      "joined-existing",
+    ],
+    ["fails before the durable move", "worker-run", "persist-error"],
+    ["rejects a changed source after persistence", "worker-run", "stale-source"],
     ["rejects authority revoked during persistence", "worker-run", "revoked-authority"],
+    ["rejects a worker claim rotated during persistence", "worker-run", "rotated-claim"],
     ["does not persist an unclaimed turn", undefined, "success"],
   ] as const)(
     "abandonment %s before interrupting its owner",
@@ -341,8 +374,13 @@ describe("worker placement move destination", () => {
             observed.push("interrupt");
           },
         });
+        let sourceChanged = false;
         const persistAbandonedPartial = vi.fn(async () => {
           observed.push("persist");
+          if (outcome === "persist-error") {
+            throw new Error("transcript append failed");
+          }
+          sourceChanged = outcome === "stale-source";
         });
         const revokeSessionAuthority = vi.fn(() => observed.push("revoke"));
         const barrier = createGatewayWorkerPlacementMoveBarrier({
@@ -353,12 +391,21 @@ describe("worker placement move destination", () => {
         });
         const begin = vi.fn(async (prepareNew?: (runId: string) => Promise<void>) => {
           observed.push("inspect-intent");
+          if (outcome === "joined-existing") {
+            return { ...createMoveBarrierBeginFixture(sessionId, sessionKey), joined: true };
+          }
           observed.push("validate-source");
           if (claimRunId) {
             await prepareNew?.(claimRunId);
             observed.push("validate-claim");
+            if (outcome === "rotated-claim") {
+              throw new Error("worker turn changed");
+            }
           }
           observed.push("begin");
+          if (sourceChanged) {
+            throw new Error("placement source changed");
+          }
           return createMoveBarrierBeginFixture(sessionId, sessionKey);
         });
         const operation = barrier({
@@ -373,10 +420,17 @@ describe("worker placement move destination", () => {
           begin,
         });
         try {
-          if (outcome === "revoked-authority") {
-            await expect(operation).rejects.toThrow("session access revoked");
+          const failure = Object.entries(abandonmentErrors).find(([key]) => key === outcome)?.[1];
+          if (failure) {
+            await expect(operation).rejects.toThrow(failure.message);
             expect(revokeSessionAuthority).not.toHaveBeenCalled();
-            expect(observed).toEqual([...sourceInspection, "persist", "authorize"]);
+            expect(observed).toEqual(failure.order);
+          } else if (outcome === "joined-existing") {
+            await expect(operation).resolves.toMatchObject({
+              joined: true,
+              placement: { state: "draining" },
+            });
+            expect(observed).toEqual(["authorize", "inspect-intent", "revoke", "interrupt"]);
           } else {
             await expect(operation).resolves.toMatchObject({ placement: { state: "draining" } });
             expect(observed).toEqual([
@@ -387,7 +441,7 @@ describe("worker placement move destination", () => {
             ]);
           }
           expect(begin).toHaveBeenCalledOnce();
-          if (claimRunId) {
+          if (claimRunId && outcome !== "joined-existing") {
             expect(persistAbandonedPartial).toHaveBeenCalledWith({
               ...session,
               runId: claimRunId,

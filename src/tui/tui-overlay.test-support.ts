@@ -21,7 +21,7 @@ export function createOverlayHandle(): OverlayHandle {
 export function createPendingRequests() {
   const cleanups: Array<() => Promise<void>> = [];
   return {
-    pending<T>(fallback: T) {
+    pending<T>(this: void, fallback: T) {
       const result = createDeferred<T>();
       cleanups.push(async () => {
         result.resolve(fallback);
@@ -30,7 +30,7 @@ export function createPendingRequests() {
       });
       return result;
     },
-    async cleanupPending() {
+    async cleanupPending(this: void) {
       for (const cleanup of cleanups.splice(0)) {
         await cleanup();
       }

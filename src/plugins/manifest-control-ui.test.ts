@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { afterAll, afterEach, assert, expect, it } from "vitest";
+import { afterAll, afterEach, expect, it } from "vitest";
 import {
   cleanupPluginLoaderFixturesForTest,
   loadOpenClawPlugins,
@@ -34,6 +34,14 @@ function fixture(controlUi: unknown, uiCapabilities?: unknown, channels?: string
 
 function readManifest(controlUi: unknown, uiCapabilities?: unknown, channels?: string[]) {
   return loadPluginManifest(fixture(controlUi, uiCapabilities, channels).dir);
+}
+
+function expectCapabilities(result: ReturnType<typeof loadPluginManifest>, expected?: unknown) {
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    const { uiCapabilities, controlUi } = result.manifest;
+    expect([uiCapabilities, controlUi]).toEqual([expected, undefined]);
+  }
 }
 
 it("admits channel detail presentations only for the manifest's declared channels", () => {
@@ -91,12 +99,7 @@ it.each([
   [["page", 1], undefined, true],
 ] as const)("loads optional UI capabilities: %j", (declaration, expected, invalid) => {
   const plugin = fixture(undefined, declaration);
-  const result = loadPluginManifest(plugin.dir);
-  assert(result.ok);
-  expect([result.manifest.uiCapabilities, result.manifest.controlUi]).toEqual([
-    expected,
-    undefined,
-  ]);
+  expectCapabilities(loadPluginManifest(plugin.dir), expected);
   if (!invalid) {
     return;
   }
@@ -126,7 +129,11 @@ it.each([
   { settingsViews: [{ section: "memory", panel: "search" }] },
   { settingsViews: memoryViews("overview", "overview") },
   { entry: "src/index.ts" },
+  { entry: "dist/index.js" },
   { entry: "../dist/control-ui/index.js" },
+  { entry: "/dist/control-ui/index.js" },
+  { entry: "dist/control-ui/../server.js" },
+  { entry: "dist\\control-ui\\index.js" },
   { styles: ["dist/server.css"] },
   { styles: ["dist/control-ui/.secret.css"] },
   { styles: ["dist/control-ui/code.js"] },

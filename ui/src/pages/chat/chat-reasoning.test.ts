@@ -214,10 +214,28 @@ it.each([
   },
 );
 
-it("hides live reasoning when the session turns reasoning off", () => {
+it("applies View and session visibility independently to live and saved reasoning", () => {
   thinking("Private synthetic reasoning.");
-  show("off");
+  for (const [mode, visible] of [
+    ["on", true],
+    ["stream", true],
+    ["off", false],
+  ] as const) {
+    show(mode);
+    expect(Boolean(thinkingNode())).toBe(visible);
+    show(mode, false);
+    expect(thinkingNode()).toBeNull();
+  }
+  persistReasoning("Private synthetic reasoning.", true);
+  for (const mode of ["on", "stream"] as const) {
+    showReasoning(1, mode);
+    expect(thinkingNode()?.textContent).toContain("Private synthetic");
+  }
+  final("The answer is 42.", 2);
+  show("stream");
   expect(thinkingNode()).toBeNull();
+  show("on");
+  expect(thinkingNode()?.textContent).toContain("Private synthetic");
 });
 
 it("falls back to the inherited reasoning default only without a session override", () => {
@@ -355,60 +373,130 @@ it("does not let an earlier receipt consume equal reasoning from the next assist
   }
 });
 
-it("keeps earlier work collapsed while current reasoning moves into raw details", () => {
-  const toolMessage = (owner: string, seq: number, text: string) =>
+it("keeps persisted tool-step reasoning visible until its run finishes", () => {
+  const sessionKey = "agent:main:dashboard:reasoning";
+  const toolMessage = (index: number, owner: string, text: string, timestamp: number) =>
     transcriptRow(
       [
         { type: "thinking", thinking: text },
-        { type: "toolCall", id: owner, name: "read", arguments: {} },
+        {
+          type: "toolCall",
+          id: `read-${index}`,
+          name: "read",
+          arguments: { path: `evidence-${index}.txt` },
+        },
       ],
-      { id: owner, seq, runId: owner },
+      { id: `${owner}-${index}`, seq: timestamp, runId: owner },
       { stopReason: "toolUse" },
     );
   const history = activeHistory(runId);
   history.messages = [
     transcriptRow("Earlier question.", { id: "earlier-user", seq: 100 }, { role: "user" }),
-    toolMessage("earlier-run", 200, "Earlier thought."),
-    transcriptRow("Earlier answer.", { id: "earlier-answer", seq: 300, runId: "earlier-run" }),
+    toolMessage(0, "earlier-run", "Earlier first thought.", 200),
+    toolMessage(1, "earlier-run", "Earlier second thought.", 300),
+    transcriptRow("Earlier answer.", { id: "earlier-answer", seq: 400, runId: "earlier-run" }),
     { ...user, timestamp: 1_000, __openclaw: { ...user["__openclaw"], seq: 1_000 } },
-    toolMessage(runId, 1_100, "Current persisted thought."),
   ];
   state = createState(history);
+  state.sessionKey = sessionKey;
   state.chatMessages = history.messages;
   adoptStartedChatRun(state, runId, 1_050);
-  thinking("Current live thought.");
-  showReasoning(2);
+  const thoughts = [
+    "Inspect the first file.",
+    "Compare the second file.",
+    "Explain the result.",
+  ] as const;
+  let seq = 0;
+  const agent = (stream: string, data: Record<string, unknown>, ts: number) =>
+    handleAgentEvent(state, { sessionKey, runId, seq: ++seq, stream, data, ts });
+  for (const index of [0, 1]) {
+    agent("thinking", { itemId: `thought-${index}`, text: thoughts[index] }, 1_100 + index * 100);
+    agent(
+      "tool",
+      {
+        toolCallId: `read-${index}`,
+        name: "read",
+        phase: "start",
+        args: { path: `evidence-${index}.txt` },
+      },
+      1_150 + index * 100,
+    );
+    agent(
+      "tool",
+      {
+        toolCallId: `read-${index}`,
+        name: "read",
+        phase: "result",
+        result: { content: [{ type: "text", text: "42" }] },
+      },
+      1_160 + index * 100,
+    );
+  }
+  agent("thinking", { itemId: "thought-2", text: thoughts[2] }, 1_300);
+  const expectSteps = () => {
+    expect(thinkingNodes()).toHaveLength(3);
+    expect(
+      [...container.querySelectorAll(".chat-thinking, .chat-tool-msg-summary")].map(
+        (node) => node.textContent,
+      ),
+    ).toEqual([
+      expect.stringContaining(thoughts[0]),
+      expect.stringContaining("evidence-0.txt"),
+      expect.stringContaining(thoughts[1]),
+      expect.stringContaining("evidence-1.txt"),
+      expect.stringContaining(thoughts[2]),
+    ]);
+  };
+  show();
+  expectSteps();
+  for (const index of [0, 1]) {
+    const message = toolMessage(index, runId, thoughts[index]!, 1_050 + index * 100);
+    agent(
+      "thinking",
+      {
+        phase: "persisted",
+        itemId: `thought-${index}`,
+        messageId: message["__openclaw"].id,
+        messageRunId: runId,
+      },
+      1_400 + index,
+    );
+    applyMessage(message, { sessionKey });
+    for (const mode of ["on", "stream"] as const) {
+      show(mode);
+      expectSteps();
+    }
+  }
+  showReasoning(0, "on", false);
+  show();
+  expectSteps();
+
   const worked = () =>
     container.querySelectorAll<HTMLButtonElement>(
       ".chat-work-group > .chat-activity-group__summary",
     );
+  const rawDetails = () =>
+    [...container.querySelectorAll<HTMLButtonElement>(".chat-activity-group__summary")].find(
+      (button) => button.textContent?.includes("Raw details"),
+    )!;
   expect(worked()).toHaveLength(1);
-  expect(thinkingNode()?.textContent).not.toContain("Earlier thought.");
-  worked()[0]!.click();
-  showReasoning(2);
-  expect(
-    [...container.querySelectorAll(".chat-activity-group__summary")]
-      .find((button) => button.textContent?.includes("Raw details"))
-      ?.getAttribute("aria-expanded"),
-  ).toBe("false");
   worked()[0]!.click();
   show();
-  final();
-  showReasoning(1);
+  expect(rawDetails().getAttribute("aria-expanded")).toBe("false");
+  expectSteps();
+  worked()[0]!.click();
+  show();
+
+  final("The answer is 42.", ++seq);
+  show();
   expect(worked()).toHaveLength(2);
+  expect(thinkingNodes()).toHaveLength(1);
   worked()[1]!.click();
   show();
-  const rawDetails = [
-    ...container.querySelectorAll<HTMLButtonElement>(".chat-activity-group__summary"),
-  ].find((button) => button.textContent?.includes("Raw details"))!;
-  expect(rawDetails.getAttribute("aria-expanded")).toBe("false");
+  expect(rawDetails().getAttribute("aria-expanded")).toBe("false");
   expect(thinkingNodes()).toHaveLength(1);
-  rawDetails.click();
-  showReasoning(2);
-  expect([...thinkingNodes()].map((node) => node.textContent)).toEqual([
-    expect.stringContaining("Current persisted thought."),
-    expect.stringContaining("Current live thought."),
-  ]);
+  rawDetails().click();
+  showReasoning(3);
 });
 
 it("does not attach known-committed pre-tool reasoning to a later final answer", () => {
