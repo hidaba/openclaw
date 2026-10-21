@@ -20,6 +20,7 @@ import { createEmptyPluginMetadataSnapshot } from "../../../plugins/plugin-metad
 import type { PluginMetadataSnapshot } from "../../../plugins/plugin-metadata-snapshot.js";
 import { withSessionTurn } from "../../../sessions/session-controller.admission.js";
 import { createLazyPromise } from "../../../shared/lazy-runtime.js";
+import { withEnvAsync } from "../../../test-utils/env.js";
 import { prepareSystemAgentRunAdmission } from "../../admitted-run-context.js";
 import type { EmbeddedContextFile } from "../../embedded-agent-helpers/context-file.js";
 import type { Agent, AgentMessage, StreamFn } from "../../runtime/index.js";
@@ -823,11 +824,7 @@ export async function cleanupTempPaths(tempPaths: string[]) {
 
 export function createDefaultEmbeddedSession(params?: {
   initialMessages?: unknown[];
-  prompt?: (
-    session: MutableSession,
-    prompt: string,
-    options?: { images?: unknown[]; preflightResult?: (submitted: boolean) => void },
-  ) => Promise<void>;
+  prompt?: SessionPromptOverride;
 }): MutableSession {
   let activeToolNames: string[] = [];
   let configuredTools: Agent["state"]["tools"] = [];
@@ -1046,103 +1043,89 @@ export async function createContextEngineAttemptRunner(params: {
     return { session };
   });
 
-  const previousTrajectoryEnv = process.env.OPENCLAW_TRAJECTORY;
-  const previousTrajectoryDirEnv = process.env.OPENCLAW_TRAJECTORY_DIR;
-  if (params.trajectory !== true) {
-    process.env.OPENCLAW_TRAJECTORY = "0";
-    delete process.env.OPENCLAW_TRAJECTORY_DIR;
-  } else {
-    delete process.env.OPENCLAW_TRAJECTORY;
-    process.env.OPENCLAW_TRAJECTORY_DIR = workspaceDir;
-  }
-  try {
-    const attempt: Omit<EmbeddedRunAttemptParams, "admittedRunContext"> = {
-      sessionId: "embedded-session",
-      sessionKey: params.sessionKey,
-      sessionFile: params.sessionKey,
-      sessionTarget: {
-        agentId: "main",
+  return await withEnvAsync(
+    {
+      OPENCLAW_TRAJECTORY: params.trajectory === true ? undefined : "0",
+      OPENCLAW_TRAJECTORY_DIR: params.trajectory === true ? workspaceDir : undefined,
+    },
+    async () => {
+      const attempt: Omit<EmbeddedRunAttemptParams, "admittedRunContext"> = {
         sessionId: "embedded-session",
         sessionKey: params.sessionKey,
-        storePath: sessionStore,
-      },
-      workspaceDir,
-      agentDir,
-      config: { session: { store: sessionStore } },
-      prompt: "hello",
-      timeoutMs: 10_000,
-      runId: "run-context-engine-forwarding",
-      provider: "openai",
-      modelId: "gpt-test",
-      model: testModel,
-      authStorage: testAuthStorage as never,
-      authProfileStore: { version: 1, profiles: {} },
-      modelRegistry: modelRegistry as never,
-      thinkLevel: "off",
-      disableTools: true,
-      disableMessageTool: true,
-      contextTokenBudget: 2048,
-      contextEngine: {
-        ...contextEngineRest,
-        ingest: params.contextEngine.ingest ?? (async () => ({ ingested: true })),
-        compact:
-          params.contextEngine.compact ??
-          (async () => ({ ok: false, compacted: false, reason: "not used in this test" })),
-        ...(maintain ? { maintain } : {}),
-        info: {
-          ...params.contextEngine.info,
-          id: infoId,
-          name: infoName,
-          version: infoVersion,
+        sessionFile: params.sessionKey,
+        sessionTarget: {
+          agentId: "main",
+          sessionId: "embedded-session",
+          sessionKey: params.sessionKey,
+          storePath: sessionStore,
         },
-      },
-      ...params.attemptOverrides,
-    };
-    const admittedRunContext = params.attemptOverrides?.admittedRunContext;
-    const runAttempt = async (context: NonNullable<typeof admittedRunContext>) => {
-      if (attempt.replyOperation) {
-        return await (
-          await loadRunEmbeddedAttempt()
-        )({ ...attempt, admittedRunContext: context });
-      }
-      return await withSessionTurn(
-        {
-          sessionKey: attempt.sessionKey,
-          sessionId: attempt.sessionId,
-          agentId: attempt.agentId,
-          sessionTarget: attempt.sessionTarget,
+        workspaceDir,
+        agentDir,
+        config: { session: { store: sessionStore } },
+        prompt: "hello",
+        timeoutMs: 10_000,
+        runId: "run-context-engine-forwarding",
+        provider: "openai",
+        modelId: "gpt-test",
+        model: testModel,
+        authStorage: testAuthStorage as never,
+        authProfileStore: { version: 1, profiles: {} },
+        modelRegistry: modelRegistry as never,
+        thinkLevel: "off",
+        disableTools: true,
+        disableMessageTool: true,
+        contextTokenBudget: 2048,
+        contextEngine: {
+          ...contextEngineRest,
+          ingest: params.contextEngine.ingest ?? (async () => ({ ingested: true })),
+          compact:
+            params.contextEngine.compact ??
+            (async () => ({ ok: false, compacted: false, reason: "not used in this test" })),
+          ...(maintain ? { maintain } : {}),
+          info: {
+            ...params.contextEngine.info,
+            id: infoId,
+            name: infoName,
+            version: infoVersion,
+          },
         },
-        async (replyOperation) =>
-          await (
+        ...params.attemptOverrides,
+      };
+      const admittedRunContext = params.attemptOverrides?.admittedRunContext;
+      const runAttempt = async (context: NonNullable<typeof admittedRunContext>) => {
+        if (attempt.replyOperation) {
+          return await (
             await loadRunEmbeddedAttempt()
-          )({ ...attempt, admittedRunContext: context, replyOperation }),
+          )({ ...attempt, admittedRunContext: context });
+        }
+        return await withSessionTurn(
+          {
+            sessionKey: attempt.sessionKey,
+            sessionId: attempt.sessionId,
+            agentId: attempt.agentId,
+            sessionTarget: attempt.sessionTarget,
+          },
+          async (replyOperation) =>
+            await (
+              await loadRunEmbeddedAttempt()
+            )({ ...attempt, admittedRunContext: context, replyOperation }),
+        );
+      };
+      if (admittedRunContext) {
+        return await runAttempt(admittedRunContext);
+      }
+      const admission = prepareSystemAgentRunAdmission(
+        attempt.config ?? {},
+        attempt.runId,
+        attempt.agentId ?? "main",
+        "embedded-attempt-test",
       );
-    };
-    if (admittedRunContext) {
-      return await runAttempt(admittedRunContext);
-    }
-    const admission = prepareSystemAgentRunAdmission(
-      attempt.config ?? {},
-      attempt.runId,
-      attempt.agentId ?? "main",
-      "embedded-attempt-test",
-    );
-    try {
-      return await runAttempt(await admission.admit("embedded"));
-    } finally {
-      admission.close();
-    }
-  } finally {
-    if (previousTrajectoryEnv === undefined) {
-      delete process.env.OPENCLAW_TRAJECTORY;
-    } else {
-      process.env.OPENCLAW_TRAJECTORY = previousTrajectoryEnv;
-    }
-    if (previousTrajectoryDirEnv === undefined) {
-      delete process.env.OPENCLAW_TRAJECTORY_DIR;
-    } else {
-      process.env.OPENCLAW_TRAJECTORY_DIR = previousTrajectoryDirEnv;
-    }
-  }
+      try {
+        return await runAttempt(await admission.admit("embedded"));
+      } finally {
+        admission.close();
+      }
+    },
+  );
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
