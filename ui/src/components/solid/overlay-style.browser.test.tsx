@@ -153,8 +153,40 @@ describe("native overlay presentation", () => {
   });
 
   it.each(["ltr", "rtl"] as const)(
-    "flips a large nested menu within the viewport in %s at enlarged text",
+    "uses space above a low submenu trigger before scrolling its actions in %s",
     async (dir) => {
+      await page.viewport(800, 600);
+      mountMenu({
+        dir,
+        items: [
+          {
+            id: "gateways",
+            label: "Gateways",
+            children: Array.from({ length: 10 }, (_, index) => ({
+              id: `gateway-${index}`,
+              label: `Gateway ${index + 1}`,
+            })),
+          },
+        ],
+      });
+      Object.assign(trigger().style, { position: "fixed", left: "350px", top: "400px" });
+      await openMenu();
+      await openMenu("people-gateways");
+      const child = surface("people-gateways");
+      expectWithinViewport(child);
+      expect(child.scrollHeight).toBe(child.clientHeight);
+      expectItemVisible(item("Gateway 10", "people-gateways"), child);
+    },
+  );
+
+  it.each([
+    ["ltr", "bottom"],
+    ["rtl", "bottom"],
+    ["ltr", "middle"],
+    ["rtl", "middle"],
+  ] as const)(
+    "fits a large nested menu within the viewport in %s near the %s at enlarged text",
+    async (dir, position) => {
       await page.viewport(800, 600);
       root.style.fontSize = "24px";
       mountMenu({
@@ -170,10 +202,16 @@ describe("native overlay presentation", () => {
           },
         ],
       });
-      Object.assign(trigger().style, { position: "fixed", right: "8px", bottom: "8px" });
+      Object.assign(trigger().style, {
+        position: "fixed",
+        right: "8px",
+        bottom: position === "bottom" ? "8px" : "250px",
+      });
       await openMenu();
       const parentBox = expectWithinViewport(surface());
-      expect(parentBox.bottom).toBeLessThanOrEqual(trigger().getBoundingClientRect().top);
+      if (position === "bottom") {
+        expect(parentBox.bottom).toBeLessThanOrEqual(trigger().getBoundingClientRect().top);
+      }
       await openMenu("people-large");
       const childBox = expectWithinViewport(surface("people-large"));
       expect(childBox.height).toBeLessThanOrEqual(420);
