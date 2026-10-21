@@ -25,36 +25,26 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
   });
 });
 
-type StoredRun = {
-  run_id: string;
-  payload_json: string;
-};
-
-function createDatabase() {
-  const db = new DatabaseSync(":memory:");
-  db.exec(`
-    CREATE TABLE subagent_runs (
-      run_id TEXT PRIMARY KEY,
-      payload_json TEXT NOT NULL
-    ) STRICT;
-  `);
-  const insert = db.prepare(`
-    INSERT INTO subagent_runs (run_id, payload_json)
-    VALUES (?, ?)
-  `);
-  return {
-    db,
-    insert: (row: StoredRun) => insert.run(row.run_id, row.payload_json),
-    read: (runId: string) =>
-      db.prepare("SELECT * FROM subagent_runs WHERE run_id = ?").get(runId) as StoredRun,
-  };
-}
-
-function retainedResultDatabase(pending = false) {
+function createDatabase(pending = false) {
   const db = new DatabaseSync(":memory:");
   db.exec(`CREATE TABLE subagent_runs (run_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL
     ${pending ? ", pending_final_delivery_payload_json TEXT" : ""}) STRICT`);
-  return db;
+  const read = (runId: string) =>
+    db.prepare("SELECT * FROM subagent_runs WHERE run_id = ?").get(runId);
+  return {
+    db,
+    insert(runId: string, payload: unknown, pendingPayload?: unknown) {
+      const values = [runId, typeof payload === "string" ? payload : JSON.stringify(payload)];
+      if (pending) {
+        values.push(JSON.stringify(pendingPayload));
+      }
+      db.prepare(`INSERT INTO subagent_runs VALUES (${values.map(() => "?").join(", ")})`).run(
+        ...values,
+      );
+    },
+    read,
+    payload: (runId: string) => JSON.parse(String(read(runId)?.payload_json)),
+  };
 }
 
 describe("Doctor historical row repair", () => {
@@ -124,25 +114,19 @@ describe("repairLegacySubagentExecutionPayloads", () => {
   it("moves shipped paused and killed terminal facts into execution once", () => {
     const store = createDatabase();
     const killedOutcome = { status: "error", error: "manual kill" };
-    store.insert({
-      run_id: "paused",
-      payload_json: JSON.stringify({
-        startedAt: 100,
-        endedAt: 200,
-        pauseReason: "sessions_yield",
-        execution: { status: "running", startedAt: 100 },
-      }),
+    store.insert("paused", {
+      startedAt: 100,
+      endedAt: 200,
+      pauseReason: "sessions_yield",
+      execution: { status: "running", startedAt: 100 },
     });
-    store.insert({
-      run_id: "killed",
-      payload_json: JSON.stringify({
-        startedAt: 300,
-        endedAt: 400,
-        outcome: killedOutcome,
-        endedReason: "subagent-killed",
-        killReconciliation: { killedAt: 400 },
-        execution: { status: "running", startedAt: 300 },
-      }),
+    store.insert("killed", {
+      startedAt: 300,
+      endedAt: 400,
+      outcome: killedOutcome,
+      endedReason: "subagent-killed",
+      killReconciliation: { killedAt: 400 },
+      execution: { status: "running", startedAt: 300 },
     });
 
     repairLegacySubagentExecutionPayloads(store.db);
@@ -151,8 +135,8 @@ describe("repairLegacySubagentExecutionPayloads", () => {
     const secondPass = [store.read("paused"), store.read("killed")];
 
     expect(secondPass).toEqual(firstPass);
-    const paused = JSON.parse(firstPass[0]!.payload_json);
-    const killed = JSON.parse(firstPass[1]!.payload_json);
+    const paused = store.payload("paused");
+    const killed = store.payload("killed");
     expect(paused.execution).toEqual({ status: "terminal", startedAt: 100, endedAt: 200 });
     expect(killed.execution).toEqual({
       status: "terminal",
@@ -169,63 +153,55 @@ describe("repairLegacySubagentExecutionPayloads", () => {
 
   it("preserves newer canonical terminal state and optional start timing", () => {
     const store = createDatabase();
-    store.insert({
-      run_id: "newer-terminal",
-      payload_json: JSON.stringify({
-        startedAt: 100,
-        endedAt: 200,
-        outcome: { status: "error", error: "manual kill" },
-        endedReason: "subagent-killed",
-        execution: { status: "terminal", endedAt: 250, outcome: { status: "ok" } },
-      }),
+    store.insert("newer-terminal", {
+      startedAt: 100,
+      endedAt: 200,
+      outcome: { status: "error", error: "manual kill" },
+      endedReason: "subagent-killed",
+      execution: { status: "terminal", endedAt: 250, outcome: { status: "ok" } },
     });
-    store.insert({
-      run_id: "paused-without-start",
-      payload_json: JSON.stringify({
-        endedAt: 500,
-        pauseReason: "sessions_yield",
-        execution: { status: "running" },
-      }),
+    store.insert("paused-without-start", {
+      endedAt: 500,
+      pauseReason: "sessions_yield",
+      execution: { status: "running" },
     });
 
     repairLegacySubagentExecutionPayloads(store.db);
 
-    const payload = JSON.parse(store.read("newer-terminal").payload_json);
+    const payload = store.payload("newer-terminal");
     expect(payload.execution).toEqual({
       status: "terminal",
       endedAt: 250,
       outcome: { status: "ok" },
     });
     expect(payload.execution).not.toHaveProperty("startedAt");
-    const paused = JSON.parse(store.read("paused-without-start").payload_json);
+    const paused = store.payload("paused-without-start");
     expect(paused.execution).toEqual({ status: "terminal", endedAt: 500 });
     expect(paused.execution).not.toHaveProperty("startedAt");
   });
 
   it("leaves malformed payload JSON untouched", () => {
     const store = createDatabase();
-    store.insert({
-      run_id: "malformed",
-      payload_json: "{not-json",
-    });
+    store.insert("malformed", "{not-json");
 
     repairLegacySubagentExecutionPayloads(store.db);
 
-    expect(store.read("malformed").payload_json).toBe("{not-json");
+    expect(store.read("malformed")?.payload_json).toBe("{not-json");
   });
 });
 
 describe("repairLegacySubagentRetainedResults", () => {
   it("promotes shipped payload results without a Task projection and is idempotent", () => {
-    using db = retainedResultDatabase(true);
+    const store = createDatabase(true);
+    using db = store.db;
     const legacyPayload = {
       frozenResultText: "(no_reply)",
       fallbackFrozenResultText: "findings captured before wake",
       requesterSessionKey: "agent:main:main",
     };
-    db.prepare("INSERT INTO subagent_runs VALUES (?, ?, ?)").run(
+    store.insert(
       "completion-run",
-      JSON.stringify({
+      {
         runId: "completion-run",
         taskRunId: " task-run ",
         completion: { required: true, resultText: "(no_reply)" },
@@ -233,24 +209,15 @@ describe("repairLegacySubagentRetainedResults", () => {
           status: "suspended",
           payload: { frozenResultText: "(no_reply)", requesterSessionKey: "agent:main:main" },
         },
-      }),
-      JSON.stringify(legacyPayload),
+      },
+      legacyPayload,
     );
 
     repairLegacySubagentRetainedResults(db);
-    const read = () =>
-      db
-        .prepare(
-          "SELECT payload_json, pending_final_delivery_payload_json FROM subagent_runs WHERE run_id = ?",
-        )
-        .get("completion-run");
-    const firstPass = read() as {
-      payload_json: string;
-      pending_final_delivery_payload_json: string;
-    };
+    const firstPass = store.read("completion-run");
     repairLegacySubagentRetainedResults(db);
-    expect(read()).toEqual(firstPass);
-    const payload = JSON.parse(firstPass.payload_json);
+    expect(store.read("completion-run")).toEqual(firstPass);
+    const payload = store.payload("completion-run");
     expect({ completion: payload.completion, delivery: payload.delivery.payload }).toEqual({
       completion: {
         required: true,
@@ -259,41 +226,32 @@ describe("repairLegacySubagentRetainedResults", () => {
       },
       delivery: { requesterSessionKey: "agent:main:main" },
     });
-    expect(JSON.parse(firstPass.pending_final_delivery_payload_json)).toEqual(legacyPayload);
+    expect(JSON.parse(String(firstPass?.pending_final_delivery_payload_json))).toEqual(
+      legacyPayload,
+    );
   });
 
   it("preserves newer canonical results over legacy payload copies", () => {
-    const db = new DatabaseSync(":memory:");
-    db.exec(`
-      CREATE TABLE subagent_runs (
-        run_id TEXT PRIMARY KEY,
-        payload_json TEXT NOT NULL
-      ) STRICT;
-    `);
-    db.prepare("INSERT INTO subagent_runs (run_id, payload_json) VALUES (?, ?)").run(
-      "canonical-run",
-      JSON.stringify({
-        completion: {
-          required: true,
-          resultText: "canonical result",
-          fallbackResultText: "canonical fallback",
+    const store = createDatabase();
+    using db = store.db;
+    store.insert("canonical-run", {
+      completion: {
+        required: true,
+        resultText: "canonical result",
+        fallbackResultText: "canonical fallback",
+      },
+      delivery: {
+        status: "suspended",
+        payload: {
+          frozenResultText: "legacy result",
+          fallbackFrozenResultText: "legacy fallback",
         },
-        delivery: {
-          status: "suspended",
-          payload: {
-            frozenResultText: "legacy result",
-            fallbackFrozenResultText: "legacy fallback",
-          },
-        },
-      }),
-    );
+      },
+    });
 
     repairLegacySubagentRetainedResults(db);
 
-    const row = db.prepare("SELECT * FROM subagent_runs WHERE run_id = ?").get("canonical-run") as {
-      payload_json: string;
-    };
-    const payload = JSON.parse(row.payload_json);
+    const payload = store.payload("canonical-run");
     expect(payload.completion).toEqual({
       required: true,
       resultText: "canonical result",
@@ -303,30 +261,25 @@ describe("repairLegacySubagentRetainedResults", () => {
   });
 
   it("preserves authoritative terminal silence while promoting legacy results", () => {
-    using db = retainedResultDatabase();
+    const store = createDatabase();
+    using db = store.db;
     const legacyPayload = {
       frozenResultText: "NO_REPLY",
       fallbackFrozenResultText: "older visible fallback",
     };
-    db.prepare("INSERT INTO subagent_runs (run_id, payload_json) VALUES (?, ?)").run(
-      "silent-run",
-      JSON.stringify({
-        taskRunId: "silent-task-run",
-        completion: {
-          required: true,
-          resultText: "NO_REPLY",
-          terminalReply: { disposition: "silent" },
-        },
-        delivery: { status: "suspended", payload: legacyPayload },
-      }),
-    );
+    store.insert("silent-run", {
+      taskRunId: "silent-task-run",
+      completion: {
+        required: true,
+        resultText: "NO_REPLY",
+        terminalReply: { disposition: "silent" },
+      },
+      delivery: { status: "suspended", payload: legacyPayload },
+    });
 
     repairLegacySubagentRetainedResults(db);
 
-    const stored = db
-      .prepare("SELECT payload_json FROM subagent_runs WHERE run_id = ?")
-      .get("silent-run") as { payload_json: string };
-    expect(JSON.parse(stored.payload_json).completion).toEqual({
+    expect(store.payload("silent-run").completion).toEqual({
       required: true,
       resultText: "NO_REPLY",
       fallbackResultText: "older visible fallback",
