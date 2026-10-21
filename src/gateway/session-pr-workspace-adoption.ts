@@ -3,6 +3,8 @@ import { listExecSessionsForCancellation } from "../agents/bash-process-registry
 import { assertLocalSandboxWorkspaceBackend } from "../agents/sandbox/local-workspace.js";
 import type { SandboxContext } from "../agents/sandbox/types.js";
 import { listSubagentRunsForRequester } from "../agents/subagents/registry/subagent-registry-read.js";
+import { captureWorkspaceStateFilesystemGuard } from "../agents/workspace-state-guard.js";
+import { resolveCanonicalWorkspacePath } from "../agents/workspace-state-identity.js";
 import { readSessionTranscriptAnchorsAsync } from "../config/sessions/session-transcript-anchor-read.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import {
@@ -49,14 +51,18 @@ export async function adoptUnboundPullRequestWorkspace(params: {
       entry.spawnedWorkspaceDir ||
       entry.pendingWorktree ||
       entry.pendingProjectGitUrl ||
-      (entry.sessionRoot !== undefined && entry.sessionRoot !== workspaceDir))
+      (entry.sessionRoot !== undefined &&
+        entry.sessionRoot !== workspaceDir &&
+        entry.sessionRoot !== resolveCanonicalWorkspacePath(workspaceDir)))
   ) {
     throw new Error("This conversation already has another source. Its files were preserved.");
   }
+  const assertWorkspaceCurrent = captureWorkspaceStateFilesystemGuard(workspaceDir, false);
   const identities = [target.sessionKey, entry.sessionId];
   const assertIdle = () => {
     params.signal?.throwIfAborted();
     params.assertCurrent();
+    assertWorkspaceCurrent();
     const busy =
       hasSessionControllerQueuedWork(target.storePath, identities, target.agentId) ||
       isCompetingSessionControllerWorkActive(target.storePath, identities, target.agentId) ||

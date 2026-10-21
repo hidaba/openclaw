@@ -9,6 +9,9 @@ import type { SessionsFilesGetResult } from "../../packages/gateway-protocol/src
 import { sanitizeForLog } from "../../packages/terminal-core/src/ansi.js";
 import { captureMethodCall } from "../../test/helpers/capture-method-call.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { makeUserMessage } from "../../test/helpers/user-message.js";
+import { createSandboxTestContext } from "../agents/sandbox/test-fixtures.js";
+import { SessionManager } from "../agents/sessions/session-manager.js";
 import { findGitCheckoutRoot } from "../agents/worktrees/git.js";
 import { getRegistryWorktree } from "../agents/worktrees/registry.test-support.js";
 import { managedWorktrees, ManagedWorktreeService } from "../agents/worktrees/service.js";
@@ -18,6 +21,7 @@ import { loadSessionEntry, upsertSessionEntryCore } from "../config/sessions/ses
 import { isSessionMutationActive } from "../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
 import { disposeSessionReadContexts } from "./server-methods/sessions-read-cache.test-support.js";
 import { sessionLog } from "./server-methods/sessions-shared.js";
 import {
@@ -28,6 +32,7 @@ import {
   setupSessionCreateTestHarness,
   requireNonEmptyString,
 } from "./server.sessions.create.test-support.js";
+import { adoptUnboundPullRequestWorkspace } from "./session-pr-workspace-adoption.js";
 import { rpcReq, testState, writeSessionStore } from "./test-helpers.js";
 import {
   sessionStoreEntry,
@@ -231,6 +236,73 @@ test.each(["operator.admin", "operator.write"])(
     });
   },
 );
+
+test("an ordinary session created through a workspace alias can adopt without accepting another cwd", async () => {
+  const root = tempDirs.make("openclaw-session-adopt-alias-");
+  const workspace = path.join(root, "workspace");
+  const alias = path.join(root, "alias");
+  const other = path.join(root, "other");
+  await fs.mkdir(workspace);
+  await fs.mkdir(other);
+  await fs.symlink(workspace, alias, directoryLinkType);
+  testState.agentConfig = { workspace: alias };
+  const { storePath } = await createSessionStoreDir();
+  let adoptedId: string | undefined;
+  try {
+    const ordinary = await createSession({ agentId: "main", worktree: false });
+    expect(ordinary.ok, JSON.stringify(ordinary.error)).toBe(true);
+    const key = requireNonEmptyString(ordinary.payload?.key, "ordinary session key");
+    const entry = loadSessionEntry({ agentId: "main", sessionKey: key, storePath })!;
+    expect(entry.sessionRoot).toBe(await fs.realpath(workspace));
+    expect(entry.spawnedCwd).toBeUndefined();
+    const transcript = await SessionManager.openAsync(
+      { agentId: "main", sessionKey: key, sessionId: entry.sessionId, storePath },
+      alias,
+    );
+    await transcript.appendMessageAsync(makeUserMessage("Continue this conversation", 1));
+    const context = createDirectChatContext();
+    const input = {
+      context,
+      target: { agentId: "main", sessionKey: key, storePath },
+      entry,
+      sandbox: createSandboxTestContext({
+        overrides: { sessionKey: key, workspaceDir: alias, workspaceSource: undefined },
+      }),
+      assertCurrent() {},
+      async verifyBeforeBinding() {},
+    };
+    const explicit = await createSession({ agentId: "main", cwd: other, worktree: false });
+    expect(explicit.ok).toBe(true);
+    const explicitKey = requireNonEmptyString(explicit.payload?.key, "explicit session key");
+    await expect(
+      adoptUnboundPullRequestWorkspace({
+        ...input,
+        target: { ...input.target, sessionKey: explicitKey },
+        entry: loadSessionEntry({ agentId: "main", sessionKey: explicitKey, storePath })!,
+      }),
+    ).rejects.toThrow("already has another source");
+    await fs.unlink(alias);
+    await fs.symlink(other, alias, directoryLinkType);
+    await expect(adoptUnboundPullRequestWorkspace(input)).rejects.toThrow(
+      "already has another source",
+    );
+    await fs.unlink(alias);
+    await fs.symlink(workspace, alias, directoryLinkType);
+    const adopted = await adoptUnboundPullRequestWorkspace(input);
+    adoptedId = adopted.worktree?.id;
+    expect(adoptedId).toBeDefined();
+    expect(adopted.priorWorkspace).toMatchObject({ workspaceDir: alias, fileRoot: alias });
+  } finally {
+    if (adoptedId) {
+      await managedWorktrees.remove({
+        id: adoptedId,
+        reason: "test-cleanup",
+        allowSnapshotLoss: true,
+      });
+    }
+    testState.agentConfig = undefined;
+  }
+});
 
 test("sessions.create requires admin for full permission mode", async () => {
   const workspace = tempDirs.make("openclaw-session-full-mode-");

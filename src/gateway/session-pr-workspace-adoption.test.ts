@@ -1,7 +1,7 @@
 import "../config/sessions/session-entry-patch-delivery.test-support.js";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { expect, it, vi } from "vitest";
+import { assert, expect, it, vi } from "vitest";
 import { makeUserMessage } from "../../test/helpers/user-message.js";
 import { getSession, waitForExecScope } from "../agents/bash-process-registry.js";
 import { createExecTool } from "../agents/bash-tools.exec-run.js";
@@ -14,6 +14,7 @@ import { createProcessTool } from "../agents/bash-tools.process.js";
 import { acknowledgeInternalToolResult } from "../agents/runtime/internal-hooks.js";
 import { createSandboxTestContext } from "../agents/sandbox/test-fixtures.js";
 import { SessionManager } from "../agents/sessions/session-manager.js";
+import { makeAssistantMessageFixture } from "../agents/test-helpers/assistant-message-fixtures.js";
 import { managedWorktrees } from "../agents/worktrees/service.js";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
@@ -22,6 +23,9 @@ import {
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
 import { projectPublicSessionEntry } from "../config/sessions/session-entry-projection.js";
+import { rewritePreparedTranscriptMessageAtAnchor } from "../config/sessions/session-message-rewrite.js";
+import { readSessionTranscriptAnchorsAsync } from "../config/sessions/session-transcript-anchor-read.js";
+import { waitForSessionTranscriptProjection } from "../config/sessions/session-transcript-reconcile.js";
 import * as admission from "../infra/sqlite-worker-operation-admission.js";
 import {
   reserveSessionControllerSource,
@@ -57,6 +61,8 @@ it("adopts one empty owner and keeps original message files separate from same-n
       state.workspaceDir,
     );
     const oldMessage = await manager.appendMessageAsync(makeUserMessage("Open notes.md", 1));
+    const boundaryMessage = await manager.appendMessageAsync(makeUserMessage("Prepare my PR", 2));
+    assert(oldMessage && boundaryMessage, "Original transcript messages must be persisted");
     await fs.writeFile(path.join(state.workspaceDir, "notes.md"), "same original bytes\n");
     const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
     const request = async (
@@ -233,6 +239,7 @@ it("adopts one empty owner and keeps original message files separate from same-n
       const nextMessage = await manager.appendMessageAsync(
         makeUserMessage("Open the new notes.md", 2),
       );
+      assert(nextMessage, "Current-source message must be persisted");
       for (const expectedSource of [
         undefined,
         { workspaceId: "another-workspace", root: worktree!.path, fileRoot: worktree!.path },
@@ -265,6 +272,72 @@ it("adopts one empty owner and keeps original message files separate from same-n
       expect(historical[1].file.content).toBe("same original bytes\n");
       expect(historical[1].file.hash).toBeUndefined();
       expect(historical[1].source).toBeUndefined();
+      const assistant = makeAssistantMessageFixture({
+        stopReason: "stop",
+        content: [{ type: "text", text: "Imported the PR" }],
+      });
+      const assistantId = await manager.appendMessageAsync(assistant);
+      assert(assistantId, "Assistant rewrite target must be persisted");
+      const scope = { ...target, sessionId: entry.sessionId };
+      const beforeRewrite = await readSessionTranscriptAnchorsAsync(scope, {
+        entryIds: [assistantId],
+        includeWatermark: true,
+      });
+      await rewritePreparedTranscriptMessageAtAnchor(beforeRewrite.anchors[0]!, () => ({
+        ...assistant,
+        content: [{ type: "text" as const, text: "Imported the PR with an attachment" }],
+      }));
+      const rewritten = await readSessionTranscriptAnchorsAsync(scope, {
+        entryIds: [oldMessage],
+        includeWatermark: true,
+      });
+      expect(rewritten.watermark?.generation).not.toBe(beforeRewrite.watermark?.generation);
+      const afterMedia = await request("get", { messageEntryId: oldMessage });
+      expect(afterMedia[1].file).toMatchObject({ content: "same original bytes\n" });
+      expect(afterMedia[1].file.hash).toBeUndefined();
+      expect((await request("get", { messageEntryId: nextMessage }))[1].file.content).toBe(
+        "current source edit\n",
+      );
+      const refreshed = await SessionManager.openAsync(scope, state.workspaceDir);
+      expect(
+        await refreshed.removeTrailingEntriesAsync((message) => message.id === boundaryMessage, {
+          preserveTrailing: (message) => message.id === nextMessage || message.id === assistantId,
+        }),
+      ).toBe(1);
+      expect(refreshed.getEntry(nextMessage)?.parentId).toBe(oldMessage);
+      expect(refreshed.getEntry(assistantId)?.parentId).toBe(nextMessage);
+      const afterSuffix = await request("get", { messageEntryId: oldMessage });
+      expect(afterSuffix[1].file).toMatchObject({ content: "same original bytes\n" });
+      expect(afterSuffix[1].file.hash).toBeUndefined();
+      expect((await request("get", { messageEntryId: nextMessage }))[0]).toBe(false);
+      await refreshed.branchAsync(assistantId);
+      const resumedMessage = await refreshed.appendMessageAsync(
+        makeUserMessage("Continue the retained PR branch", 3),
+      );
+      assert(resumedMessage, "Resumed branch message must be persisted");
+      await waitForSessionTranscriptProjection(scope);
+      const resumedAnchors = await readSessionTranscriptAnchorsAsync(scope, {
+        entryIds: [oldMessage, nextMessage, assistantId, resumedMessage],
+      });
+      expect(resumedAnchors.anchors.map((anchor) => anchor.entryId)).toEqual([
+        oldMessage,
+        nextMessage,
+        assistantId,
+        resumedMessage,
+      ]);
+      const originalAfterBranch = await request("get", { messageEntryId: oldMessage });
+      expect(originalAfterBranch).toMatchObject([
+        true,
+        { file: { content: "same original bytes\n" } },
+      ]);
+      expect(originalAfterBranch[1].file.hash).toBeUndefined();
+      expect(originalAfterBranch[1].source).toBeUndefined();
+      const currentAfterBranch = await request("get", { messageEntryId: nextMessage });
+      expect(currentAfterBranch).toMatchObject([
+        true,
+        { file: { content: "current source edit\n" } },
+      ]);
+      expect((await request("get", { messageEntryId: boundaryMessage }))[0]).toBe(false);
       expect((await request("get", { messageEntryId: "forged-message" }))[0]).toBe(false);
       await fs.writeFile(
         path.join(state.workspaceDir, "index.html"),

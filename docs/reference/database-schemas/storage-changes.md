@@ -3047,6 +3047,11 @@ private `priorWorkspace` relation in the existing session `entry_json`. It binds
 the adopted worktree ID and session incarnation to the original admitted source,
 its file root, and the transcript generation/sequence boundary observed before
 binding. The existing session writer commits this relation with the new workspace.
+Canonical transcript rewrites carry the boundary forward using surviving event
+identities and their committed positions, in the same transaction or incognito
+actor mutation. Removing the boundary event does not change a surviving message's
+file source. Deliberately removed messages remain unavailable; unresolved source
+provenance never falls back to the current workspace.
 No files, credentials, permissions, or transcript payloads are copied.
 
 Current session access and filesystem containment still authorize every read.

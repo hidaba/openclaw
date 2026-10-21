@@ -63,6 +63,18 @@ export async function prepareSessionFileWorkspace(
         errorShape(ErrorCodes.FORBIDDEN, "The file message is not in this conversation."),
       );
     }
+    if (
+      prior.sessionId === entry.sessionId &&
+      prior.through.maxSeq !== null &&
+      anchor.generation !== prior.through.generation
+    ) {
+      throw new SessionMutationAuthorizationChangedError(
+        errorShape(
+          ErrorCodes.FORBIDDEN,
+          "The file message source changed; reload the conversation.",
+        ),
+      );
+    }
     historical =
       prior.sessionId === entry.sessionId &&
       anchor.generation === prior.through.generation &&
