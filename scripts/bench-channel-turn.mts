@@ -550,6 +550,7 @@ try {
     {
       ...createGatewayBenchEnv(fixture, configPath, { caseEnv: {} }),
       OPENAI_API_KEY: "synthetic-sqlmeasure-fixture",
+      OPENCLAW_ENABLE_PRIVATE_QA_CLI: "1",
       SQLMEASURE_OUT: output,
       NODE_OPTIONS: process.env.OPENCLAW_CHANNEL_BENCH_NODE_OPTIONS ?? "--enable-source-maps",
     },
