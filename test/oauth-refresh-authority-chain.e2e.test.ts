@@ -1,6 +1,5 @@
 import fs from "node:fs/promises";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
+import { createServer, type IncomingMessage } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -21,6 +20,12 @@ import { connectGatewayClient, disconnectGatewayClient } from "../src/gateway/te
 import { createDeferredCore } from "../src/shared/deferred.js";
 import { closeOpenClawAgentDatabasesForTest } from "../src/state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../src/state/openclaw-state-db.js";
+import {
+  closeHttpServer,
+  listenLoopback,
+  readRequestText,
+  respondJson as sendJson,
+} from "./helpers/gateway-integration-fixtures.js";
 import { writeOpenAiResponsesText } from "./helpers/openai-responses-sse.js";
 import {
   createOpenClawTestInstance,
@@ -154,21 +159,12 @@ function classifyAuthorization(value: string | undefined): ModelAuthClass {
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  return JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+  return JSON.parse(await readRequestText(request)) as Record<string, unknown>;
 }
 
 function requestMarker(body: Record<string, unknown>): string {
   const serialized = JSON.stringify(body);
   return REQUEST_MARKERS.find((marker) => serialized.includes(marker)) ?? "unknown";
-}
-
-function sendJson(response: ServerResponse, body: unknown, status = 200) {
-  response.writeHead(status, { "content-type": "application/json" });
-  response.end(JSON.stringify(body));
 }
 
 async function startControlledProvider(): Promise<ControlledProvider> {
@@ -225,17 +221,10 @@ async function startControlledProvider(): Promise<ControlledProvider> {
       response.writeHead(500).end(error instanceof Error ? error.message : String(error));
     });
   });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address() as AddressInfo | null;
-  if (!address) {
-    throw new Error("authority proof provider did not bind a loopback port");
-  }
+  const baseUrl = await listenLoopback(server);
   let stopped = false;
   return {
-    baseUrl: `http://127.0.0.1:${address.port}`,
+    baseUrl,
     modelRequests,
     refreshStarted: refreshStarted.promise,
     releaseRefresh: refreshGate.resolve,
@@ -246,10 +235,7 @@ async function startControlledProvider(): Promise<ControlledProvider> {
       }
       stopped = true;
       refreshGate.resolve();
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-        server.closeAllConnections();
-      });
+      await closeHttpServer(server);
     },
   };
 }

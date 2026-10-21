@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer } from "node:http";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { SessionManager } from "../src/agents/sessions/session-manager.js";
 import { upsertSessionEntryCore } from "../src/config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../src/config/types.openclaw.js";
-import { connectGatewayClient, disconnectGatewayClient } from "../src/gateway/test-helpers.e2e.js";
+import { disconnectGatewayClient } from "../src/gateway/test-helpers.e2e.js";
 import { anthropicTextTurn } from "./anthropic-text-turn.test-support.js";
 import {
   closeHttpServer,
+  connectProofClient,
   listenLoopback,
   readRequestText,
 } from "./helpers/gateway-integration-fixtures.js";
@@ -69,9 +70,7 @@ it(
     await appendUser("active tail", 3);
 
     await instance.startGateway();
-    const client = await connectGatewayClient({
-      url: instance.url,
-      token: instance.gatewayToken,
+    const client = await connectProofClient(instance, {
       role: "operator",
       scopes: ["operator.admin", "operator.read", "operator.write"],
     });
@@ -153,7 +152,17 @@ function createTestConfig(baseUrl: string): OpenClawConfig {
 async function startMockModelServer() {
   const requests: Array<{ body: unknown }> = [];
   const server = createServer((request, response) => {
-    void handleRequest(request, response, requests).catch((error: unknown) => {
+    void (async () => {
+      if (request.method !== "POST" || request.url !== "/v1/messages") {
+        response.writeHead(404).end();
+        return;
+      }
+      requests.push({ body: JSON.parse(await readRequestText(request)) });
+      response.writeHead(200, { "content-type": "text/event-stream; charset=utf-8" });
+      response.end(
+        anthropicTextTurn("preflight-proof", REPLY_MARKER, "msg_preflight_proof", 20, 4),
+      );
+    })().catch((error: unknown) => {
       response.writeHead(500, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: { message: String(error) } }));
     });
@@ -163,18 +172,4 @@ async function startMockModelServer() {
     requests,
     close: () => closeHttpServer(server),
   };
-}
-
-async function handleRequest(
-  request: IncomingMessage,
-  response: ServerResponse,
-  requests: Array<{ body: unknown }>,
-): Promise<void> {
-  if (request.method !== "POST" || request.url !== "/v1/messages") {
-    response.writeHead(404).end();
-    return;
-  }
-  requests.push({ body: JSON.parse(await readRequestText(request)) });
-  response.writeHead(200, { "content-type": "text/event-stream; charset=utf-8" });
-  response.end(anthropicTextTurn("preflight-proof", REPLY_MARKER, "msg_preflight_proof", 20, 4));
 }

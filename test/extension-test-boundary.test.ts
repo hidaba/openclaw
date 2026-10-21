@@ -35,12 +35,14 @@ function listGitFiles(dir: string): string[] | null {
   return listGitTrackedFiles({ repoRoot, pathspecs: relativeRoot });
 }
 
-function walk(dir: string, entries: string[] = []): string[] {
+function walkFiles(
+  dir: string,
+  accept: (file: string) => boolean,
+  entries: string[] = [],
+): string[] {
   const gitFiles = listGitFiles(dir);
   if (gitFiles) {
-    entries.push(
-      ...gitFiles.filter((file) => file.endsWith(".test.ts") || file.endsWith(".test.tsx")),
-    );
+    entries.push(...gitFiles.filter(accept));
     return entries;
   }
 
@@ -50,51 +52,23 @@ function walk(dir: string, entries: string[] = []): string[] {
       if (entry.name === "node_modules" || entry.name === "dist" || entry.name === ".git") {
         continue;
       }
-      walk(fullPath, entries);
-      continue;
-    }
-    if (!entry.name.endsWith(".test.ts") && !entry.name.endsWith(".test.tsx")) {
-      continue;
-    }
-    entries.push(toRepoRelativePath(repoRoot, fullPath));
-  }
-  return entries;
-}
-
-function walkCode(dir: string, entries: string[] = []): string[] {
-  const gitFiles = listGitFiles(dir);
-  if (gitFiles) {
-    entries.push(
-      ...gitFiles.filter((file) => {
-        if (!file.endsWith(".ts") && !file.endsWith(".tsx")) {
-          return false;
-        }
-        return !ROOTDIR_BOUNDARY_CANARY_RE.test(file);
-      }),
-    );
-    return entries;
-  }
-
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (entry.name === "node_modules" || entry.name === "dist" || entry.name === ".git") {
-        continue;
-      }
-      walkCode(fullPath, entries);
-      continue;
-    }
-    if (!entry.name.endsWith(".ts") && !entry.name.endsWith(".tsx")) {
+      walkFiles(fullPath, accept, entries);
       continue;
     }
     const relativePath = toRepoRelativePath(repoRoot, fullPath);
-    if (ROOTDIR_BOUNDARY_CANARY_RE.test(relativePath)) {
-      continue;
+    if (accept(relativePath)) {
+      entries.push(relativePath);
     }
-    entries.push(relativePath);
   }
   return entries;
 }
+
+const walk = (dir: string) => walkFiles(dir, (file) => /\.test\.tsx?$/u.test(file));
+const walkCode = (dir: string) =>
+  walkFiles(dir, (file) => /\.tsx?$/u.test(file) && !ROOTDIR_BOUNDARY_CANARY_RE.test(file));
+const readSource = (file: string) => fs.readFileSync(path.join(repoRoot, file), "utf8");
+const matchingFiles = (files: string[], matches: (source: string) => boolean) =>
+  files.filter((file) => matches(readSource(file)));
 
 function findExtensionImports(source: SourceFile): string[] {
   return (
@@ -313,10 +287,10 @@ describe("non-extension test boundaries", () => {
         !file.startsWith(CHANNEL_CONTRACT_TEST_HELPERS_PREFIX),
     );
 
-    const offenders = files.filter((file) => {
-      const source = fs.readFileSync(path.join(repoRoot, file), "utf8");
-      return findBundledPluginPublicSurfaceImports(source).length > 0;
-    });
+    const offenders = matchingFiles(
+      files,
+      (source) => findBundledPluginPublicSurfaceImports(source).length > 0,
+    );
 
     expect(offenders).toStrictEqual([]);
   });
@@ -324,7 +298,7 @@ describe("non-extension test boundaries", () => {
   it("keeps resolver tests on generated fixtures for broad bundled plugin source APIs", () => {
     const bundledPluginIds = collectBundledPluginIds();
     const offenders = BUNDLED_PLUGIN_RESOLVER_TEST_FILES.flatMap((file) => {
-      const source = fs.readFileSync(path.join(repoRoot, file), "utf8");
+      const source = readSource(file);
       return findRealBroadSourceApiResolverReferences(source, bundledPluginIds).map(
         (reference) => `${file}: ${reference}`,
       );
@@ -339,13 +313,12 @@ describe("non-extension test boundaries", () => {
       .filter((file) => !file.startsWith("test/helpers/"))
       .filter((file) => file !== "test/extension-test-boundary.test.ts");
 
-    const offenders = files.filter((file) => {
-      const source = fs.readFileSync(path.join(repoRoot, file), "utf8");
-      return (
+    const offenders = matchingFiles(
+      files,
+      (source) =>
         source.includes("test/helpers/channels/security-audit-contract.js") ||
-        source.includes("src/channels/plugins/contracts/test-helpers/security-audit-contract.js")
-      );
-    });
+        source.includes("src/channels/plugins/contracts/test-helpers/security-audit-contract.js"),
+    );
 
     expect(offenders).toStrictEqual([]);
   });
@@ -353,10 +326,9 @@ describe("non-extension test boundaries", () => {
   it("keeps extension channel contract helpers on the public testing surface", () => {
     const files = walkCode(path.join(repoRoot, "extensions"));
 
-    const offenders = files.filter((file) => {
-      const source = fs.readFileSync(path.join(repoRoot, file), "utf8");
-      return source.includes("src/channels/plugins/contracts/test-helpers/");
-    });
+    const offenders = matchingFiles(files, (source) =>
+      source.includes("src/channels/plugins/contracts/test-helpers/"),
+    );
 
     expect(offenders).toStrictEqual([]);
   });
@@ -371,10 +343,9 @@ describe("non-extension test boundaries", () => {
     ];
     const files = walkCode(path.join(repoRoot, "extensions"));
 
-    const offenders = files.filter((file) => {
-      const source = fs.readFileSync(path.join(repoRoot, file), "utf8");
-      return bannedPatterns.some((pattern) => pattern.test(source));
-    });
+    const offenders = matchingFiles(files, (source) =>
+      bannedPatterns.some((pattern) => pattern.test(source)),
+    );
 
     expect(offenders).toStrictEqual([]);
   });

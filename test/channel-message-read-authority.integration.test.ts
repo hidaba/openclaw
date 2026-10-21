@@ -26,6 +26,11 @@ import { createPluginRegistry } from "../src/plugins/registry.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../src/plugins/runtime.js";
 import type { PluginRuntime } from "../src/plugins/runtime/types.js";
 import { createPluginRecord } from "../src/plugins/status.test-fixtures.js";
+import {
+  closeHttpServer,
+  listenLoopback,
+  respondJson,
+} from "./helpers/gateway-integration-fixtures.js";
 
 const endpointPreparation = vi.hoisted(() => ({
   beforeLookup: undefined as (() => void) | undefined,
@@ -283,14 +288,7 @@ describe.each(["discord", "slack"] as const)("official %s provider read boundary
       });
       response.end(JSON.stringify(body));
     });
-    await new Promise<void>((resolve) => {
-      server.listen(0, "127.0.0.1", resolve);
-    });
-    const address = server.address();
-    if (!address || typeof address === "string") {
-      throw new Error("Expected loopback TCP address");
-    }
-    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const baseUrl = await listenLoopback(server);
     let endpointLookups = 0;
     if (mode.startsWith("endpoint-")) {
       vi.stubEnv("DISCORD_API_URL", `${baseUrl}/api/v10`);
@@ -398,9 +396,7 @@ describe.each(["discord", "slack"] as const)("official %s provider read boundary
       }
     } finally {
       run?.dispose();
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-      });
+      await closeHttpServer(server);
     }
   });
 });
@@ -467,20 +463,12 @@ async function withSlackMetadataHarness(
           : path === "/api/emoji.list"
             ? { ok: true, emoji: emojis }
             : { ok: false, error: "unexpected_fixture_endpoint" };
-      reply.writeHead(200, { "content-type": "application/json" });
-      reply.end(JSON.stringify(payload));
+      respondJson(reply, payload);
     });
   });
   let run: ReturnType<typeof createOriginatingRun> | undefined;
   try {
-    await new Promise<void>((resolve) => {
-      server.listen(0, "127.0.0.1", resolve);
-    });
-    const address = server.address();
-    if (!address || typeof address === "string") {
-      throw new Error("Expected loopback TCP address");
-    }
-    confineProviderFetch("slack", `http://127.0.0.1:${address.port}`);
+    confineProviderFetch("slack", await listenLoopback(server));
     setRuntimeConfigSnapshot(cfg, cfg);
     run = createOriginatingRun("slack", options.claim ? "metadata-claim" : "metadata", {
       accountId: "ops",
@@ -513,9 +501,7 @@ async function withSlackMetadataHarness(
   } finally {
     run?.dispose();
     if (server.listening) {
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-      });
+      await closeHttpServer(server);
     }
   }
 }
