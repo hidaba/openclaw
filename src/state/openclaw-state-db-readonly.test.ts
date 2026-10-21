@@ -25,13 +25,11 @@ import {
   closeOpenClawStateDatabaseAsync,
   recordOpenClawStateDatabaseOpenFailure,
 } from "./openclaw-state-db-cache.js";
-import { createDanglingSkillWorkshopReviewIndex } from "./openclaw-state-db-corruption.test-support.js";
 import {
   isOpenClawStateDatabaseDefinitelyAbsent,
   executeExistingOpenClawStateRead,
   withSynchronousArtifactPreservingStateSnapshot,
   isArtifactPreservingStateRead,
-  withExistingOpenClawStateDatabaseArtifactPreservingReadOnly,
   withExistingOpenClawStateDatabaseArtifactPreservingReadOnlyAsync,
   withExistingOpenClawStateDatabaseReadOnly,
   withArtifactPreservingStateReads,
@@ -293,23 +291,6 @@ it("reads only active disposable scopes directly and revokes inherited async acc
     expect(await read(outer)).not.toBe(outer.path);
     expect(fs.readFileSync(source.path)).toEqual(sourceBefore);
     expect(fs.readdirSync(path.dirname(source.path))).toEqual(["openclaw.sqlite"]);
-  });
-});
-it("requires Doctor for the exact dangling Workshop index without changing its source", async () => {
-  await withTempDir("openclaw-state-readonly-dangling-workshop-", async (stateDir) => {
-    const options = createClosedState(stateDir);
-    createDanglingSkillWorkshopReviewIndex(options.path);
-    const before = fs.readFileSync(options.path);
-
-    await expect(
-      Promise.resolve().then(() =>
-        withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(
-          ({ db }) => db.prepare("SELECT role FROM schema_meta").get(),
-          options,
-        ),
-      ),
-    ).rejects.toThrow(/legacy-workshop-review-index.*openclaw doctor --fix/);
-    expect(fs.readFileSync(options.path)).toEqual(before);
   });
 });
 it("reuses an idle writer but isolates its transaction", async () => {

@@ -260,7 +260,9 @@ it("preserves cold schema refusal with a malformed catalog", () => {
     seed.close();
   }
   createDanglingSkillWorkshopReviewIndex(pathname);
+  const before = fs.readFileSync(pathname);
   expect(value).toThrow(/legacy-workshop-review-index.*openclaw doctor --fix/iu);
+  expect(fs.readFileSync(pathname)).toEqual(before);
 });
 
 it("rejects a replacement content marker with a newer version after warm reads", () => {
