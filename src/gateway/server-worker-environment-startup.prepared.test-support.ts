@@ -34,6 +34,7 @@ import {
   workerStartupCredential,
 } from "./server-worker-environment-startup.runtime.test-support.js";
 import { withGatewayWorkerEnvironmentStartupState } from "./server-worker-environment-startup.state.test-support.js";
+import { gatewayTestTextTransport } from "./server/connection-transport.test-support.js";
 import { createWorkerProjectPreparation } from "./worker-environments/project-preparation.js";
 import * as serviceModule from "./worker-environments/service.js";
 import { workerProjectSeedKey } from "./worker-environments/workspace-git-base.js";
@@ -205,7 +206,7 @@ async function createPreparedNodeAcknowledgement(root: string) {
     nodeRegistry.register(
       {
         connId,
-        socket,
+        socket: gatewayTestTextTransport(socket),
         usesSharedGatewayAuth: false,
         connect: {
           minProtocol: 1,
