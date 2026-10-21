@@ -58,6 +58,11 @@ const {
 );
 const query = (sql: string) => database().db.prepare(sql);
 const rows = (sql: string) => query(sql).all();
+const pending = () => listSessionPendingInputs(scope());
+const readTranscript = () => loadTranscriptEvents(scope());
+const submitted = (id: string) => readSessionSubmittedInput(scope(), `${id}:user`);
+const sourceReceipts = (runIds: string[], target = scope()) =>
+  listSessionPendingInputReceipts(target, { runIds });
 const pendingRows = (fields: string) =>
   rows(`SELECT ${fields} FROM session_pending_inputs ORDER BY seq`);
 const internalMessage = (
@@ -191,27 +196,21 @@ it("commits one collected message and retains exact source receipts across rewri
     [first, second],
     message("collect-c", "First approved input\nSecond approved input"),
   );
-  expect((await listSessionPendingInputs(scope())).total).toBe(2);
+  expect((await pending()).total).toBe(2);
   const appended = await promote(aggregate);
   expect(appended).toMatchObject({ appended: true, messageId: aggregate.inputId });
-  expect(
-    (await readSessionSubmittedInput(scope(), "collect-c:user"))?.["__openclaw"],
-  ).toMatchObject({ transport: { clients } });
-  expect(await listSessionPendingInputs(scope())).toEqual({ items: [], total: 0 });
+  expect((await submitted("collect-c"))?.["__openclaw"]).toMatchObject({ transport: { clients } });
+  expect(await pending()).toEqual({ items: [], total: 0 });
   expect(await readSessionPendingInput(scope(), first.inputId)).toBeUndefined();
-  expect(
-    await listSessionPendingInputReceipts(scope(), {
-      runIds: ["collect-a", "collect-b", "unknown"],
-    }),
-  ).toEqual([
+  expect(await sourceReceipts(["collect-a", "collect-b", "unknown"])).toEqual([
     { runId: "collect-a", state: "consumed", consumedByEventId: aggregate.inputId },
     { runId: "collect-b", state: "consumed", consumedByEventId: aggregate.inputId },
   ]);
   await finish(aggregate, "cancelled");
   await replaceTranscriptEvents(scope(), []);
   await restart();
-  expect(await readSessionSubmittedInput(scope(), "collect-a:user")).toEqual(first.message);
-  expect(await readSessionSubmittedInput(scope(), "collect-b:user")).toEqual(second.message);
+  expect(await submitted("collect-a")).toEqual(first.message);
+  expect(await submitted("collect-b")).toEqual(second.message);
   const duplicate = await stage("collect-a", {
     message: { ...first.message, timestamp: 200 },
   });
@@ -224,8 +223,8 @@ it("commits one collected message and retains exact source receipts across rewri
   await expect(
     stage("collect-a", { message: message("collect-a", "Changed input") }),
   ).rejects.toThrow("conflicts");
-  expect(await loadTranscriptEvents(scope())).toEqual([]);
-  expect(await listSessionPendingInputs(scope())).toEqual({ items: [], total: 0 });
+  expect(await readTranscript()).toEqual([]);
+  expect(await pending()).toEqual({ items: [], total: 0 });
   expect(pendingRows("input_id, message_json, consumed_event_id")).toEqual(
     [first, second].map((source) => ({
       input_id: source.inputId,
@@ -233,12 +232,7 @@ it("commits one collected message and retains exact source receipts across rewri
       consumed_event_id: aggregate.inputId,
     })),
   );
-  expect(
-    await listSessionPendingInputReceipts(
-      { ...scope(), sessionId: "other" },
-      { runIds: ["collect-a"] },
-    ),
-  ).toEqual([]);
+  expect(await sourceReceipts(["collect-a"], { ...scope(), sessionId: "other" })).toEqual([]);
   await deleteSessionEntryLifecycle({
     archiveTranscript: false,
     storePath: fixture.storePath(),
@@ -291,7 +285,7 @@ it.each(["empty-metadata", "transport-metadata", "changed-payload", "changed-sen
       expect(() => receipt.run(() => {})).toThrow("already been consumed");
     }
     expect(stored()).toEqual(before);
-    expect(await readSessionSubmittedInput(scope(), "legacy-client:user")).toEqual(original);
+    expect(await submitted("legacy-client")).toEqual(original);
   },
 );
 
@@ -326,10 +320,7 @@ it("retains collected source correlation when private completion commits", async
       consumedByEventId: aggregate.inputId,
     },
   ];
-  const readReceipts = () =>
-    listSessionPendingInputReceipts(scope(), {
-      runIds: ["announce:private-child"],
-    });
+  const readReceipts = () => sourceReceipts(["announce:private-child"]);
   expect(await readReceipts(), "collected source after transcript promotion").toEqual(consumed);
   const outcome = buildAgentRunTerminalOutcome({ status: "ok" });
   await expect(source.completeAsync!(outcome)).resolves.toEqual(outcome);

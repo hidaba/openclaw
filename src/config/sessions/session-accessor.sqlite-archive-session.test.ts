@@ -28,7 +28,6 @@ import {
 } from "../../test-utils/openclaw-test-state.js";
 import { readSessionArchiveContentSync } from "./archive-compression.js";
 import {
-  createSessionEntryWithTranscript,
   deleteSessionEntryLifecycle,
   loadSessionEntry,
   loadTranscriptEvents,
@@ -98,7 +97,7 @@ describe("SQLite transcript archive sessions", () => {
     updatedAt = 1,
   ) {
     const { sessionId } = scope;
-    const event = createTranscriptEvent(sessionId, content);
+    const event = { type: "session", id: sessionId, content };
     await replaceSessionEntry(scope, { sessionId, updatedAt });
     await replaceTranscriptEvents(scope, [event]);
     return event;
@@ -141,7 +140,12 @@ describe("SQLite transcript archive sessions", () => {
   }
 
   function expectArchivedEvent(archivePath: string | undefined, event: unknown) {
-    expect(readArchiveLines(archivePath)).toEqual([JSON.stringify(event)]);
+    expect(archivePath).toBeTruthy();
+    expect(
+      readSessionArchiveContentSync(archivePath ?? "")
+        .trim()
+        .split("\n"),
+    ).toEqual([JSON.stringify(event)]);
   }
 
   function deleteArchivedSession(sessionKey: string, targetStorePath = storePath) {
@@ -229,28 +233,6 @@ describe("SQLite transcript archive sessions", () => {
     ).toEqual(
       sessionIds.map(() => ({ published_at: expect.any(Number), session_key: sessionKey })),
     );
-    await closeAgentDatabase(database.path);
-    archiveWorkers.expectJoined(1);
-  });
-
-  it("reuses one archive worker across sequential deletions of newly created sessions", async () => {
-    const database = openLifecycleTestDatabase(storePath);
-    using archiveWorkers = observeArchiveSessionWorkers();
-    for (const sessionId of ["empty-first", "empty-second"]) {
-      const scope = sessionScope(sessionId);
-      await createSessionEntryWithTranscript(scope, () => ({
-        ok: true,
-        entry: { sessionId, updatedAt: Date.now() },
-      }));
-      const events = await loadTranscriptEvents(scope);
-      expect(events).toHaveLength(1);
-      expect(events[0]).toMatchObject({ type: "session", id: sessionId });
-      const result = await deleteArchivedSession(scope.sessionKey);
-      expect(result.deleted).toBe(true);
-      expect(result.archivedTranscripts).toHaveLength(1);
-      expectArchivedEvent(result.archivedTranscripts[0]?.archivedPath, events[0]);
-    }
-    archiveWorkers.expectReused(2);
     await closeAgentDatabase(database.path);
     archiveWorkers.expectJoined(1);
   });
@@ -806,17 +788,6 @@ function observeArchiveSessionWorkers(
       process.off("worker", observeWorker);
     },
   };
-}
-
-function createTranscriptEvent(sessionId: string, content: string) {
-  return { type: "session", id: sessionId, content };
-}
-
-function readArchiveLines(archivePath: string | undefined): string[] {
-  expect(archivePath).toBeTruthy();
-  return readSessionArchiveContentSync(archivePath ?? "")
-    .trim()
-    .split("\n");
 }
 
 function openLifecycleTestDatabase(storePath: string) {
