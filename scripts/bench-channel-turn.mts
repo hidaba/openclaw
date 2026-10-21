@@ -742,10 +742,13 @@ try {
     codeMode: false,
     ...(ruleCount ? { exec: { host: "gateway", mode: "allowlist" } } : {}),
   };
+  if (ruleCount && steadyDurationMs) {
+    cfg.gateway = { ...cfg.gateway, tools: { allow: ["exec"] } };
+  }
   applyMockOpenAiModelConfig(cfg, { mockPort, modelRef: "openai/gpt-4.1" });
   cfg.agents = {
     ...cfg.agents,
-    defaults: { ...cfg.agents?.defaults, heartbeat: { every: "0m" }, skipBootstrap: true },
+    defaults: { ...cfg.agents?.defaults, skipBootstrap: true },
   };
   cfg.agents.entries = { main: { workspace: path.join(fixture, "workspace") } };
   cfg.plugins = {
