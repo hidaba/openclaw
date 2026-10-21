@@ -142,7 +142,7 @@ function savedTheme(id: string, definition: ReturnType<typeof themeDefinition>) 
   return { ...themePreferences(`user/${id}`), [`ui.themeDefinition.${id}`]: definition };
 }
 
-function syntheticClient(identity?: AgentRuntimeIdentity, profileId?: string) {
+function syntheticClient(identity?: AgentRuntimeIdentity, profileId?: string): GatewayClient {
   return {
     ...client(profileId),
     internal: { syntheticClient: true, ...(identity ? { agentRuntimeIdentity: identity } : {}) },

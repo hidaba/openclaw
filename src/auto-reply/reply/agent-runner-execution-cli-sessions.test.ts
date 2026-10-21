@@ -15,12 +15,14 @@ import {
   createTestRegistry,
 } from "../../test-utils/channel-plugins.js";
 import type { TemplateContext } from "../templating.js";
+import type { FallbackRunnerParams } from "./agent-runner-execution.test-support.js";
 import {
   createFollowupRun,
   createCliFollowupRun as createCliRun,
   createMinimalRunAgentTurnParams,
   expectMockCallArgFields,
   getExecuteAgentTurnForTest,
+  initialFallbackAttemptOptions,
   makeTestSessionStorePath,
   requireMockCall,
   requireRecord,

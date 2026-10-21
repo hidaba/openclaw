@@ -200,7 +200,6 @@ it.each([
           {
             context: {
               getRuntimeConfig: () => ({}),
-              rpcSources: new Map(),
               getSessionEventSubscriberConnIds: () => new Set(),
               broadcastToConnIds: vi.fn(),
             },

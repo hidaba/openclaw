@@ -255,7 +255,10 @@ function resolveMemoryConfig(runtime: Awaited<ReturnType<typeof createStoredRunt
   return resolved;
 }
 
-function settledTurn(runId: string, result: EmbeddedAgentRunResult = { payloads: [], meta: {} }) {
+function settledTurn(
+  runId: string,
+  result: EmbeddedAgentRunResult = { payloads: [], meta: { durationMs: 0 } },
+) {
   return {
     runId,
     outcome: {
@@ -369,6 +372,7 @@ describe("runReplyAgent runtime config", () => {
           return settledTurn("parent-turn", {
             payloads: [{ text: finalText }],
             meta: {
+              durationMs: 0,
               finalAssistantVisibleText: finalText,
               terminalReply: { disposition: "visible", text: finalText },
             },
