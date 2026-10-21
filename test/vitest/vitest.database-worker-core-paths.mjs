@@ -1138,6 +1138,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugins/installed-plugin-index-store.test.ts",
   "src/plugins/install-record-commit.sqlite.test.ts",
   "src/plugins/management-service.workspace-inventory.test.ts",
+  "src/plugins/manifest-registry-installed.ownership.test.ts",
   "src/plugins/manifest-registry-installed.test.ts",
   "src/plugins/plugin-lifecycle-lease.test.ts",
   "src/plugins/plugin-lifecycle-refusal.test.ts",
