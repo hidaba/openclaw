@@ -457,3 +457,76 @@ it.each(["memory", "other", "reset", "abort"] as const)(
     }
   },
 );
+
+const RUN_KEY = "agent:main:cron:job-1:run:run-session";
+
+// A scheduled run row records no spawn receipt; its execution context names the parent.
+function resolveScheduledRun(
+  parent: FakeSessionRow,
+  senderIsOwner: boolean,
+  link: { lifecycleRevision?: string } = { lifecycleRevision: parent.lifecycleRevision },
+) {
+  fakeSessionOwner.rows.set(ROOT_KEY, parent);
+  const run: FakeSessionRow = { sessionId: randomUUID(), updatedAt: 1 };
+  fakeSessionOwner.rows.set(RUN_KEY, run);
+  const scheduledParent = { sessionKey: ROOT_KEY, sessionId: parent.sessionId, senderIsOwner };
+  return resolveMemoryAudienceFromEntry(
+    {
+      agentId: AGENT_ID,
+      sessionKey: RUN_KEY,
+      sessionId: run.sessionId,
+      senderIsOwner: undefined,
+      storePath: STORE_PATH,
+      scheduledParent: { ...scheduledParent, ...link },
+    },
+    run,
+  );
+}
+
+it("grants a scheduled child its parent's audience, bound to the run session", async () => {
+  const parent = rootEntry();
+  const grant = requireGrant(await resolveScheduledRun(parent, true));
+  expect(grant.audience).toEqual({ kind: "owner-private", agentId: AGENT_ID });
+  assertSession(grant.audience, RUN_KEY);
+  const shared = requireGrant(await resolveScheduledRun(rootEntry(), false));
+  expect(shared.audience).toMatchObject({ kind: "conversation", sessionKey: ROOT_KEY });
+  // A parent reset during the run revokes the grant before provider I/O.
+  fakeSessionOwner.rows.set(ROOT_KEY, { ...parent, lifecycleRevision: randomUUID() });
+  expect(() => assertCurrent(grant.audience)).toThrow("no longer current");
+});
+
+it("denies a scheduled child whose parent was reset after the link was recorded", async () => {
+  const parent = rootEntry();
+  const resolution = await resolveScheduledRun(parent, true, { lifecycleRevision: randomUUID() });
+  expect(resolution).toMatchObject({ status: "denied", kind: "stale-lineage" });
+  expect(fakeSessionOwner.activeLeases).toBe(0);
+});
+
+it("matches a scheduled parent link that recorded only the session id", async () => {
+  const grant = requireGrant(await resolveScheduledRun(rootEntry("group"), false, {}));
+  expect(grant.audience).toMatchObject({ kind: "conversation", sessionKey: ROOT_KEY });
+});
+
+it("grants an in-session scheduled run its own linked row's audience with the occurrence's owner bit", async () => {
+  const root = rootEntry();
+  fakeSessionOwner.rows.set(ROOT_KEY, root);
+  const link = { sessionKey: ROOT_KEY, sessionId: root.sessionId, senderIsOwner: true };
+  const resolve = (scheduledParent: typeof link & { lifecycleRevision?: string }) =>
+    resolveMemoryAudienceFromEntry(
+      {
+        agentId: AGENT_ID,
+        sessionKey: ROOT_KEY,
+        sessionId: root.sessionId,
+        senderIsOwner: undefined,
+        storePath: STORE_PATH,
+        scheduledParent,
+      },
+      root,
+    );
+  const grant = requireGrant(await resolve({ ...link, lifecycleRevision: root.lifecycleRevision }));
+  expect(grant.audience).toEqual({ kind: "owner-private", agentId: AGENT_ID });
+  grant.release();
+  const reset = await resolve({ ...link, lifecycleRevision: randomUUID() });
+  expect(reset).toMatchObject({ status: "denied", kind: "stale-lineage" });
+  expect(fakeSessionOwner.activeLeases).toBe(0);
+});

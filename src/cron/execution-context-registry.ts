@@ -4,6 +4,7 @@
  * targets it needs. Leaf module: agent tools import it without cron's graph.
  */
 import type { OperationalRunInstanceRef } from "../agents/operational-run-instance.js";
+import type { ScheduledMemoryParent } from "../plugins/memory-audience.js";
 import type { ScheduledExecutionFacts } from "./execution-context.js";
 
 const factsByRun = new WeakMap<OperationalRunInstanceRef, ScheduledExecutionFacts>();
@@ -38,4 +39,21 @@ export function readScheduledToolTargets(
         mediaSessionKey: facts.resources.mediaSessionKey,
       }
     : undefined;
+}
+
+/** The parent whose memory audience a child run inherits, or undefined to resolve from the run row. */
+export function readScheduledMemoryParent(
+  run: OperationalRunInstanceRef | undefined,
+): ScheduledMemoryParent | undefined {
+  const memory = run ? factsByRun.get(run)?.resources.memory : undefined;
+  if (memory?.source !== "parent") {
+    return undefined;
+  }
+  const { parent, owner } = memory;
+  return {
+    sessionKey: parent.sessionKey,
+    sessionId: parent.sessionId,
+    ...(parent.lifecycleRevision ? { lifecycleRevision: parent.lifecycleRevision } : {}),
+    senderIsOwner: owner,
+  };
 }

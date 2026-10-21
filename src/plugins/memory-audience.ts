@@ -170,6 +170,19 @@ function mintMemoryAudience(
   };
 }
 
+/**
+ * A scheduled run's exact parent incarnation and the owner bit its execution
+ * context resolved for this occurrence. Scheduled run rows record no spawn
+ * receipt, so this plays that role for the run's first lineage hop.
+ */
+export type ScheduledMemoryParent = Readonly<{
+  sessionKey: string;
+  sessionId: string;
+  /** Absent when the link recorded only the session id, which is all it can prove. */
+  lifecycleRevision?: string;
+  senderIsOwner: boolean;
+}>;
+
 type MemoryAudienceResolutionParams = {
   agentId: string;
   sessionKey: string;
@@ -177,6 +190,7 @@ type MemoryAudienceResolutionParams = {
   senderIsOwner: boolean | undefined;
   /** Store that admitted the turn; lineage hops for the same agent share it. */
   storePath: string;
+  scheduledParent?: ScheduledMemoryParent;
   assertCallerCurrent?: () => void;
 };
 
@@ -195,6 +209,7 @@ export async function resolveMemoryAudienceFromEntry(
   const seen = new Set<string>();
   const record: AudienceRecord = { leases: [], state: "current", holders: 0 };
   let requiredLifecycleRevision: string | undefined;
+  let sessionIdOnly = false;
   const deny = (kind: MemoryAudienceDenialKind, reason: string): MemoryAudienceResolution => {
     releaseRecordLeases(record);
     return { status: "denied", kind, reason };
@@ -224,7 +239,7 @@ export async function resolveMemoryAudienceFromEntry(
       if (
         !entry ||
         entry.sessionId !== sessionId ||
-        (depth > 0 && entry.lifecycleRevision !== requiredLifecycleRevision)
+        (depth > 0 && !sessionIdOnly && entry.lifecycleRevision !== requiredLifecycleRevision)
       ) {
         // The admitted row moving under this turn is transient. An ancestor reset or
         // removal after the spawn is permanent: the receipt names a lost incarnation.
@@ -246,7 +261,31 @@ export async function resolveMemoryAudienceFromEntry(
         );
       }
       record.leases.push(lease);
+      sessionIdOnly = false;
 
+      const parent = depth === 0 ? params.scheduledParent : undefined;
+      if (parent?.sessionKey === sessionKey) {
+        // An in-session run executes on its parent's own row: that row must still be
+        // the linked incarnation, and this occurrence's owner bit replaces the sender's.
+        if (
+          entry.sessionId !== parent.sessionId ||
+          (parent.lifecycleRevision !== undefined &&
+            entry.lifecycleRevision !== parent.lifecycleRevision)
+        ) {
+          return deny(
+            "stale-lineage",
+            `scheduled run session ${sessionKey} was reset or replaced after its automation was linked to it`,
+          );
+        }
+        senderIsOwner = parent.senderIsOwner;
+      } else if (parent && entry.spawnedBy === undefined) {
+        sessionKey = parent.sessionKey;
+        sessionId = parent.sessionId;
+        requiredLifecycleRevision = parent.lifecycleRevision;
+        sessionIdOnly = parent.lifecycleRevision === undefined;
+        senderIsOwner = parent.senderIsOwner;
+        continue;
+      }
       if (entry.spawnedBy !== undefined) {
         // A child inherits only the owner bit and exact parent incarnation stamped
         // by the spawn owner. Its launch turn and copied chat metadata are not grants.

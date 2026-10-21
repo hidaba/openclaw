@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   providerRuntime: undefined as unknown,
   warn: vi.fn(),
   info: vi.fn(),
+  scheduledParent: vi.fn(),
 }));
 
 // mock-isolation: the fake session owner replaces SQLite generation facts.
@@ -23,6 +24,10 @@ vi.mock("../../../config/sessions/session-entry-read-runtime.js", async () => {
 vi.mock("../../../plugins/memory-state.js", () => ({
   resolveLoadedMemoryProviderKind: () => (mocks.providerRuntime ? "native" : undefined),
 }));
+vi.mock("../../../cron/execution-context-registry.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../cron/execution-context-registry.js")>()),
+  readScheduledMemoryParent: mocks.scheduledParent,
+}));
 // mock-isolation: captures the attempt's log levels without emitting them.
 vi.mock("../logger.js", () => ({ log: { warn: mocks.warn, info: mocks.info, debug: vi.fn() } }));
 
@@ -36,7 +41,7 @@ const attempt = {
   agentId: "main",
   sessionKey: CHILD_KEY,
   sessionId: "child-session",
-  senderIsOwner: false,
+  run: { senderIsOwner: false },
   admission: { entry: { sessionId: "child-session", updatedAt: 1 }, storePath: STORE_PATH },
 };
 
@@ -75,7 +80,34 @@ describe("embedded attempt memory audience", () => {
     mocks.providerRuntime = undefined;
     mocks.warn.mockReset();
     mocks.info.mockReset();
+    mocks.scheduledParent.mockReset();
     fakeSessionOwner.reset();
+  });
+
+  it("resolves a scheduled child run from the parent its admitted run is bound to", async () => {
+    mocks.providerRuntime = {};
+    const parent = { sessionId: randomUUID(), chatType: "direct" as const, updatedAt: 1 };
+    const runRow = { sessionId: randomUUID(), updatedAt: 1 };
+    fakeSessionOwner.rows.set(ROOT_KEY, parent);
+    fakeSessionOwner.rows.set(CHILD_KEY, runRow);
+    mocks.scheduledParent.mockReturnValue({
+      sessionKey: ROOT_KEY,
+      sessionId: parent.sessionId,
+      senderIsOwner: true,
+    });
+    const operationalRunInstance = Object.freeze({ instanceId: "instance-1", runId: "run-1" });
+
+    const resolved = await resolveEmbeddedAttemptMemoryAudience({
+      ...attempt,
+      sessionId: runRow.sessionId,
+      run: { admittedRunContext: { operationalRunInstance } },
+      admission: { entry: runRow, storePath: STORE_PATH },
+    });
+
+    expect(mocks.scheduledParent).toHaveBeenCalledWith(operationalRunInstance);
+    expect(resolved.memoryAudience).toEqual({ kind: "owner-private", agentId: "main" });
+    resolved.release();
+    expect(fakeSessionOwner.activeLeases).toBe(0);
   });
 
   it("resolves no audience, lineage, or leases for a legacy memory owner", async () => {
