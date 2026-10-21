@@ -73,6 +73,24 @@ function requestContentFact(item) {
     return undefined;
   }
   const fact = { type };
+  if (type === "function_call_output") {
+    const text =
+      typeof item.output === "string"
+        ? item.output
+        : Array.isArray(item.output)
+          ? item.output
+              .filter((part) => part?.type === "input_text")
+              .map((part) => (typeof part.text === "string" ? part.text : ""))
+              .join("\n")
+          : undefined;
+    return {
+      ...fact,
+      ...(typeof item.call_id === "string" ? { callId: item.call_id.slice(0, 1024) } : {}),
+      ...(text === undefined
+        ? {}
+        : { outputSha256: createHash("sha256").update(text.trim()).digest("hex") }),
+    };
+  }
   if (type !== "input_file" && type !== "input_image") {
     return fact;
   }

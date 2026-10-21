@@ -378,27 +378,37 @@ node --import ./scripts/tsx.mjs scripts/bench-channel-turn.mts \
 Every turn requires the exact echo result in the provider's matching tool output
 as well as the durable channel reply. These timings cover the full channel turn;
 the owner allocation estimate must not be presented as whole-tool allocation.
-Add `--steady-duration-ms 120000 --steady-turns 100` for a measured phase after
-those eleven warm-up turns. It runs until both the duration and minimum turn
-count are met, without pauses between turns. `evidence.json` then includes
-main-isolate promoted MB per completed turn, minor/major GC seconds per minute,
-Gateway event-loop p99, and first-outbound/settled-turn latency distributions.
+Add `--warmup-ms 120000 --steady-duration-ms 480000 --steady-turns 100
+--allocations` for a combined allocation, GC and latency capture. After at least
+eleven warm-up turns and the requested warm-up duration, it runs until both the
+measurement duration and minimum turn count are met. Steady mode starts a new
+conversation every 20 turns and retains previous sessions, bounding provider
+history without invoking compaction. `evidence.json` includes sampled allocated
+MB per completed turn, main-isolate promoted MB per turn, minor/major GC seconds
+per minute, Gateway event-loop p99, and first-outbound/settled-turn distributions.
 The shared diagnostics preload identifies the main isolate before Gateway
-startup; no forced GC or allocation profiler runs inside the measured phase.
-Worker GC is excluded from promotion accounting. The enabled QA-channel plugin
-and real exec tool are exercised; other plugin invocation costs are not measured.
+startup. Sampling uses a 512 KiB interval and includes collected objects; its
+finalization GC occurs after the measurement window. Worker GC is excluded.
+Without `--allocations`, steady mode collects only GC and latency diagnostics.
+The enabled QA-channel plugin and real exec tool are exercised; other plugin
+invocation costs are not measured.
 
 The Gateway mode accepts a current build, or `--entry src/entry.ts` with
 `OPENCLAW_CHANNEL_BENCH_NODE_OPTIONS='--import ./scripts/tsx.mjs --enable-source-maps'`.
-The owner-only mode uses source modules.
-Both modes create fresh synthetic state beneath `TMPDIR` and leave their evidence
-for inspection. Run both rule counts with the same script on each revision.
-For concurrent pairs, use separate sandbox `TMPDIR`s and the same future
-`--start-at <epoch-ms>`; in steady mode this synchronizes the measured phase
-after warm-up, and otherwise synchronizes the first turn/check. A run fails if
-setup misses that time. Hold the sandbox
-measurement lock, swap the assigned 16-core halves between pairs, and compare
-paired differences. Build and fixture preparation stay outside measurement.
+The owner-only mode uses source modules. Both modes create fresh synthetic state
+beneath `TMPDIR` and leave their evidence for inspection.
+
+Run owner profiles without the quiet lock, one process at a time on the sandbox
+preparation cores, interleaving baseline/candidate at least five times per rule
+count. For Gateway pairs, first run `--prepare-only --exec-policy-rules 1000` on
+each revision outside the lock. It prints a prepared output directory and starts
+no servers. Pass that directory to the corresponding measured invocation with
+`--prepared-fixture <output-dir>` and the same rule count. Each fixture is used
+once. Use a common future `--start-at <epoch-ms>` that leaves time for both
+Gateways to start and warm up; a missed start fails the run. Run exactly two
+concurrent pairs under the sandbox measurement lock, swap the assigned 16-core
+halves for pair two, and compare paired differences. Builds and fixture creation
+stay outside the lock; allocation, GC and latency are collected together.
 
 ## Shared writer contention from audit retention
 

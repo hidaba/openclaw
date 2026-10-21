@@ -977,6 +977,51 @@ describe("mock OpenAI response markers", () => {
     });
   });
 
+  it("keeps bounded tool output fingerprints when request bodies are clipped", async (ctx) => {
+    await withControl(
+      ctx,
+      { text: "recorded" },
+      async (baseUrl, { requestLog }) => {
+        await requestResponse(baseUrl, [
+          contentMessage(
+            Array.from({ length: 128 }, (_, index) => ({
+              type: "input_text",
+              text: `historical turn ${index}`,
+            })),
+          ),
+          {
+            type: "function_call_output",
+            call_id: "call_exec_string",
+            output: "  synthetic\nexec-policy\n",
+          },
+          {
+            type: "function_call_output",
+            call_id: "call_exec_array",
+            output: [
+              { type: "input_text", text: "  synthetic" },
+              { type: "input_image", image_url: "ignored-image" },
+              { type: "input_text", text: "exec-policy\n" },
+            ],
+          },
+        ]);
+        const [entry] = parseEntries(await readFile(requestLog, "utf8"));
+        expect(entry.body).toMatchObject({ truncated: true });
+        expect(entry.contentFactsTruncated).toBe(true);
+        expect(entry.contentFacts).toHaveLength(128);
+        expect(entry.contentFacts.slice(-2)).toEqual(
+          ["call_exec_string", "call_exec_array"].map((callId) => ({
+            type: "function_call_output",
+            callId,
+            outputSha256: "842a28a1bd1ba610b321bef184a0484e5d71e3a41e5868b8adc85b68f0b028ab",
+          })),
+        );
+        expect(JSON.stringify(entry.contentFacts)).not.toContain("synthetic");
+      },
+      true,
+      { OPENCLAW_MOCK_OPENAI_REQUEST_LOG_BODY_MAX_BYTES: "64" },
+    );
+  });
+
   it("supports scripted connection drops", async (ctx) => {
     await withControl(
       ctx,

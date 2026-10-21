@@ -2,10 +2,14 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   createWriteStream,
+  closeSync,
+  fstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
+  openSync,
+  readSync,
   writeFileSync,
   renameSync,
 } from "node:fs";
@@ -23,7 +27,12 @@ import { buildCwdBoundHashedArgPattern } from "../src/infra/exec-command-resolut
 import { applyMockOpenAiModelConfig } from "./e2e/lib/fixtures/mock-openai-config.mjs";
 import { stopChild } from "./lib/gateway-bench-child.ts";
 import { getFreePort } from "./lib/gateway-bench-probes.ts";
-import { readGatewayGcTrace, startGatewayDiagnostics } from "./lib/gateway-bench-profile.ts";
+import {
+  controlGatewayProfile,
+  readGatewayGcTrace,
+  readGatewayHeapProfile,
+  startGatewayDiagnostics,
+} from "./lib/gateway-bench-profile.ts";
 import {
   BASE_GATEWAY_BENCH_CONFIG,
   buildGatewayBenchChildArgs,
@@ -44,12 +53,16 @@ const { values } = parseArgs({
     "start-at": { type: "string" },
     "steady-duration-ms": { type: "string" },
     "steady-turns": { type: "string", default: "100" },
+    "warmup-ms": { type: "string" },
+    allocations: { type: "boolean" },
+    "prepare-only": { type: "boolean" },
+    "prepared-fixture": { type: "string" },
     help: { type: "boolean", short: "h" },
   },
 });
 if (values.help) {
   console.log(
-    "Usage: node --expose-gc --import ./scripts/tsx.mjs scripts/bench-channel-turn.mts [--entry dist/entry.js] [--exec-policy-rules 100|1000] [--exec-policy-only --iterations 1000 --samples 5] [--steady-duration-ms 120000 --steady-turns 100] [--start-at <epoch-ms>]\nRuns one cold and ten warmed QA-channel turns. Steady mode then measures at least the requested duration and turn count, with main-isolate GC and loop diagnostics; --start-at synchronizes this measured phase after warm-up. Exec policy mode verifies one real exec call per turn; --exec-policy-only measures the retained final guard without a Gateway.",
+    "Usage: node --expose-gc --import ./scripts/tsx.mjs scripts/bench-channel-turn.mts [--entry dist/entry.js] [--exec-policy-rules 100|1000] [--exec-policy-only --iterations 1000 --samples 5] [--warmup-ms 120000 --steady-duration-ms 480000 --steady-turns 100 --allocations] [--prepare-only | --prepared-fixture <output-dir>] [--start-at <epoch-ms>]\nRuns one cold and ten warmed QA-channel turns. Steady mode measures at least the requested duration and turn count, with main-isolate GC and loop diagnostics; --allocations samples collected objects in that same window. --start-at synchronizes the measured phase after warm-up. --prepare-only creates synthetic state without starting servers. Exec policy mode verifies one real exec call per turn; --exec-policy-only measures the retained final guard without a Gateway.",
   );
   process.exit(0);
 }
@@ -66,12 +79,25 @@ const steadyDurationMs = values["steady-duration-ms"]
   ? parsePositiveInt(values["steady-duration-ms"], 120000, "steady-duration-ms")
   : 0;
 const steadyTurns = parsePositiveInt(values["steady-turns"], 100, "steady-turns");
+const warmupMs = values["warmup-ms"]
+  ? parsePositiveInt(values["warmup-ms"], 120000, "warmup-ms")
+  : 0;
 if (steadyDurationMs && values["exec-policy-only"]) {
   throw new Error("--steady-duration-ms requires the Gateway workload");
 }
-const output = mkdtempSync(path.join(tmpdir(), "sqlmeasure-channel-"));
+if ((values.allocations || warmupMs) && !steadyDurationMs) {
+  throw new Error("--allocations and --warmup-ms require --steady-duration-ms");
+}
+if (values["exec-policy-only"] && (values["prepare-only"] || values["prepared-fixture"])) {
+  throw new Error("Fixture preparation requires the Gateway workload");
+}
+const output = values["prepared-fixture"]
+  ? path.resolve(values["prepared-fixture"])
+  : mkdtempSync(path.join(tmpdir(), "sqlmeasure-channel-"));
 const fixture = path.join(output, "fixture");
-mkdirSync(fixture);
+if (!values["prepared-fixture"]) {
+  mkdirSync(fixture);
+}
 if (values["exec-policy-only"] && ruleCount !== undefined) {
   console.log("OUTPUT", output);
   const result = await measureExecPolicy(ruleCount);
@@ -371,30 +397,40 @@ function execToolResponse(turn: number) {
   };
 }
 
+let providerLogOffset = 0;
 function assertExecToolCompleted(turn: number, marker: string) {
-  const records = readFileSync(path.join(output, "provider-requests.jsonl"), "utf8")
-    .trim()
-    .split("\n");
+  const descriptor = openSync(path.join(output, "provider-requests.jsonl"), "r");
+  let appended: Buffer;
+  try {
+    appended = Buffer.alloc(fstatSync(descriptor).size - providerLogOffset);
+    let consumed = 0;
+    while (consumed < appended.length) {
+      const count = readSync(
+        descriptor,
+        appended,
+        consumed,
+        appended.length - consumed,
+        providerLogOffset + consumed,
+      );
+      if (!count) {
+        throw new Error("Provider request log ended before the completed turn");
+      }
+      consumed += count;
+    }
+    providerLogOffset += consumed;
+  } finally {
+    closeSync(descriptor);
+  }
+  const records = appended.toString("utf8").trim().split("\n");
+  const expectedHash = createHash("sha256").update(marker.trim()).digest("hex");
   for (const record of records) {
     const logged = JSON.parse(record);
-    if (typeof logged.body !== "string") {
-      continue;
-    }
-    const body = JSON.parse(logged.body);
-    for (const item of body.input ?? []) {
-      if (item.type !== "function_call_output" || item.call_id !== `call_exec_${turn}`) {
-        continue;
-      }
-      const result =
-        typeof item.output === "string"
-          ? item.output
-          : Array.isArray(item.output)
-            ? item.output
-                .filter((part: { type?: string }) => part.type === "input_text")
-                .map((part: { text?: string }) => part.text ?? "")
-                .join("\n")
-            : "";
-      if (result.trim() === marker) {
+    for (const fact of logged.contentFacts ?? []) {
+      if (
+        fact.type === "function_call_output" &&
+        fact.callId === `call_exec_${turn}` &&
+        fact.outputSha256 === expectedHash
+      ) {
         return;
       }
     }
@@ -433,9 +469,11 @@ const evidence: {
   execPolicyRules?: number;
   steady?: {
     completedTurns: number;
+    warmupTurns: number;
     diagnostics: Awaited<ReturnType<Awaited<ReturnType<typeof startGatewayDiagnostics>>>>;
     firstOutboundMs: ReturnType<typeof summarizeTurnLatency>;
     settledMs: ReturnType<typeof summarizeTurnLatency>;
+    allocations?: ReturnType<typeof readGatewayHeapProfile> & { allocatedMbPerTurn: number };
     gc?: ReturnType<typeof readGatewayGcTrace> & {
       promotedMbPerTurn: number;
       scavengeSecondsPerMinute: number;
@@ -532,39 +570,67 @@ function publish(file: string, value: unknown) {
 writeFileSync(path.join(output, "phase"), phase);
 console.log("OUTPUT", output);
 try {
-  const port = await benchmarkPort();
-  const mockPort = await benchmarkPort();
+  const manifestPath = path.join(output, "prepared-fixture.json");
+  const prepared:
+    | {
+        port: number;
+        mockPort: number;
+        busPort: number;
+        ruleCount?: number;
+      }
+    | undefined = values["prepared-fixture"]
+    ? JSON.parse(readFileSync(manifestPath, "utf8"))
+    : undefined;
+  if (prepared && prepared.ruleCount !== ruleCount) {
+    throw new Error("Prepared fixture policy size differs from --exec-policy-rules");
+  }
+  const port = prepared?.port ?? (await benchmarkPort());
+  const mockPort = prepared?.mockPort ?? (await benchmarkPort());
+  const busPort = prepared?.busPort ?? (await benchmarkPort());
+  const configPath = path.join(fixture, "openclaw.json");
+  if (!prepared) {
+    const cfg: OpenClawConfig = structuredClone(BASE_GATEWAY_BENCH_CONFIG);
+    cfg.tools = {
+      codeMode: false,
+      ...(ruleCount ? { exec: { host: "gateway", mode: "allowlist" } } : {}),
+    };
+    applyMockOpenAiModelConfig(cfg, { mockPort, modelRef: "openai/gpt-4.1" });
+    cfg.agents = {
+      ...cfg.agents,
+      defaults: { ...cfg.agents?.defaults, heartbeat: { every: "0m" }, skipBootstrap: true },
+    };
+    cfg.agents.entries = { main: { workspace: path.join(fixture, "workspace") } };
+    mkdirSync(path.join(fixture, "workspace"));
+    cfg.plugins = {
+      ...cfg.plugins,
+      entries: {
+        ...cfg.plugins?.entries,
+        "memory-core": { config: { dreaming: { enabled: false } } },
+        "qa-channel": { enabled: true },
+      },
+    };
+    cfg.channels = {
+      "qa-channel": {
+        enabled: true,
+        baseUrl: `http://127.0.0.1:${busPort}`,
+        allowFrom: ["*"],
+        pollTimeoutMs: 100,
+      },
+    };
+    writeGatewayBenchConfig(fixture, cfg, {});
+    if (ruleCount) {
+      const owner = await openExecPolicyFixture(path.join(fixture, "state"), ruleCount);
+      await owner.close();
+    }
+    writeFileSync(manifestPath, JSON.stringify({ port, mockPort, busPort, ruleCount }));
+  }
+  if (values["prepare-only"]) {
+    console.log("PREPARED", output);
+    process.exit(0);
+  }
   evidence.ports = { port, mockPort };
   const state = createQaBusState();
-  bus = await startQaBusServer({ state, port: await benchmarkPort() });
-  const cfg: OpenClawConfig = structuredClone(BASE_GATEWAY_BENCH_CONFIG);
-  cfg.tools = {
-    codeMode: false,
-    ...(ruleCount ? { exec: { host: "gateway", mode: "allowlist" } } : {}),
-  };
-  applyMockOpenAiModelConfig(cfg, { mockPort, modelRef: "openai/gpt-4.1" });
-  cfg.agents = {
-    ...cfg.agents,
-    defaults: { ...cfg.agents?.defaults, skipBootstrap: true },
-  };
-  cfg.agents.entries = { main: { workspace: path.join(fixture, "workspace") } };
-  mkdirSync(path.join(fixture, "workspace"));
-  cfg.plugins = {
-    ...cfg.plugins,
-    entries: {
-      ...cfg.plugins?.entries,
-      "memory-core": { config: { dreaming: { enabled: false } } },
-      "qa-channel": { enabled: true },
-    },
-  };
-  cfg.channels = {
-    "qa-channel": { enabled: true, baseUrl: bus.baseUrl, allowFrom: ["*"], pollTimeoutMs: 100 },
-  };
-  const configPath = writeGatewayBenchConfig(fixture, cfg, {});
-  if (ruleCount) {
-    const owner = await openExecPolicyFixture(path.join(fixture, "state"), ruleCount);
-    await owner.close();
-  }
+  bus = await startQaBusServer({ state, port: busPort });
   const control = path.join(output, "mock-control.json");
   publish("channel-turns.json", messages);
   publish("trace-map.json", traces);
@@ -576,6 +642,7 @@ try {
       MOCK_PORT: String(mockPort),
       MOCK_RESPONSE_CONTROL: control,
       MOCK_REQUEST_LOG: path.join(output, "provider-requests.jsonl"),
+      OPENCLAW_MOCK_OPENAI_REQUEST_LOG_BODY_MAX_BYTES: "4096",
     },
     "mock",
   );
@@ -628,26 +695,45 @@ try {
     await waitForBenchmarkStart();
   }
   let finishDiagnostics: Awaited<ReturnType<typeof startGatewayDiagnostics>> | undefined;
+  const allocationPath = values.allocations ? path.join(output, "steady.heapprofile") : undefined;
+  const samplingIntervalBytes = 512 * 1024;
+  const warmupStarted = performance.now();
+  let measuredTurnIndex = 0;
   let measuredStart = 0;
   for (let i = 0; ; i++) {
-    if (i === 11) {
+    if (i >= 11 && !measuredStart && performance.now() - warmupStarted >= warmupMs) {
       if (!steadyDurationMs) {
         break;
       }
       await waitForBenchmarkStart();
-      finishDiagnostics = await startGatewayDiagnostics(gateway, "channel-steady");
+      if (allocationPath) {
+        await controlGatewayProfile(gateway, "heap", "start", allocationPath, {
+          samplingIntervalBytes,
+        });
+      } else {
+        finishDiagnostics = await startGatewayDiagnostics(gateway, "channel-steady");
+      }
+      measuredTurnIndex = i;
       measuredStart = performance.now();
     }
-    if (i >= 11 + steadyTurns && performance.now() - measuredStart >= steadyDurationMs) {
+    if (
+      measuredStart &&
+      i >= measuredTurnIndex + steadyTurns &&
+      performance.now() - measuredStart >= steadyDurationMs
+    ) {
       break;
     }
     setPhase(
       i === 0
         ? "02.first-turn"
-        : `${i < 11 ? "03.warm" : "04.measured"}-${String(i).padStart(2, "0")}`,
+        : `${measuredStart ? "04.measured" : "03.warm"}-${String(i).padStart(2, "0")}`,
     );
     const turnId = createHash("sha256").update(phase).digest("hex").slice(0, 32);
     const messageId = `sqlmeasure-${i}`;
+    // Keep long captures comparable without compaction or unbounded provider history.
+    const conversationId = steadyDurationMs
+      ? `sqlmeasure-peer-${Math.floor(i / 20)}`
+      : "sqlmeasure-peer";
     traces[turnId] = { phase, turnId };
     messages[messageId] = { phase, turnId };
     publish("trace-map.json", traces);
@@ -676,7 +762,7 @@ try {
     state.addInboundMessage(
       {
         accountId: "default",
-        conversation: { kind: "direct", id: "sqlmeasure-peer" },
+        conversation: { kind: "direct", id: conversationId },
         senderId: "sqlmeasure-user",
         senderName: "SQL measurement",
         text: `Please give a short synthetic status report for measurement turn ${i}.`,
@@ -722,7 +808,7 @@ try {
     }
     evidence.turns.push({
       phase,
-      key: "qa-channel:sqlmeasure-peer",
+      key: `qa-channel:${conversationId}`,
       turnId,
       messageId,
       firstOutboundMs,
@@ -736,14 +822,33 @@ try {
       await delay(1000);
     }
   }
-  if (finishDiagnostics) {
-    const diagnostics = await finishDiagnostics();
-    const measuredTurns = evidence.turns.slice(11);
+  if (measuredStart) {
+    if (allocationPath) {
+      await controlGatewayProfile(gateway, "heap", "stop", allocationPath);
+    }
+    const allocations = allocationPath
+      ? readGatewayHeapProfile(allocationPath, { samplingIntervalBytes })
+      : undefined;
+    const diagnostics = allocations?.diagnostics ?? (await finishDiagnostics?.());
+    if (!diagnostics) {
+      throw new Error("Gateway did not report steady-phase diagnostics");
+    }
+    const measuredTurns = evidence.turns.slice(measuredTurnIndex);
     evidence.steady = {
       completedTurns: measuredTurns.length,
+      warmupTurns: measuredTurnIndex,
       diagnostics,
       firstOutboundMs: summarizeTurnLatency(measuredTurns.map((turn) => turn.firstOutboundMs)),
       settledMs: summarizeTurnLatency(measuredTurns.map((turn) => turn.settledMs)),
+      ...(allocations
+        ? {
+            allocations: {
+              ...allocations,
+              allocatedMbPerTurn:
+                allocations.sampledAllocatedBytes / 1_000_000 / measuredTurns.length,
+            },
+          }
+        : {}),
     };
   }
   setPhase("08.shutdown");
@@ -761,8 +866,8 @@ try {
   if (evidence.steady) {
     const trace = readGatewayGcTrace(
       path.join(output, "gateway.log"),
-      "channel-steady",
-      "diagnostics",
+      allocationPath ?? "channel-steady",
+      allocationPath ? "heap" : "diagnostics",
     );
     const { completedTurns, diagnostics } = evidence.steady;
     evidence.steady.gc = {
