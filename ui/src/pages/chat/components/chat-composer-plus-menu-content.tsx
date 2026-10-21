@@ -209,7 +209,12 @@ function SkillCatalog(props: {
         }
       >
         {props.renderItems(() =>
-          skillRows(resolveComposerSkills(skills(), props.menu.toolOverrides), props.menu),
+          skillRows(
+            props.menu.skillsRead
+              ? resolveComposerSkills(skills(), props.menu.toolOverrides)
+              : props.menu.skills,
+            props.menu,
+          ),
         )}
       </Loading>
     </Errored>

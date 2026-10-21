@@ -158,7 +158,7 @@ function PlusMenuSurface(props: { menu: ChatComposerPlusMenuContentProps }) {
       }
       // Only a changed presentation snapshot recreates owned nodes; actions read live props.
       const { view: selected, menu } = inputs();
-      return current.module.menuItems(menu, selected, () => props.menu);
+      return current.module.menuItems(menu, selected, () => inputs().menu);
     },
     { lazy: true },
   );
