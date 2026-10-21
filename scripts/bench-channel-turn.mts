@@ -989,20 +989,19 @@ try {
       throw new Error("Gateway did not report steady-phase diagnostics");
     }
     const measuredTurns = evidence.turns.slice(measuredTurnIndex);
+    const rpcSamples = rpcProbes?.samples.slice(measuredTurnIndex);
     evidence.steady = {
       completedTurns: measuredTurns.length,
       warmupTurns: measuredTurnIndex,
       diagnostics,
       firstOutboundMs: summarizeTurnLatency(measuredTurns.map((turn) => turn.firstOutboundMs)),
       settledMs: summarizeTurnLatency(measuredTurns.map((turn) => turn.settledMs)),
-      ...(rpcProbes
+      ...(rpcSamples
         ? {
             rpcTails: Object.fromEntries(
-              Object.keys(rpcProbes.samples[0]!).map((method) => [
+              Object.keys(rpcSamples[0]!).map((method) => [
                 method,
-                summarizeTurnLatency(
-                  rpcProbes.samples.slice(measuredTurnIndex).map((sample) => sample[method]!),
-                ),
+                summarizeTurnLatency(rpcSamples.map((sample) => sample[method]!)),
               ]),
             ),
           }
