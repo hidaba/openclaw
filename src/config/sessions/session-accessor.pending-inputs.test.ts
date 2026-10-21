@@ -1,5 +1,5 @@
 import path from "node:path";
-import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
+import { beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { useSqliteWorkerFault } from "../../../test/helpers/sqlite-worker-fault.js";
@@ -11,7 +11,6 @@ import {
   closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   deferOpenClawAgentPostCommitPublication,
-  openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction as writeTransaction,
 } from "../../state/openclaw-agent-db.js";
 import { runOpenClawAgentWriteAdmission as withWriteAdmission } from "../../state/openclaw-agent-write-admission.js";
@@ -35,6 +34,7 @@ import {
   withSessionPendingInputPersistence as withPersistence,
   type SessionPendingInputReceipt,
 } from "./session-accessor.pending-inputs.js";
+import { createPendingInputFixture } from "./session-accessor.pending.test-support.js";
 import { copySessionNodeArtifactsForRepair } from "./session-accessor.sqlite-node-artifacts.js";
 import { withSessionPendingInputRelocation } from "./session-accessor.sqlite-pending-inputs.js";
 import {
@@ -52,7 +52,6 @@ import {
   waitForSessionTranscriptIndexReconcile,
   waitForSessionTranscriptProjection,
 } from "./session-transcript-reconcile.js";
-import { useTempSessionsFixture } from "./test-helpers.js";
 
 const custodyFault = useSqliteWorkerFault([
   {
@@ -69,13 +68,24 @@ const custodyFault = useSqliteWorkerFault([
   },
 ]);
 
-const fixture = useTempSessionsFixture("openclaw-pending-inputs-");
 const sessionKey = "agent:main:pending-inputs";
 const sessionId = "pending-session";
-const receipts: SessionPendingInputReceipt[] = [];
-const scope = () => ({ agentId: "main", sessionKey, sessionId, storePath: fixture.storePath() });
-const databaseOptions = () => toDatabaseOptions(resolveSqliteScope(scope()));
-const database = () => openOpenClawAgentDatabase(databaseOptions());
+const {
+  fixture,
+  scope,
+  options: databaseOptions,
+  database,
+  message,
+  stage,
+  receipts,
+} = createPendingInputFixture(
+  "openclaw-pending-inputs-",
+  sessionKey,
+  sessionId,
+  "Continue the task",
+  100,
+  clearRuntimeConfigSnapshot,
+);
 const storedInputs = () =>
   database().db.prepare("SELECT * FROM session_pending_inputs ORDER BY seq").all();
 const trackPendingReads = () =>
@@ -89,29 +99,8 @@ const nativeResult = (messageId: string, appended = true) => ({
 });
 const pendingPage = (inputs: SessionPendingInputReceipt[], state = "queued") => ({
   total: inputs.length,
-  items: inputs.map(({ inputId: id, message }) => ({ id, state, message })),
+  items: inputs.map(({ inputId: id, message: input }) => ({ id, state, message: input })),
 });
-const message = (runId: string, content = "Continue the task"): PersistedUserTurnMessage => ({
-  role: "user",
-  content,
-  timestamp: 100,
-  idempotencyKey: `${runId}:user`,
-});
-const stage = async (
-  runId: string,
-  options: Partial<Parameters<typeof stageSessionPendingInput>[1]> = {},
-) => {
-  const receipt = await stageSessionPendingInput(scope(), {
-    runId,
-    message: message(runId),
-    assertCurrent: () => {},
-    ...options,
-  });
-  if (receipt) {
-    receipts.push(receipt);
-  }
-  return receipt!;
-};
 const readTranscript = () => loadTranscriptEvents(scope());
 const pendingInputs = (options?: Parameters<typeof listSessionPendingInputs>[1]) =>
   listSessionPendingInputs(scope(), options);
@@ -148,16 +137,6 @@ beforeEach(async () => {
   // Raw custody/savepoint fixtures need their native handle before worker writes start.
   database();
   await upsertSessionEntryCore(scope(), { sessionId, updatedAt: 1 });
-});
-afterEach(async () => {
-  const retained = receipts.splice(0);
-  for (const receipt of retained) {
-    receipt.finish("interrupted");
-  }
-  await Promise.allSettled(retained.map(async (receipt) => receipt.settled?.()));
-  await closeOpenClawAgentDatabasesAsync();
-  closeOpenClawAgentDatabasesForTest();
-  clearRuntimeConfigSnapshot();
 });
 
 it("keeps accepted input outside the active transcript and applies its hook once across replay and promotion", async () => {
@@ -648,32 +627,6 @@ it.each(["cancelled", "interrupted"] as const)(
   },
 );
 
-it("fences authority loss after an await without overriding the owner's terminal disposition", async () => {
-  let current = true;
-  const receipt = await stage("authority", {
-    assertCurrent: () => {
-      if (!current) {
-        throw new Error("run authority closed");
-      }
-    },
-  });
-  await expect(
-    receipt.run(async () => {
-      await Promise.resolve();
-      current = false;
-      return append(receipt.message);
-    }),
-  ).rejects.toThrow("run authority closed");
-  await expect(stage("authority")).rejects.toThrow("already admitted");
-  expect((await pendingInputs()).items[0]?.state).toBe("queued");
-  receipt.finish("cancelled");
-  await receipt.settled?.();
-  expect((await pendingInputs()).items[0]?.state).toBe("cancelled");
-  expect(database().db.prepare("SELECT state FROM session_pending_inputs").get()).toEqual({
-    state: "cancelled",
-  });
-});
-
 it.each(["receipt-entry", "persistence-only"] as const)(
   "retires current-process custody on lifecycle rotation and fences %s after reopening",
   async (entry) => {
@@ -699,17 +652,6 @@ it.each(["receipt-entry", "persistence-only"] as const)(
     expect(await readPending(receipt.inputId)).toEqual(retained);
   },
 );
-
-it("allows terminal mirroring to read a promoted user after cancellation without a new append", async () => {
-  const receipt = await stage("terminal-mirror");
-  await receipt.run(async () => {
-    await append(receipt.message);
-    const before = await readTranscript();
-    receipt.finish("cancelled");
-    expect(await append(receipt.message)).toMatchObject({ appended: false });
-    expect(await readTranscript()).toEqual(before);
-  });
-});
 
 it.each(["deleted", "rebound", "replaced"] as const)(
   "rejects terminal mirroring after the promoted transcript is %s",

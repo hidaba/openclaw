@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
 import { observeSqliteReadSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
@@ -28,6 +30,7 @@ import {
   readSessionTranscriptActivePathEntryRelation as entryRelation,
   readSessionTranscriptBoundedMessageTailPage as readTailPage,
   readSessionTranscriptMessageEventPage as readPage,
+  readSessionTranscriptMessageEvents,
   SessionTranscriptProjectionUnavailableError as ProjectionUnavailableError,
 } from "./session-accessor.sqlite-active-events.js";
 import {
@@ -127,6 +130,18 @@ describe("SQLite active transcript event projection", () => {
     messages: Parameters<typeof persistSessionTranscriptTurn>[1]["messages"],
     target = scope,
   ) => persistSessionTranscriptTurn(target, { messages, touchSessionEntry: false });
+  const userMessage = (id: string, parentId: string | null, content = id) =>
+    transcriptMessage(id, parentId, { role: "user", content, idempotencyKey: `${id}:user` });
+  const admission = (logicalTurnId = "fenced") => {
+    const anchor = readAnchor({ ...scope, entryId: "admitted" });
+    if (!anchor) {
+      throw new Error("missing real admission anchor");
+    }
+    return { ...anchor, logicalTurnId, role: "user" as const };
+  };
+  const accept = () => everyUserInput(scope, "source:user", () => true);
+  const admissionReset = (id: string, parent: string, kept?: string) =>
+    reset(id, parent, "2026-09-14T00:00:00.000Z", kept);
 
   beforeEach(() => {
     queuedSessionWrite.mockReset();
@@ -237,6 +252,66 @@ describe("SQLite active transcript event projection", () => {
           operationSpy.mockRestore();
         }
       }
+    },
+  );
+
+  it("rejects a retained completion source reset before admission", async () => {
+    await persistMessages([userMessage("source", null, "completed child")]);
+    expect(accept()).toBe(true);
+    await admissionReset("before-admission-reset", "source", "source");
+    await persistMessages([userMessage("admitted", "before-admission-reset")]);
+    expect(
+      readSessionTranscriptMessageEvents(scope).some(
+        ({ event }) =>
+          typeof event === "object" && event !== null && "id" in event && event.id === "source",
+      ),
+    ).toBe(true);
+    expect(accept()).toBe(false);
+    expect(withReadFence(admission("recovery"), accept)).toBe(false);
+  });
+
+  it("accepts an admission store path that aliases the same database", async () => {
+    await persistMessages([userMessage("source", null), userMessage("admitted", "source")]);
+    const anchor = admission("aliased-store");
+    const aliasDir = path.join(path.dirname(path.dirname(anchor.storePath)), "agent-alias");
+    fs.symlinkSync(
+      path.dirname(anchor.storePath),
+      aliasDir,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    expect(
+      withReadFence(
+        { ...anchor, storePath: path.join(aliasDir, path.basename(anchor.storePath)) },
+        accept,
+      ),
+    ).toBe(true);
+  });
+
+  it.each([false, true])(
+    "keeps pre-fence control facts through a later reset (human=%s)",
+    async (human) => {
+      await persistMessages([
+        userMessage("source", null, "result"),
+        ...(human ? [userMessage("human", "source", "new work")] : []),
+        userMessage("admitted", human ? "human" : "source"),
+      ]);
+      const anchor = admission();
+      await admissionReset("later-reset", "admitted");
+      await persistMessages([
+        transcriptMessage("after-reset", "later-reset", { role: "user", content: "fresh" }),
+      ]);
+      expect(accept()).toBe(false);
+      const seen: unknown[] = [];
+      const result = withReadFence(anchor, () =>
+        everyUserInput(scope, "source:user", (message) => {
+          seen.push(message);
+          return (message as { idempotencyKey?: string }).idempotencyKey !== "human:user";
+        }),
+      );
+      expect(result).toBe(!human);
+      expect(
+        seen.map((message) => (message as { idempotencyKey?: string }).idempotencyKey),
+      ).toEqual(human ? ["source:user", "human:user"] : ["source:user"]);
     },
   );
 

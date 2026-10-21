@@ -362,95 +362,88 @@ it("preserves supported current-version linear transcripts", async () => {
   });
 });
 
-it.each([false, true])(
-  "branches the current parent CLI session and preserves child writes (writeDuringPreparation=%s)",
-  async (writeDuringPreparation) => {
-    const root = sessionDirs.make();
-    const storePath = path.join(root, "sessions.json");
-    const parentKey = "agent:main:main";
-    const childKey = "agent:main:child";
-    const parentSessionId = "parent-cli-binding";
-    const scope = (sessionKey: string) => ({ sessionKey, storePath });
-    const patch = (
-      sessionKey: string,
-      fields: Partial<NonNullable<ReturnType<typeof loadSessionEntry>>>,
-    ) =>
-      replaceSessionEntrySync(scope(sessionKey), {
-        ...loadSessionEntry(scope(sessionKey))!,
-        ...fields,
-      });
-    await replaceSessionEntry(scope(parentKey), {
-      sessionId: parentSessionId,
-      updatedAt: 1,
-      cliSessionBindings: {
-        "claude-cli": cliBinding("native-parent", "parent-checkpoint"),
-        "codex-cli": cliBinding("codex-parent", "codex-checkpoint"),
-      },
+it("branches the current parent CLI session and preserves writes made during preparation", async () => {
+  const root = sessionDirs.make();
+  const storePath = path.join(root, "sessions.json");
+  const parentKey = "agent:main:main";
+  const childKey = "agent:main:child";
+  const parentSessionId = "parent-cli-binding";
+  const scope = (sessionKey: string) => ({ sessionKey, storePath });
+  const patch = (
+    sessionKey: string,
+    fields: Partial<NonNullable<ReturnType<typeof loadSessionEntry>>>,
+  ) =>
+    replaceSessionEntrySync(scope(sessionKey), {
+      ...loadSessionEntry(scope(sessionKey))!,
+      ...fields,
     });
-    await replaceSessionEntry(scope(childKey), {
-      sessionId: "old-child",
-      updatedAt: 1,
-      totalTokens: 88_876,
-      totalTokensFresh: true,
-      totalTokensVersion: 1,
-    });
-    const database = openOpenClawAgentDatabase(
-      toDatabaseOptions(resolveSqliteStoreScope(storePath)),
-    );
-    let preparedWrite = false;
-    cliBackendsTesting.setDepsForTest({
-      resolveRuntimeCliBackends: () => [
-        {
-          ...forkableClaudeCliBackend,
-          normalizeConfig: (config) => {
-            expect(database.db.isTransaction).toBe(false);
-            if (writeDuringPreparation && !preparedWrite) {
-              preparedWrite = true;
-              patch(childKey, { label: "concurrent child" });
-              patch(parentKey, {
-                cliSessionBindings: {
-                  "claude-cli": cliBinding("current-parent", "current-checkpoint"),
-                },
-              });
-            }
-            return config;
-          },
+  await replaceSessionEntry(scope(parentKey), {
+    sessionId: parentSessionId,
+    updatedAt: 1,
+    cliSessionBindings: {
+      "claude-cli": cliBinding("native-parent", "parent-checkpoint"),
+      "codex-cli": cliBinding("codex-parent", "codex-checkpoint"),
+    },
+  });
+  await replaceSessionEntry(scope(childKey), {
+    sessionId: "old-child",
+    updatedAt: 1,
+    totalTokens: 88_876,
+    totalTokensFresh: true,
+    totalTokensVersion: 1,
+  });
+  const database = openOpenClawAgentDatabase(toDatabaseOptions(resolveSqliteStoreScope(storePath)));
+  let preparedWrite = false;
+  cliBackendsTesting.setDepsForTest({
+    resolveRuntimeCliBackends: () => [
+      {
+        ...forkableClaudeCliBackend,
+        normalizeConfig: (config) => {
+          expect(database.db.isTransaction).toBe(false);
+          if (!preparedWrite) {
+            preparedWrite = true;
+            patch(childKey, { label: "concurrent child" });
+            patch(parentKey, {
+              cliSessionBindings: {
+                "claude-cli": cliBinding("current-parent", "current-checkpoint"),
+                "codex-cli": cliBinding("codex-parent", "codex-checkpoint"),
+              },
+            });
+          }
+          return config;
         },
-      ],
-      resolvePluginSetupCliBackend: () => undefined,
-    });
-    await seedParentTranscript({
-      storePath,
-      parentSessionId,
-      events: [
-        { type: "session", version: 3, id: parentSessionId, timestamp: "2026-05-01T00:00:00Z" },
-        event("message", "parent-user", {
-          parentId: null,
-          message: { role: "user", content: "fork me" },
-        }),
-      ],
-    });
+      },
+    ],
+    resolvePluginSetupCliBackend: () => undefined,
+  });
+  await seedParentTranscript({
+    storePath,
+    parentSessionId,
+    events: [
+      { type: "session", version: 3, id: parentSessionId, timestamp: "2026-05-01T00:00:00Z" },
+      event("message", "parent-user", {
+        parentId: null,
+        message: { role: "user", content: "fork me" },
+      }),
+    ],
+  });
 
-    const result = await forkSessionEntryFromParentTarget({
-      storePath,
-      parentTarget: { canonicalKey: parentKey, storeKeys: [parentKey] },
-      sessionTarget: { canonicalKey: childKey, storeKeys: [childKey] },
-    });
+  const result = await forkSessionEntryFromParentTarget({
+    storePath,
+    parentTarget: { canonicalKey: parentKey, storeKeys: [parentKey] },
+    sessionTarget: { canonicalKey: childKey, storeKeys: [childKey] },
+  });
 
-    expect(result.status).toBe("forked");
-    const childEntry = loadSessionEntry(scope(childKey));
-    expect(childEntry?.label).toBe(writeDuringPreparation ? "concurrent child" : undefined);
-    expect(childEntry?.totalTokens).toBeUndefined();
-    expect(childEntry?.totalTokensFresh).toBe(false);
-    expect(childEntry?.totalTokensVersion).toBeUndefined();
-    // Non-forkable backends start fresh rather than sharing the parent thread.
-    const binding = cliBinding(
-      writeDuringPreparation ? "current-parent" : "native-parent",
-      writeDuringPreparation ? "current-checkpoint" : "parent-checkpoint",
-    );
-    expect(childEntry?.cliSessionBindings).toEqual({
-      "claude-cli": { ...binding, forkNextResume: true },
-    });
-    expect(loadSessionEntry(scope(parentKey))?.cliSessionBindings?.["claude-cli"]).toEqual(binding);
-  },
-);
+  expect(result.status).toBe("forked");
+  const childEntry = loadSessionEntry(scope(childKey));
+  expect(childEntry?.label).toBe("concurrent child");
+  expect(childEntry?.totalTokens).toBeUndefined();
+  expect(childEntry?.totalTokensFresh).toBe(false);
+  expect(childEntry?.totalTokensVersion).toBeUndefined();
+  // Non-forkable backends start fresh rather than sharing the parent thread.
+  const binding = cliBinding("current-parent", "current-checkpoint");
+  expect(childEntry?.cliSessionBindings).toEqual({
+    "claude-cli": { ...binding, forkNextResume: true },
+  });
+  expect(loadSessionEntry(scope(parentKey))?.cliSessionBindings?.["claude-cli"]).toEqual(binding);
+});

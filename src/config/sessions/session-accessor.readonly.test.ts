@@ -29,7 +29,9 @@ import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../runtime
 import {
   listSessionEntriesCore,
   listSessionEntriesReadOnly,
+  loadExactSessionEntry,
   loadExactSessionEntryReadOnly,
+  loadSessionEntry,
   readSessionTranscriptWatermark,
   readSessionIdentityEvidenceBatch,
   replaceSessionEntrySync,
@@ -108,9 +110,16 @@ describe("session accessor readonly listing", () => {
       { sessionId: "mixed-session", updatedAt: 10, skillsSnapshot },
     );
     const entry = loadExactSessionEntryReadOnly({ ...scope, sessionKey: mixedKey })?.entry;
+    const aliasedScope = { ...scope, sessionKey: mixedKey.replace("agent:main", "AGENT:MAIN") };
 
     expect(entry?.sessionId).toBe("mixed-session");
     expect(entry?.skillsSnapshot).toEqual(skillsSnapshot);
+    expect(loadSessionEntry(aliasedScope)).toEqual(entry);
+    expect(loadExactSessionEntry(aliasedScope)).toBeUndefined();
+    expect(loadExactSessionEntry({ ...scope, sessionKey: mixedKey })).toEqual({
+      sessionKey: mixedKey,
+      entry,
+    });
     // Exact reads never resolve folded aliases or canonical-key alternatives.
     expect(
       loadExactSessionEntryReadOnly({ ...scope, sessionKey: mixedKey.toLowerCase() }),

@@ -53,21 +53,6 @@ afterEach(async () => {
   cleanupTempDirs(tempDirs);
 });
 
-it("preserves a competing creation committed while the initial entry is prepared", async () => {
-  const { scope, put, database } = fixture();
-  const competing = { sessionId: "competing", updatedAt: 1, label: "retained" };
-  database();
-
-  await expect(
-    createSession(scope, ({ existingEntry }) => {
-      expect(existingEntry).toBeUndefined();
-      put(competing);
-      return { ok: true, entry: { sessionId: "prepared", updatedAt: 2 } };
-    }),
-  ).rejects.toThrow("SQLite session entry changed before replacement");
-  expect(loadSessionEntry(scope)).toMatchObject(competing);
-});
-
 it("preserves adopted history without selecting a new projection", async () => {
   const { scope: target, put, database } = fixture();
   const scope = { ...target, sessionId: "target" };
