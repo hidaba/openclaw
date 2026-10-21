@@ -11,7 +11,12 @@ export async function readManagedSandboxGitState(params: {
   sandbox: SandboxContext;
   signal?: AbortSignal;
   assertCurrent: () => void;
-}): Promise<{ head: string; dirty: boolean; partiallyStaged: boolean }> {
+}): Promise<{
+  head: string;
+  dirty: boolean;
+  // Paths whose index differs from both HEAD and the working file; unmerged paths have no index object.
+  partiallyStaged: { path: string; indexObject?: string }[];
+}> {
   const { sandbox, signal, assertCurrent } = params;
   assertCurrent();
   const observed = await sandbox.backend!.runShellCommand({
@@ -20,16 +25,36 @@ export async function readManagedSandboxGitState(params: {
     signal,
   });
   assertCurrent();
-  const [head, ...status] = observed.stdout.toString().trim().split("\n");
-  if (observed.code !== 0 || !head || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(head)) {
+  const output = observed.stdout.toString();
+  const head = output.slice(0, output.indexOf("\n"));
+  if (observed.code !== 0 || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(head)) {
     throw new Error("The sandbox Git head could not be verified; existing work was preserved.");
   }
-  return {
-    head,
-    dirty: status.length > 0,
-    // Porcelain quotes unusual paths; its first two columns remain index/worktree status.
-    partiallyStaged: status.some((line) => /^[^ ?][^ ]/u.test(line)),
-  };
+  const records = output.slice(head.length + 1).split("\0");
+  const partiallyStaged: { path: string; indexObject?: string }[] = [];
+  let dirty = false;
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index]!;
+    if (!record) {
+      continue;
+    }
+    dirty = true;
+    // Porcelain v2: "1 XY sub mH mI mW hH hI path", "2 … hI Xscore path" + NUL origPath, "u XY …".
+    const fields = record.split(" ");
+    const [kind, xy] = fields;
+    if (kind === "2") {
+      index += 1;
+    }
+    if (kind === "u") {
+      partiallyStaged.push({ path: fields.slice(10).join(" ") });
+    } else if ((kind === "1" || kind === "2") && xy?.[0] !== "." && xy?.[1] !== ".") {
+      partiallyStaged.push({
+        path: fields.slice(kind === "1" ? 8 : 9).join(" "),
+        indexObject: fields[7],
+      });
+    }
+  }
+  return { head, dirty, partiallyStaged };
 }
 
 export async function prepareManagedWorkspaceReviewBase(params: {
@@ -133,7 +158,7 @@ const READ_WORKSPACE_HEAD =
   REVIEW_BASE_GIT +
   String.raw`
 git rev-parse --verify HEAD
-git status --porcelain=v1 --untracked-files=all
+git status --porcelain=v2 -z --untracked-files=all
 `;
 
 const FIND_REVIEW_BASE =

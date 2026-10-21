@@ -113,6 +113,9 @@ export async function integrateManagedWorkspaceSource(
   const initialImport = params.source?.initial === true;
   let guestHead: string | undefined;
   let guestDirty = false;
+  let pendingStaged: { path: string; indexObject?: string }[] = [];
+  const stagedError =
+    "Commit the staged changes in files that also have unstaged changes before refreshing this PR; its existing files and index were preserved.";
   if (params.source) {
     if (params.source.resuming) {
       // An accepted transfer may retain a paused runtime. Recover it through its
@@ -126,12 +129,12 @@ export async function integrateManagedWorkspaceSource(
     });
     guestHead = observed.head;
     guestDirty = observed.dirty;
-    // Only admitting a new source needs this check. A resumed integration passed it,
-    // and its own conflict return leaves refreshed imported files staged at their prior bytes.
-    if (!initialImport && !params.source.resuming && observed.partiallyStaged) {
-      throw new Error(
-        "Commit the staged changes in files that also have unstaged changes before refreshing this PR; its existing files and index were preserved.",
-      );
+    if (!initialImport && observed.partiallyStaged.length) {
+      if (!params.source.resuming) {
+        throw new Error(stagedError);
+      }
+      // Checked against the pending integration below.
+      pendingStaged = observed.partiallyStaged;
     }
   }
   let previousBase: string | undefined;
@@ -206,6 +209,17 @@ export async function integrateManagedWorkspaceSource(
             );
           }
           const continuingIntegration = Boolean(baseCommit);
+          // A pending integration rewrote working files but not the guest index, so a refreshed file
+          // stays staged at its pre-refresh bytes, which HEAD records until the merge completes.
+          // Any other staged-only version is guest work that completion would replace.
+          for (const entry of pendingStaged) {
+            const recorded = continuingIntegration
+              ? await probe(["rev-parse", "--verify", "--quiet", `HEAD:${entry.path}`])
+              : undefined;
+            if (!entry.indexObject || recorded?.stdout.trim() !== entry.indexObject) {
+              throw new Error(stagedError);
+            }
+          }
           if (!baseCommit) {
             if (params.baseCommit) {
               throw new Error(

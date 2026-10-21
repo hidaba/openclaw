@@ -94,6 +94,19 @@ describe("imported PR source refresh", () => {
         path.join(f.projection, "artifact.txt"),
         "remote PR change\nguest saved conflict\n",
       );
+      // The pending refresh left the imported file staged at its pre-refresh bytes.
+      expect(await f.guestGit("status", "--porcelain", "pr.txt")).toBe("AM pr.txt");
+      const refreshEntry = await f.guestGit("rev-parse", ":pr.txt");
+      // Staging a new version while the refresh is pending is guest work, not refresh output.
+      const refreshed = await fs.readFile(path.join(f.projection, "pr.txt"));
+      await fs.writeFile(path.join(f.projection, "pr.txt"), "staged-only guest work\n");
+      await f.guestGit("add", "pr.txt");
+      await fs.writeFile(path.join(f.projection, "pr.txt"), refreshed);
+      await expect(
+        f.invoke({ conflictsResolved: true, expectedHeadCommit: acceptedHead }),
+      ).rejects.toThrow("Commit the staged changes");
+      expect(await f.guestGit("show", ":pr.txt")).toBe("staged-only guest work");
+      await f.guestGit("update-index", "--cacheinfo", `100644,${refreshEntry},pr.txt`);
       expect(
         await f.invoke({ conflictsResolved: true, expectedHeadCommit: acceptedHead }),
       ).toMatchObject({
