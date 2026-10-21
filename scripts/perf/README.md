@@ -1140,6 +1140,25 @@ These background turns contribute resource cost but are excluded
 from the foreground-turn denominator. The twenty foreground child sessions are
 direct `agent` calls.
 
+Add `--stress-session-store` to make each Code Mode cell load the preceding
+turn's value and commit a new value. The cell fails on a replay mismatch, including
+when a value disappears behind the bounded hydration window. Combine this with
+seeded long histories and `--reset-every-rounds 0` to measure repeated store
+replay on the same sessions. `--transcript-hydration-counts` observes the source
+worker reader and writes `HYDRATION_COUNT` records in the Gateway log with the
+session, full/bounded mode, decoded bytes/events, and caller stack; it never logs
+transcript content. Bounded reads return worker-decoded objects and therefore
+report zero main-thread decoded bytes. The observer requires `--entry src/entry.ts`
+and fails if the instrumented source shape changes.
+
+For the isolated store owner, alternate source roots with
+`node --expose-gc --import ./scripts/tsx.mjs --import ./scripts/perf/transcript-hydration-counts-preload.ts scripts/perf/code-mode-store-measure.ts /path/to/source`.
+This seeds a store value before 256 large messages, then binds six fresh runs
+with bounded SessionManagers. It verifies the value twice per run and reports
+first-load and same-run cached latency plus sampled main-thread allocation
+(including collected objects). Keep the first cold sample separate from the five
+warm samples, and use at least five alternating invocations per revision.
+
 `--stress-subagents` requires `memory-soak --stress-tools`. Each cohort adds one
 dedicated parent that uses Code Mode to call the real `sessions_spawn` tool with
 an isolated native child and `completionTarget: "parent"`, then calls the direct

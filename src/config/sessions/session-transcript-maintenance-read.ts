@@ -15,10 +15,16 @@ import { resolveTranscriptMessageAppendParent } from "./session-accessor.sqlite-
 import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
 import type { SessionTranscriptRuntimeTarget } from "./session-accessor.types.js";
 import { readWithCanonicalSessionAdmission } from "./session-canonical-key.js";
+import { assertSessionTranscriptHot } from "./session-cold-storage-state.js";
 import type {
   SessionTranscriptMaintenanceRead,
   SessionTranscriptMaintenanceFacts,
 } from "./session-transcript-hydration.types.js";
+import { resolveSqliteSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
+import {
+  readTranscriptReportEvent,
+  readTranscriptReportNavigation,
+} from "./session-transcript-report-read.js";
 import { transcriptEventJsonSql } from "./transcript-payload.js";
 
 export function readSessionTranscriptMaintenance(
@@ -26,6 +32,25 @@ export function readSessionTranscriptMaintenance(
   target: SessionTranscriptRuntimeTarget,
   request: SessionTranscriptMaintenanceRead,
 ): SessionTranscriptMaintenanceFacts {
+  if (request.operation === "custom-branch") {
+    return readWithCanonicalSessionAdmission(database, () =>
+      runSqliteReadSnapshotSync(database.db, () => {
+        const fence = resolveSqliteSessionTranscriptReadFence({ database, ...target });
+        assertSessionTranscriptHot(database.db, target.sessionId);
+        const navigation = readTranscriptReportNavigation(
+          database,
+          target.sessionId,
+          fence?.beforeRawSeq,
+        );
+        return {
+          kind: "transcript-maintenance" as const,
+          events: navigation.readCustomBranch(request.leafEntryId, request.customType, (seq) =>
+            readTranscriptReportEvent(database, target.sessionId, seq),
+          ),
+        };
+      }),
+    );
+  }
   if (request.operation === "previous") {
     return {
       kind: "transcript-maintenance",
