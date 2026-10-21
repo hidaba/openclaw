@@ -1991,6 +1991,16 @@ Use `--count-work` in a separate process for exact comparator, pin, activity, an
 key-normalization call counts. That pass enables coverage before loading the owner
 and excludes performance measurements. Run the same script on both revisions.
 
+For long RPC allocation windows, use `--warmup-operations` to warm fewer requests
+than the measured `--operations` count. For example, `--scenario sessions.list
+--warmup-operations 25000 --operations 100000 --rounds 1 --allocations --trace-gc
+--diagnostics --heap-sampling-interval 524288` keeps one uninterrupted measured
+window and bounds profile size. Record actual elapsed durations; operation counts
+are not time guarantees. Warmup defaults to the measured operation count. Heap
+sampling defaults remain 32 KiB for RPC/turn rounds and 512 KiB for memory soaks.
+Stopping a heap sample forces GC, so use one long round for natural-GC acceptance
+rather than aggregating short rounds separated by sample stops.
+
 Turn scenarios use `--runs` (forced
 to one for `chat.send`); `--chunks` controls streamed answer size. `plugins.reload`
 defaults to one operation per round; other RPC scenarios default to 100. Count

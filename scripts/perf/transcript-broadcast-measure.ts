@@ -79,6 +79,8 @@ const { values } = parseArgs({
     scenario: { type: "string", default: "transcript-broadcast" },
     revision: { type: "string" },
     operations: { type: "string" },
+    "warmup-operations": { type: "string" },
+    "heap-sampling-interval": { type: "string" },
     "rpc-concurrency": { type: "string", default: "1" },
     "reconnect-stagger-ms": { type: "string", default: "125" },
     limit: { type: "string", default: "100" },
@@ -226,6 +228,16 @@ const operations = integer(
     (scenario === "plugins.reload" ? "1" : scenario === "reconnect" ? values.clients : "100"),
   "--operations",
 );
+const warmupOperations = integer(
+  values["warmup-operations"] ?? String(operations),
+  "--warmup-operations",
+);
+if (values["warmup-operations"] !== undefined && turnScenario) {
+  throw new Error("--warmup-operations requires an RPC scenario");
+}
+const heapSamplingIntervalBytes = values["heap-sampling-interval"]
+  ? integer(values["heap-sampling-interval"], "--heap-sampling-interval")
+  : undefined;
 const limit = integer(values.limit, "--limit");
 const rowMode = values["row-mode"];
 if (!["compact", "sidebar", "dashboard"].includes(rowMode)) {
@@ -3098,7 +3110,7 @@ try {
   }
   console.log("PHASE subscribed-and-reset");
   let idleTurnCohorts: Awaited<ReturnType<typeof runRound>>[] = [];
-  const runScenario = async (measuredRound?: number) => {
+  const runScenario = async (measuredRound?: number, operationCount = operations) => {
     if (idleScenario) {
       idleTurnCohorts = [];
       for (let offset = 0; offset < keys.length; offset += runCount) {
@@ -3115,8 +3127,8 @@ try {
       }
       return streamStart;
     }
-    for (let offset = 0; offset < operations; offset += clientCount) {
-      const batchCount = Math.min(clientCount, operations - offset);
+    for (let offset = 0; offset < operationCount; offset += clientCount) {
+      const batchCount = Math.min(clientCount, operationCount - offset);
       const batchStarted = performance.now();
       const reconnectStarted: number[] = [];
       const slots = clients.slice(0, batchCount).entries();
@@ -3228,7 +3240,7 @@ try {
       break;
     }
     const started = performance.now();
-    await runScenario();
+    await runScenario(undefined, warmupOperations);
     await drainEvents();
     if (!soakScenario) {
       break;
@@ -3265,7 +3277,7 @@ try {
       ? path.join(output, "allocation-soak.heapprofile")
       : undefined;
   // A twenty-minute churn profile needs coarser sampling to bound native records and JSON export.
-  const soakSamplingIntervalBytes = 512 * 1024;
+  const soakSamplingIntervalBytes = heapSamplingIntervalBytes ?? 512 * 1024;
   if (soakAllocationPath) {
     // Reading or stopping a V8 sampling profile forces GC; keep one window for the entire soak.
     await controlGatewayProfile(gateway, "heap", "start", soakAllocationPath, {
@@ -3644,6 +3656,7 @@ try {
             path.join(output, `allocation-${round}.heapprofile`),
             turnScenario ? sessionCount : operations,
             measuredWorkload,
+            { samplingIntervalBytes: heapSamplingIntervalBytes },
           )
         : undefined;
     if (!values.allocations || soakScenario) {
@@ -4127,6 +4140,7 @@ try {
     verifyHistoryReplay,
     revision: values.revision ?? null,
     operationsPerRound: turnScenario ? sessionCount : operations,
+    warmupOperations: turnScenario ? undefined : warmupOperations,
     rpcConcurrency,
     reconnectStaggerMs,
     rpcLatencyScope:
