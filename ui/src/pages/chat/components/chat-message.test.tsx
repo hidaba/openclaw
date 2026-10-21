@@ -2229,17 +2229,10 @@ describe("grouped chat rendering", () => {
     await vi.waitFor(() => expect(container.querySelector(".chat-message-image")).not.toBeNull());
     expect(fetchMock).toHaveBeenCalledWith(thumbnailUrl, expect.anything());
 
-    expect(container.querySelectorAll(".chat-image-action")).toHaveLength(1);
-    requireElement(".chat-image-action", HTMLButtonElement, container).click();
-    await waitForSolid(() =>
-      expect(
-        container.querySelector(".chat-image-actions .oc-menu")!.matches(":popover-open"),
-      ).toBe(true),
-    );
     // Own the delayed download cleanup before restoring the URL globals.
     vi.useFakeTimers();
     requireElement(
-      '.chat-image-actions [data-value="download"]',
+      '.chat-image-actions button[aria-label="Download image"]',
       HTMLButtonElement,
       container,
     ).click();

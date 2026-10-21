@@ -61,15 +61,12 @@ export function AssistantAttachmentStatusCard(
           <AttachmentFileIcon
             filename={props.label}
             mimeType={props.mimeType}
-            mode="large-placeholder"
+            mode="preview-with-favicon"
             unavailable={unavailable()}
           />
           <span class="chat-assistant-attachment-card__details">
             <span
-              class={[
-                "chat-assistant-attachment-card__title",
-                { "chat-assistant-attachment-card__title--unavailable": unavailable() },
-              ]}
+              class="chat-assistant-attachment-card__title"
               title={props.path ?? props.label}
               tabindex={props.path ? 0 : undefined}
             >
