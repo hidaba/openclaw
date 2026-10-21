@@ -1,7 +1,7 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { resolveBundledPluginSources } from "./bundled-sources.js";
 import { listChannelCatalogEntries } from "./channel-catalog-registry.js";
 import { resolvePluginConfigContractsById } from "./config-contracts.js";
@@ -34,13 +34,13 @@ vi.mock("../logging/subsystem.js", async () => {
   };
 });
 
-const tempRoots: string[] = [];
-
-function createTempRoot(): string {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-manifest-metadata-"));
-  tempRoots.push(root);
-  return root;
-}
+const tempRoots = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(() => {
+    vi.restoreAllMocks();
+    clearPluginMetadataLifecycleCaches();
+    cleanup();
+  }),
+);
 
 function writeJson(filePath: string, value: unknown): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -48,7 +48,7 @@ function writeJson(filePath: string, value: unknown): void {
 }
 
 function createPluginFixture(pluginName: string, contents?: unknown, bundled?: string) {
-  const root = createTempRoot();
+  const root = tempRoots.make("openclaw-manifest-metadata-");
   const home = path.join(root, "home");
   const bundledRoot = path.join(root, bundled ?? "empty-bundled");
   const pluginDir = path.join(
@@ -86,26 +86,9 @@ function warningMessagesForPath(manifestPath: string): string[] {
     .filter((message) => message.includes(manifestPath));
 }
 
-function expectPluginAbsentAcrossTwoScans(pluginDir: string, env: NodeJS.ProcessEnv): void {
-  for (const records of [
-    listOpenClawPluginManifestMetadata(env),
-    listOpenClawPluginManifestMetadata(env),
-  ]) {
-    expect(records.find((record) => record.pluginDir === pluginDir)).toBeUndefined();
-  }
-}
-
 describe("listOpenClawPluginManifestMetadata", () => {
   beforeEach(() => {
     manifestScanWarn.mockClear();
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-    clearPluginMetadataLifecycleCaches();
-    for (const root of tempRoots.splice(0)) {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
   });
 
   it.each(["manifest", "channel", "source", "contract"] as const)(
@@ -288,7 +271,11 @@ describe("listOpenClawPluginManifestMetadata", () => {
       const result = loadPluginManifest(pluginDir, false);
       assert(!result.ok);
     }
-    expectPluginAbsentAcrossTwoScans(pluginDir, env);
+    for (let scan = 0; scan < 2; scan++) {
+      expect(
+        listOpenClawPluginManifestMetadata(env).find((record) => record.pluginDir === pluginDir),
+      ).toBeUndefined();
+    }
     expect(warningMessagesForPath(manifestPath)).toEqual(
       kind ? [`Ignoring ${kind} plugin manifest at ${manifestPath}: ${error}`] : [],
     );

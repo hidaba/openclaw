@@ -274,21 +274,16 @@ describe("doctor-contract-registry selection", () => {
       },
     };
 
-    expect(harness.registry.collectRelevantDoctorPluginIds(raw)).toEqual([
-      "discord",
-      "memory-wiki",
-      "openai",
-    ]);
+    const allIds = ["discord", "memory-wiki", "openai"];
+    expect(harness.registry.collectRelevantDoctorPluginIds(raw)).toEqual(allIds);
     expect(
       harness.registry.collectDoctorConfigRepairPluginIds(raw, [
         ["channels", "modelByChannel", "discord", "guild"],
       ]),
     ).toStrictEqual(["openai"]);
-    expect(harness.registry.collectDoctorConfigRepairPluginIds(raw, [["channels"]])).toEqual([
-      "discord",
-      "memory-wiki",
-      "openai",
-    ]);
+    expect(harness.registry.collectDoctorConfigRepairPluginIds(raw, [["channels"]])).toEqual(
+      allIds,
+    );
   });
 
   it("collects provider ids from media model entries", () => {
@@ -306,16 +301,13 @@ describe("doctor-contract-registry selection", () => {
       },
     };
 
-    expect(harness.registry.collectRelevantDoctorPluginIds(raw)).toEqual([
-      "gemini",
-      "openai",
-      "xai",
-    ]);
+    const expected = ["gemini", "openai", "xai"];
+    expect(harness.registry.collectRelevantDoctorPluginIds(raw)).toEqual(expected);
     expect(
       harness.registry.collectDoctorConfigRepairPluginIds(raw, [
         ["tools", "media", "models", "2", "model"],
       ]),
-    ).toEqual(["gemini", "openai", "xai"]);
+    ).toEqual(expected);
   });
 
   it("loads a plugin doctor contract when scoped by a contributed provider alias", () => {

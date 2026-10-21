@@ -1,107 +1,45 @@
-// Covers model and provider metadata declared by plugin manifests.
-import fs from "node:fs";
-import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { loadPluginManifest } from "./manifest.js";
-import { cleanupTrackedTempDirs, makeTrackedTempDir } from "./test-helpers/fs-fixtures.js";
-
-const tempDirs: string[] = [];
-
-function makePluginDir() {
-  return makeTrackedTempDir("openclaw-manifest-model-catalog", tempDirs);
-}
-
-function writeManifest(dir: string, manifest: Record<string, unknown>) {
-  fs.writeFileSync(path.join(dir, "openclaw.plugin.json"), JSON.stringify(manifest), "utf8");
-}
+import { describe, expect, it } from "vitest";
+import { useManifestLoader } from "./manifest-metadata.test-support.js";
+const load = useManifestLoader({}, { mode: 0o755 });
+const cli = { id: "anthropic", providers: ["anthropic"], cliBackends: ["claude-cli"] };
 
 describe("plugin manifest model catalog", () => {
-  afterEach(() => {
-    cleanupTrackedTempDirs(tempDirs);
-  });
-
   it.each([true, false])("loads models.dev opt-in only with provider ownership: %s", (owned) => {
-    const dir = makePluginDir();
-    writeManifest(dir, {
+    const manifest = load({
       id: "example-plugin",
       providers: owned ? [" Example "] : [],
       modelCatalog: { modelsDev: { " EXAMPLE ": " upstream-id ", other: "other-source" } },
-      configSchema: { type: "object" },
     });
-
-    const result = loadPluginManifest(dir);
-    if (!result.ok) {
-      throw new Error(result.error);
-    }
-    expect(result.manifest.modelCatalog).toEqual(
+    expect(manifest.modelCatalog).toEqual(
       owned ? { modelsDev: { example: "upstream-id" } } : undefined,
     );
   });
 
   it("allows cli backends to own manifest model catalog rows", () => {
-    const dir = makePluginDir();
-    writeManifest(dir, {
-      id: "anthropic",
-      providers: ["anthropic"],
-      cliBackends: ["claude-cli"],
-      modelCatalog: {
-        providers: {
-          "claude-cli": {
-            models: [{ id: "claude-sonnet-4-6" }],
-          },
-        },
-        discovery: {
-          "claude-cli": "static",
-        },
-      },
-      configSchema: { type: "object" },
-    });
-
-    const result = loadPluginManifest(dir);
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) {
-      throw new Error(result.error);
-    }
-    expect(result.manifest.modelCatalog).toEqual({
-      providers: {
-        "claude-cli": {
-          models: [{ id: "claude-sonnet-4-6" }],
-        },
-      },
-      discovery: {
-        "claude-cli": "static",
-      },
-    });
+    const modelCatalog = {
+      providers: { "claude-cli": { models: [{ id: "claude-sonnet-4-6" }] } },
+      discovery: { "claude-cli": "static" },
+    };
+    expect(load({ ...cli, modelCatalog }).modelCatalog).toEqual(modelCatalog);
   });
 
   it("allows cli backends to own pricing policy", () => {
-    const dir = makePluginDir();
-    writeManifest(dir, {
-      id: "anthropic",
-      providers: ["anthropic"],
-      cliBackends: ["claude-cli"],
+    const manifest = load({
+      ...cli,
       modelPricing: {
         providers: {
           "claude-cli": { priceAs: " Anthropic " },
           unowned: { priceAs: "anthropic" },
         },
       },
-      configSchema: { type: "object" },
     });
-
-    const result = loadPluginManifest(dir);
-    if (!result.ok) {
-      throw new Error(result.error);
-    }
-    expect(result.manifest.modelPricing?.providers).toEqual({
+    expect(manifest.modelPricing?.providers).toEqual({
       "claude-cli": { priceAs: "anthropic" },
     });
   });
 
   it("normalizes owned request policies at the manifest boundary", () => {
-    const dir = makePluginDir();
-    writeManifest(dir, {
+    const manifest = load({
       id: "example-plugin",
       providers: [" Demo ", "bad"],
       providerRequest: {
@@ -115,14 +53,8 @@ describe("plugin manifest model catalog", () => {
           bad: [],
         },
       },
-      configSchema: { type: "object" },
     });
-
-    const result = loadPluginManifest(dir);
-    if (!result.ok) {
-      throw new Error(result.error);
-    }
-    expect(result.manifest.providerRequest).toEqual({
+    expect(manifest.providerRequest).toEqual({
       providers: {
         demo: {
           family: "demo-family",

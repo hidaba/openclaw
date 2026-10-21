@@ -1,36 +1,16 @@
-import fs from "node:fs";
-import path from "node:path";
-import { afterEach, expect, it } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { loadPluginManifest } from "./manifest.js";
+import { expect, it } from "vitest";
+import { useManifestLoader } from "./manifest-metadata.test-support.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const loadModels = useManifestLoader(
+  { id: "fixture", contracts: { decisionProviders: ["fixture"] } },
+  { coldRuntime: true },
+);
 const decision = (id: string, name: string, fields: Record<string, unknown> = {}) => ({
   provider: "fixture",
   id,
   name,
   ...fields,
 });
-
-function loadModels(fields: Record<string, unknown>) {
-  const root = tempDirs.make("manifest-decision-models-");
-  fs.writeFileSync(path.join(root, "index.js"), "throw new Error('runtime must stay cold');");
-  fs.writeFileSync(
-    path.join(root, "openclaw.plugin.json"),
-    JSON.stringify({
-      id: "fixture",
-      configSchema: { type: "object" },
-      contracts: { decisionProviders: ["fixture"] },
-      ...fields,
-    }),
-  );
-  const result = loadPluginManifest(root);
-  expect(result.ok).toBe(true);
-  if (!result.ok) {
-    throw new Error(result.error);
-  }
-  return result.manifest;
-}
 
 it("discovers only decision models owned by the manifest without executing its runtime", () => {
   const capabilities = {

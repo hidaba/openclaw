@@ -5,7 +5,6 @@ import type { SecretRef } from "../config/types.secrets.js";
 import type { PluginManifestRecord } from "./manifest-registry.js";
 import {
   hasManifestToolAvailability,
-  hasNonEmptyManifestEnvCandidate,
   manifestConfigSignalPasses,
   manifestPluginSetupProviderEnvVars,
   manifestProviderBaseUrlGuardPasses,
@@ -158,10 +157,6 @@ describe("manifest auth environment helpers", () => {
     expect(manifestPluginSetupProviderEnvVars(plugin, "other")).toEqual([]);
     expect(manifestPluginSetupProviderEnvVars(makePlugin({}), "xai")).toEqual([]);
   });
-
-  it("resolves env candidates", () => {
-    expect(hasNonEmptyManifestEnvCandidate({ SECOND: "token" }, ["FIRST", "SECOND"])).toBe(true);
-  });
 });
 
 describe("hasManifestToolAvailability", () => {
@@ -266,7 +261,7 @@ describe("hasManifestToolAvailability", () => {
 
   it("maps legacy provider and alias shorthand into auth signals", () => {
     const legacyPlugin = makePlugin({
-      setup: { providers: [{ id: "alias", envVars: ["ALIAS_KEY"] }] },
+      setup: { providers: [{ id: "alias", envVars: ["MISSING_KEY", "ALIAS_KEY"] }] },
       toolMetadata: { legacy_tool: { authProviders: ["primary"], aliases: ["alias"] } },
     });
     const legacy = (overrides: Parameters<typeof available>[1] = {}) =>

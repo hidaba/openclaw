@@ -1,26 +1,9 @@
-import fs from "node:fs";
-import path from "node:path";
-import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveMemorySlotDecision } from "./config-state.js";
-import { loadPluginManifest } from "./manifest.js";
+import { useManifestLoader } from "./manifest-metadata.test-support.js";
 import { clearPluginMetadataLifecycleCaches } from "./plugin-metadata-lifecycle.js";
-import { cleanupTrackedTempDirs, makeTrackedTempDir } from "./test-helpers/fs-fixtures.js";
-
-const tempDirs: string[] = [];
-
-function parseManifest(content: Record<string, unknown> | string) {
-  const dir = makeTrackedTempDir("openclaw-manifest-json5", tempDirs);
-  fs.writeFileSync(
-    path.join(dir, "openclaw.plugin.json"),
-    typeof content === "string"
-      ? content
-      : JSON.stringify({ id: "test-plugin", configSchema: { type: "object" }, ...content }),
-    "utf-8",
-  );
-  const result = loadPluginManifest(dir, false);
-  assert(result.ok);
-  return result.manifest;
-}
+const load = useManifestLoader({}, { mode: 0o755 });
+const parseManifest = (content: Record<string, unknown> | string) => load(content, false);
 
 beforeEach(() => {
   clearPluginMetadataLifecycleCaches();
@@ -28,7 +11,6 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  cleanupTrackedTempDirs(tempDirs);
 });
 
 describe("loadPluginManifest JSON5 tolerance", () => {

@@ -131,25 +131,6 @@ function readRow(databasePath: string) {
 }
 
 describe("installed plugin index mutation receipts", () => {
-  it("collects only committed index writes and their owned compensation", async () => {
-    const env = makeEnv();
-    await withEnvAsync(env, () =>
-      withPluginLifecycleLease({}, async (lease) => {
-        const failure = new Error("source changed after index publication");
-        await expect(
-          commitPluginInstallRecordsOnly({
-            nextInstallRecords: {},
-            nextConfig: {},
-            verifyConfigFresh: async () => {
-              throw failure;
-            },
-          }),
-        ).rejects.toBe(failure);
-        expect(readRow(lease.databasePath)).toBeNull();
-      }),
-    );
-  });
-
   it("compensates an acknowledged index commit when caller authority ends before its reply", async () => {
     const env = makeEnv();
     const configPath = path.join(env.OPENCLAW_STATE_DIR, "openclaw.json");
@@ -416,6 +397,7 @@ describe("installed plugin index mutation receipts", () => {
     "returns the row receipt only after caller settlement (fail=%s)",
     async (fail) => {
       const env = makeEnv();
+      const failure = new Error("config no longer current");
       await withEnvAsync(env, async () => {
         await withPluginLifecycleLease({}, async (lease) => {
           let after;
@@ -426,12 +408,12 @@ describe("installed plugin index mutation receipts", () => {
               after = readRow(lease.databasePath);
               expect(after).not.toBeNull();
               if (fail) {
-                throw new Error("config no longer current");
+                throw failure;
               }
             },
           });
           if (fail) {
-            await expect(pending).rejects.toThrow("config no longer current");
+            await expect(pending).rejects.toBe(failure);
             expect(readRow(lease.databasePath)).toBeNull();
           } else {
             const receipt = await pending;
