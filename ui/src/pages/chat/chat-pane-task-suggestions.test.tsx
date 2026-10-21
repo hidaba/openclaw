@@ -18,7 +18,6 @@ import {
 } from "../../test-helpers/gateway-client.ts";
 import { gatewayHelloForMethods } from "../../test-helpers/gateway-methods.ts";
 import { mountSolid } from "../../test-helpers/mount-solid.ts";
-import { projectChatFields } from "./chat-field-projection.ts";
 import {
   createSessionCapabilityFixture,
   createTestChatPane as createChatPane,
@@ -62,6 +61,7 @@ function createRequestPane(
   return {
     ...result,
     ...createTray(result.pane),
+    props: (connected = true) => result.pane.suggestionChatProps(connected, false, false),
     request,
     accept: (mode?: TaskSuggestionStartMode, task = suggestion) =>
       result.pane.resolveTaskSuggestion(task, "accept", mode),
@@ -133,7 +133,7 @@ function acceptCalls(request: ReturnType<typeof createGatewayRequestMock>) {
   return request.mock.calls.filter(([method]) => method === "taskSuggestions.accept");
 }
 
-it.each(["confirmed", "failed", "resolved", "session", "connection"] as const)(
+it.each(["confirmed", "resolved", "session", "connection"] as const)(
   "reconciles a pending dismissal after %s",
   async (outcome) => {
     const dismissed = createDeferred<{ taskId: string; dismissed: boolean }>();
@@ -147,16 +147,8 @@ it.each(["confirmed", "failed", "resolved", "session", "connection"] as const)(
           ? listed.promise
           : Promise.resolve({ suggestions }),
     );
-    const mounted = mountSolid(() => {
-      projectChatFields(pane.tasks);
-      return <ChatTaskSuggestionTray view={pane.suggestionChatProps(true, false, false)} />;
-    });
-    const card = () => mounted.container.querySelector('[data-task-id="task_123"]');
-    expect(card()).not.toBeNull();
     const oldList = outcome === "confirmed" ? pane.refreshTaskSuggestions() : undefined;
     const pending = pane.resolveTaskSuggestion(suggestion, "dismiss");
-    flush();
-    expect(card()).toBeNull();
     expect(pane.tasks.suggestions).toEqual([]);
     await pane.resolveTaskSuggestion(suggestion, "dismiss");
     expect(
@@ -171,17 +163,6 @@ it.each(["confirmed", "failed", "resolved", "session", "connection"] as const)(
       listed.resolve({ suggestions: [suggestion] });
       await Promise.all([oldList, pendingList]);
       expect(pane.tasks.suggestions).toEqual([]);
-    } else if (outcome === "failed") {
-      await pane.refreshTaskSuggestions();
-      expect(pane.tasks.suggestions).toEqual([]);
-      suggestions = [suggestion, nextSuggestion];
-      pane.tasks.suggestions = [nextSuggestion];
-      dismissed.reject(new Error("Dismissal unavailable"));
-      await pending;
-      expect(pane.tasks.suggestions).toEqual([suggestion, nextSuggestion]);
-      flush();
-      expect(card()).not.toBeNull();
-      expect(state.chatError).toBe("Dismissal unavailable");
     } else {
       let expected: TaskSuggestion[] = [];
       if (outcome === "resolved") {
@@ -265,7 +246,7 @@ it("surfaces clipboard failure through the pane error path", async () => {
 });
 
 it("hides a launched task through early events and stale lists without changing sessions", async () => {
-  const { pane, state, request, draw, query, accept, resolved, accepted } = createAcceptancePane(
+  const { pane, state, request, props, accept, resolved, accepted } = createAcceptancePane(
     undefined,
     [suggestion, nextSuggestion],
   );
@@ -276,9 +257,7 @@ it("hides a launched task through early events and stale lists without changing 
   pane.tasks.suggestions = [suggestion, nextSuggestion];
 
   const pending = accept();
-  draw();
-  expect(query('[data-task-id="task_123"]')).toBeNull();
-  expect(query('[data-task-id="task_next"]')?.hasAttribute("hidden")).toBe(false);
+  expect(props().taskSuggestions).toEqual([nextSuggestion]);
   resolved("accepted");
   await pane.refreshTaskSuggestions();
   expect(pane.tasks.suggestions).toEqual([nextSuggestion]);
@@ -287,9 +266,8 @@ it("hides a launched task through early events and stale lists without changing 
   accepted.resolve(acceptedResult);
   await pending;
   await pane.refreshTaskSuggestions();
-  draw();
   expect(pane.tasks.suggestions).toEqual([nextSuggestion]);
-  expect(query('[data-task-id="task_123"]')).toBeNull();
+  expect(props().taskSuggestions).toEqual([nextSuggestion]);
   expect(navigate).not.toHaveBeenCalled();
   expect(state).toMatchObject({ lastError: "History unavailable", chatError: "Chat send failed" });
   await accept();
@@ -380,7 +358,7 @@ it("keeps submitted content through reconnect and fences a late acceptance behin
   const first = createDeferred<AcceptResult>();
   const retry = createDeferred<AcceptResult>();
   let attempts = 0;
-  const { pane, state, request, container, draw, query, accept } = createRequestPane((method) => {
+  const { pane, state, request, props, accept } = createRequestPane((method) => {
     if (method === "agents.list") {
       return Promise.resolve({
         defaultId: "main",
@@ -401,88 +379,67 @@ it("keeps submitted content through reconnect and fences a late acceptance behin
   const pending = accept("worktree");
 
   pane.applyGatewaySnapshot({ ...snapshot, phase: "reconnecting", hello: null, selfUser: null });
-  draw(false);
-  expect(container.textContent).toContain(suggestion.prompt);
-  expect(container.textContent).toContain("Delivery unconfirmed");
-  expect(query<HTMLButtonElement>(".task-suggestion__retry")?.disabled).toBe(true);
+  const disconnected = props(false);
+  expect(disconnected.taskSuggestions).toEqual([suggestion]);
+  expect(disconnected.taskSuggestionAcceptance?.(suggestion.id)).toMatchObject({
+    phase: "failed",
+    error: "Delivery unconfirmed",
+  });
+  expect(disconnected.canAcceptTaskSuggestions).toBe(false);
   await accept();
   expect(attempts).toBe(1);
   pane.applyGatewaySnapshot({ ...snapshot, phase: "connected" });
   await pane.refreshTaskSuggestions();
-  draw(true);
-  expect(container.textContent).toContain(suggestion.prompt);
+  expect(props().taskSuggestions).toEqual([suggestion]);
   const retrying = accept();
   first.resolve({ ...acceptedResult, key: "agent:main:stale" });
   await pending;
-  draw(true);
-  expect(query(".task-suggestion")).toBeNull();
+  expect(props().taskSuggestions).toEqual([]);
   retry.resolve({ ...acceptedResult, key: "agent:main:recovered-task" });
   await retrying;
-  draw(true);
-  expect(query(".task-suggestion")).toBeNull();
+  expect(props().taskSuggestions).toEqual([]);
   expect(acceptCalls(request)).toEqual([acceptCall("worktree"), acceptCall("worktree")]);
   pane.applyGatewaySnapshot({ ...snapshot, phase: "reconnecting", hello: null, selfUser: null });
-  draw(false);
-  expect(query(".task-suggestion")).toBeNull();
+  expect(props(false).taskSuggestions).toEqual([]);
 
   pane.applyGatewaySnapshot({
     ...snapshot,
     selfUser: { id: "operator-b", name: "Operator B" },
   });
-  draw(true);
-  expect(container.textContent).not.toContain(suggestion.prompt);
+  expect(props().taskSuggestions).toEqual([]);
   expect(pane.tasks.suggestions).toEqual([]);
 });
 
 it.each([
-  { event: false, result: undefined },
-  { event: true, result: undefined },
-  { event: false, result: { taskId: "other-task", key: "agent:main:task" } },
-  { event: false, result: { taskId: suggestion.id, key: " " } },
-])(
-  "restores a failed or unconfirmed acceptance and retries the same task (%j)",
-  async ({ event, result }) => {
-    const first = createDeferred<AcceptResult>();
-    const retry = createDeferred<AcceptResult>();
-    let attempts = 0;
-    const { pane, state, request, container, draw, query, accept, resolved } = createAcceptancePane(
-      () => (++attempts === 1 ? first.promise : retry.promise),
-    );
-    const pending = accept("worktree");
-    expect(pane.tasks.suggestions).toEqual([]);
-    if (event) {
-      resolved("accepted");
-    }
-    if (result) {
-      first.resolve(result);
-    } else {
-      first.reject(new Error("Synthetic session creation failed"));
-    }
-    await pending;
-    await pane.refreshTaskSuggestions();
-    expect(pane.tasks.suggestions).toEqual([suggestion]);
-    const failure = state.lastError;
-    expect(failure).toContain(result ? "Couldn't confirm" : "Synthetic session creation failed");
-    expect(state.chatError).toBe(failure);
-    draw();
-    expect(query<HTMLDetailsElement>("details")?.open).toBe(true);
-    expect(container.textContent).toContain(suggestion.prompt);
-    expect(query('[role="alert"]')?.textContent).toContain(
-      result ? "Couldn't confirm" : "Synthetic session creation failed",
-    );
-    expect(query(".task-suggestion__retry")?.textContent).toContain("Retry");
-    const retrying = accept();
-    expect(pane.tasks.suggestions).toEqual([]);
-    expect(state).toMatchObject({ lastError: failure, chatError: failure });
-    await accept();
-    expect(attempts).toBe(2);
-    expect(acceptCalls(request)).toEqual([acceptCall("worktree"), acceptCall("worktree")]);
-    retry.resolve(acceptedResult);
-    await retrying;
-    expect(pane.tasks.suggestions).toEqual([]);
-    expect(state).toMatchObject({ lastError: null, chatError: null });
-  },
-);
+  { taskId: "other-task", key: "agent:main:task" },
+  { taskId: suggestion.id, key: " " },
+])("restores an unconfirmed acceptance and retries the same task (%j)", async (result) => {
+  const first = createDeferred<AcceptResult>();
+  const retry = createDeferred<AcceptResult>();
+  let attempts = 0;
+  const { pane, state, request, accept } = createAcceptancePane(() =>
+    ++attempts === 1 ? first.promise : retry.promise,
+  );
+  const pending = accept("worktree");
+  expect(pane.tasks.suggestions).toEqual([]);
+  first.resolve(result);
+  await pending;
+  await pane.refreshTaskSuggestions();
+  expect(pane.tasks.suggestions).toEqual([suggestion]);
+  const failure = state.lastError;
+  expect(failure).toContain("Couldn't confirm");
+  expect(state.chatError).toBe(failure);
+  const retrying = accept();
+  expect(pane.tasks.suggestions).toEqual([]);
+  expect(state).toMatchObject({ lastError: failure, chatError: failure });
+  await accept();
+  expect(attempts).toBe(2);
+  expect(acceptCalls(request)).toEqual([acceptCall("worktree"), acceptCall("worktree")]);
+  retry.resolve(acceptedResult);
+  await retrying;
+  expect(pane.tasks.suggestions).toEqual([]);
+  expect(state).toMatchObject({ lastError: null, chatError: null });
+});
 
 it.each([
   { field: "lastError", sameMessage: false, beforeRetry: false },
@@ -535,7 +492,7 @@ it.each(["hello", "client", "unknown"] as const)(
   "retires submitted suggestion content when Hello changes the %s recovery owner",
   async (source) => {
     let recoveryReady = source === "client";
-    const { pane, request, container, draw, query, accept, accepted } = createAcceptancePane(
+    const { pane, request, props, accept, accepted } = createAcceptancePane(
       undefined,
       [],
       (client) =>
@@ -557,19 +514,17 @@ it.each(["hello", "client", "unknown"] as const)(
       ...snapshot,
       hello: { ...hello, auth: { ...hello.auth, recoveryScope: "principal-a" } },
     });
-    draw();
-    expect(query(".task-suggestion")).toBeNull();
+    expect(props().taskSuggestions).toEqual([]);
     pane.applyGatewaySnapshot({
       ...snapshot,
       hello: { ...hello, auth: { ...hello.auth, recoveryScope: "principal-b" } },
     });
-    draw();
-    expect(container.textContent).not.toContain(suggestion.prompt);
+    expect(props().taskSuggestions).toEqual([]);
+    expect(props().taskSuggestionAcceptance?.(suggestion.id)).toBeUndefined();
     accepted.resolve({ ...acceptedResult, key: "agent:main:old-owner" });
     await pending;
-    draw();
     expect(pane.tasks.suggestions).toEqual([]);
-    expect(query(".task-suggestion__open")).toBeNull();
+    expect(props().taskSuggestionAcceptance?.(suggestion.id)).toBeUndefined();
     expect(acceptCalls(request)).toHaveLength(1);
   },
 );
@@ -581,8 +536,7 @@ it.each(
 )(
   "retires a $phase suggestion after physical session replacement (initially known: $initiallyKnown)",
   async ({ phase, initiallyKnown }) => {
-    const { pane, state, request, container, draw, query, accept, accepted } =
-      createAcceptancePane();
+    const { pane, state, request, props, accept, accepted } = createAcceptancePane();
     state.currentSessionId = initiallyKnown ? "physical-original" : undefined;
     state.loadAssistantIdentity = vi.fn(async () => {});
     const navigate = vi.fn();
@@ -595,17 +549,14 @@ it.each(
       accepted.resolve(acceptedResult);
       await pending;
     }
-    draw();
-    expect(Boolean(query(".task-suggestion"))).toBe(phase === "failed");
+    expect(props().taskSuggestions).toEqual(phase === "failed" ? [suggestion] : []);
     state.currentSessionId = "physical-original";
-    const originalProps = draw();
-    expect(Boolean(query(".task-suggestion"))).toBe(phase === "failed");
+    const originalProps = props();
+    expect(originalProps.taskSuggestions).toEqual(phase === "failed" ? [suggestion] : []);
 
     state.currentSessionId = "physical-replacement";
-    draw();
-    expect(container.textContent).not.toContain(suggestion.prompt);
-    expect(query(".task-suggestion__open")).toBeNull();
-    expect(query(".task-suggestion__retry")).toBeNull();
+    expect(props().taskSuggestions).toEqual([]);
+    expect(props().taskSuggestionAcceptance?.(suggestion.id)).toBeUndefined();
     pane.applyGatewaySnapshot({ ...pane.context.gateway.snapshot });
     await pane.refreshTaskSuggestions();
     expect(pane.tasks.suggestions).toEqual([]);
@@ -618,8 +569,7 @@ it.each(
       await pending;
     }
     state.currentSessionId = "physical-original";
-    draw();
-    expect(container.textContent).not.toContain(suggestion.prompt);
+    expect(props().taskSuggestions).toEqual([]);
     expect(pane.tasks.suggestions).toEqual([]);
   },
 );

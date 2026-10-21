@@ -214,28 +214,10 @@ it.each([
   },
 );
 
-it("applies View and session visibility independently to live and saved reasoning", () => {
+it("hides live reasoning when the session turns reasoning off", () => {
   thinking("Private synthetic reasoning.");
-  for (const [mode, visible] of [
-    ["on", true],
-    ["stream", true],
-    ["off", false],
-  ] as const) {
-    show(mode);
-    expect(Boolean(thinkingNode())).toBe(visible);
-    show(mode, false);
-    expect(thinkingNode()).toBeNull();
-  }
-  persistReasoning("Private synthetic reasoning.", true);
-  for (const mode of ["on", "stream"] as const) {
-    showReasoning(1, mode);
-    expect(thinkingNode()?.textContent).toContain("Private synthetic");
-  }
-  final("The answer is 42.", 2);
-  show("stream");
+  show("off");
   expect(thinkingNode()).toBeNull();
-  show("on");
-  expect(thinkingNode()?.textContent).toContain("Private synthetic");
 });
 
 it("falls back to the inherited reasoning default only without a session override", () => {

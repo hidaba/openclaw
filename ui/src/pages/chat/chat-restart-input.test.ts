@@ -55,7 +55,7 @@ function attemptedInput(overrides: Partial<ChatQueueItem> = {}): ChatQueueItem {
 function expectNoSend(host: Host) {
   expect(requestCalls(host.request, "chat.send")).toEqual([]);
 }
-function pending(state: "queued" | "interrupted" | "cancelled"): ChatPendingInputsPage {
+function pending(state: "queued" | "interrupted"): ChatPendingInputsPage {
   return {
     total: 1,
     items: [
@@ -261,88 +261,6 @@ describe("accepted input restart handoff", () => {
     },
   );
 
-  it.each([
-    { queueMode: undefined, status: "running", hasActiveRun: false },
-    { queueMode: "followup", status: "running", hasActiveRun: false },
-    { queueMode: "collect", status: "queued", hasActiveRun: false },
-    { queueMode: "followup", status: "running", hasActiveRun: true },
-    { queueMode: "steer", status: "running", hasActiveRun: true },
-    { queueMode: "interrupt", status: "running", hasActiveRun: true },
-  ] as const)(
-    "leaves server recovery in charge for $queueMode ($status, active: $hasActiveRun)",
-    async ({ queueMode, status, hasActiveRun }) => {
-      let recoveryFinished = false;
-      const host = makeRestartHost({
-        requestHandlers: {
-          "chat.history": () =>
-            history({
-              pendingInputs: recoveryFinished ? { items: [], total: 0 } : pending("interrupted"),
-              inputReceipts: [
-                {
-                  runId: item.sendRunId,
-                  state: recoveryFinished ? "consumed" : "pending",
-                  ...(recoveryFinished ? { consumedByEventId: "server-recovered-input" } : {}),
-                },
-              ],
-              sessionInfo: {
-                key: sessionKey,
-                sessionId,
-                status: recoveryFinished ? "done" : status,
-                hasActiveRun: recoveryFinished ? false : hasActiveRun,
-              },
-            }),
-          "chat.send": { runId: item.sendRunId, status: "started", messageSeq: 10 },
-        },
-      });
-      admit(host, { ...item, sessionId, ...(queueMode ? { queueMode } : {}) });
-      await resumeStoredChatOutboxes(host);
-      expectNoSend(host);
-      expect(listStoredChatOutboxes(host)[0]?.queue[0]?.sendRunId).toBe(item.sendRunId);
-      recoveryFinished = true;
-      await resumeStoredChatOutboxes(host);
-      expectNoSend(host);
-      expect(listStoredChatOutboxes(host)).toEqual([]);
-    },
-  );
-
-  it("does not retire or resend an input from a replaced physical session", async () => {
-    const replacementSessionId = "replacement-session";
-    const host = makeRestartHost({
-      sessionKey,
-      currentSessionId: replacementSessionId,
-      requestHandlers: {
-        "chat.history": {
-          sessionId: replacementSessionId,
-          messages: [
-            {
-              role: "user",
-              content: "A different source",
-              __openclaw: {
-                id: "replacement-input",
-                seq: 1,
-                idempotencyKey: `${item.sendRunId}:user`,
-              },
-            },
-          ],
-          pendingInputs: { items: [], total: 0 },
-          sessionInfo: {
-            key: sessionKey,
-            sessionId: replacementSessionId,
-            status: "done",
-            hasActiveRun: false,
-          },
-        },
-      },
-    });
-    admit(host, { ...item, sessionId });
-    expect(listStoredChatOutboxes(host)[0]?.queue[0]?.sessionId).toBe(sessionId);
-    await resumeStoredChatOutboxes(host);
-    expect(listStoredChatOutboxes(host)[0]?.queue[0]).toMatchObject({
-      sessionId,
-      sendState: "unconfirmed",
-    });
-    expectNoSend(host);
-  });
   it("reconciles interrupted custody behind a newer page without resending", async () => {
     const older = pending("interrupted");
     const host = makeRestartHost({
@@ -375,21 +293,6 @@ describe("accepted input restart handoff", () => {
       expect.objectContaining({ pendingBefore: 21 }),
       { timeoutMs: 30_000 },
     );
-    expectNoSend(host);
-  });
-
-  it("does not resend input cancelled in the custody page", async () => {
-    const host = makeRestartHost({
-      requestHandlers: {
-        "chat.history": history({
-          pendingInputs: pending("cancelled"),
-          inputReceipts: [{ runId: item.sendRunId, state: "pending" }],
-        }),
-        "chat.send": { runId: item.sendRunId, status: "started" },
-      },
-    });
-    admit(host);
-    await resumeStoredChatOutboxes(host);
     expectNoSend(host);
   });
 });

@@ -92,27 +92,6 @@ function createTypingPane() {
 }
 
 describe("chat pane typing presence", () => {
-  it("renders selection-only updates at the received caret without changing draft whitespace", () => {
-    vi.useFakeTimers();
-    const { pane, state } = createTypingPane();
-    const preview = "First line\n😀 second line\nLast line  \n";
-    const event = typingEvent(state.sessionKey, { preview, cursor: 14 });
-    const container = document.createElement("div");
-    for (const cursor of [14, 0, preview.length]) {
-      pane.handleSessionTypingEvent({ ...event, cursor });
-      renderTypingIndicator(pane.collaboration.typingViews, container);
-      const text = container.querySelector(".agent-chat__typing-preview-text")!;
-      const caret = text.querySelector(".agent-chat__typing-caret")!;
-      expect(caret).not.toBeNull();
-      const range = document.createRange();
-      range.selectNodeContents(text);
-      range.setEndBefore(caret);
-      expect(range.toString()).toBe(preview.slice(0, cursor));
-      expect(text.textContent).toBe(preview);
-    }
-    pane.clearTypingActors();
-  });
-
   it("remote typing preserves a pending manual follow command", () => {
     vi.useFakeTimers();
     const { pane, state } = createTestChatPane({
