@@ -2,7 +2,6 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { AssistantMessage } from "openclaw/plugin-sdk/llm";
 import { afterAll, afterEach, expect, it } from "vitest";
-import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-support.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
@@ -16,6 +15,7 @@ import {
   replaceSessionEntry,
   replaceSessionEntrySync,
 } from "./session-accessor.js";
+import { withoutHostSql } from "./session-accessor.observation.test-support.js";
 import { resolveSqliteStoreScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
 import { withTranscriptWriteSequence } from "./session-accessor.sqlite-transcript-write.js";
 
@@ -104,16 +104,6 @@ async function seedParentTranscript(params: {
   );
 }
 
-async function createParent(parentSessionId: string, events: Record<string, unknown>[]) {
-  const { root, storePath } = await createStore();
-  await seedParentTranscript({
-    storePath,
-    parentSessionId,
-    events: [header(parentSessionId, root), ...events],
-  });
-  return { storePath };
-}
-
 async function forkChildTranscript(
   storePath: string,
   parentSessionId: string,
@@ -148,6 +138,20 @@ async function openForkedChildSession(
     sessionKey: "agent:main:child",
     storePath,
   });
+}
+
+async function forkFixture(parentId: string, events: Record<string, unknown>[]) {
+  const { root, storePath } = await createStore();
+  await seedParentTranscript({
+    storePath,
+    parentSessionId: parentId,
+    events: [header(parentId, root), ...events],
+  });
+  const fork = await forkChildTranscript(storePath, parentId);
+  return {
+    records: () => childEvents(storePath, fork.sessionId),
+    open: () => openForkedChildSession(storePath, fork),
+  };
 }
 
 it("checks authority inside same- and cross-database transcript commits", async () => {
@@ -203,13 +207,7 @@ it("forks the active branch across stores without caller-thread SQL", async () =
   await fs.mkdir(cwd);
   const parentSessionId = "parent-session";
   const lines: Record<string, unknown>[] = [
-    {
-      type: "session",
-      version: 3,
-      id: parentSessionId,
-      timestamp: "2026-05-01T00:00:00.000Z",
-      cwd,
-    },
+    header(parentSessionId, cwd, "2026-05-01T00:00:00.000Z"),
     messageEvent("user-1", null, "user", "hello"),
     messageEvent("assistant-1", "user-1", "assistant", [{ type: "text", text: "hi" }]),
     labelEvent("label-1", "assistant-1", "user-1", "start"),
@@ -218,14 +216,9 @@ it("forks the active branch across stores without caller-thread SQL", async () =
   ];
   await seedParentTranscript({ storePath, parentSessionId, events: lines });
 
-  const sql = observeHostDataSql();
-  let fork;
-  try {
-    fork = await forkChildTranscript(storePath, parentSessionId, targetStorePath);
-    expect(sql.queries).toEqual([]);
-  } finally {
-    sql.restore();
-  }
+  const fork = await withoutHostSql(() =>
+    forkChildTranscript(storePath, parentSessionId, targetStorePath),
+  );
   expect(fork.sessionFile).toBe("agent:main:child");
   expect(fork.sessionId).not.toBe(parentSessionId);
   const forkedEntries = await childEvents(targetStorePath, fork.sessionId);
@@ -257,10 +250,7 @@ it("forks the active branch across stores without caller-thread SQL", async () =
 });
 
 it("keeps opaque append-parent metadata on the active fork branch", async () => {
-  const { root, storePath } = await createStore();
-  const parentSessionId = "parent-opaque";
-  const entries: Record<string, unknown>[] = [
-    header(parentSessionId, root),
+  const { records, open } = await forkFixture("parent-opaque", [
     messageEvent("active-root", null, "assistant", [{ type: "text", text: "active root" }]),
     labelEvent("active-label", "active-root", "active-root", "selected"),
     messageEvent("side-delivery", "active-root", "assistant", "side delivery"),
@@ -269,11 +259,8 @@ it("keeps opaque append-parent metadata on the active fork branch", async () => 
       appendParentId: "plugin-metadata",
       appendMode: "side",
     }),
-  ];
-  await seedParentTranscript({ storePath, parentSessionId, events: entries });
-
-  const fork = await forkChildTranscript(storePath, parentSessionId);
-  const forkedRecords = await childEvents(storePath, fork.sessionId);
+  ]);
+  const forkedRecords = await records();
   const serialized = JSON.stringify(forkedRecords);
   expect(serialized).toContain('"id":"active-root"');
   expect(serialized).toContain('"id":"plugin-metadata"');
@@ -291,11 +278,11 @@ it("keeps opaque append-parent metadata on the active fork branch", async () => 
     appendParentId: "plugin-metadata",
     appendMode: "side",
   });
-  const reopened = await openForkedChildSession(storePath, fork);
+  const reopened = await open();
   await appendUser(reopened);
-  const records = await childEvents(storePath, fork.sessionId);
-  expect(records.at(-1)).toMatchObject({ type: "message", parentId: "plugin-metadata" });
-  expect(records.at(-1)).not.toHaveProperty("appendMode");
+  const continued = (await records()).at(-1);
+  expect(continued).toMatchObject({ type: "message", parentId: "plugin-metadata" });
+  expect(continued).not.toHaveProperty("appendMode");
   expect(reopened.buildSessionContext().messages).toMatchObject([
     { role: "assistant", content: [{ type: "text", text: "active root" }] },
     { role: "user", content: "continued" },
@@ -303,7 +290,7 @@ it("keeps opaque append-parent metadata on the active fork branch", async () => 
 });
 
 it("keeps an explicit empty visible branch separate from its opaque append parent", async () => {
-  const { storePath } = await createParent("parent-empty-opaque", [
+  const { records, open } = await forkFixture("parent-empty-opaque", [
     messageEvent("inactive-root", null, "user", "inactive history"),
     leafEvent("empty-leaf", "inactive-root", null, {
       appendParentId: null,
@@ -311,8 +298,7 @@ it("keeps an explicit empty visible branch separate from its opaque append paren
     metadata("plugin-metadata", "inactive-root"),
   ]);
 
-  const fork = await forkChildTranscript(storePath, "parent-empty-opaque");
-  const reopened = await openForkedChildSession(storePath, fork);
+  const reopened = await open();
   expect(reopened.buildSessionContext().messages).toEqual([]);
   const continuedId = await appendUser(reopened);
   await reopened.appendMessageAsync({
@@ -323,61 +309,54 @@ it("keeps an explicit empty visible branch separate from its opaque append paren
     model: "gpt-test",
     timestamp: Date.now(),
   } as unknown as AssistantMessage);
-  const records = await childEvents(storePath, fork.sessionId);
-  expect(records.some((record) => record.id === "inactive-root")).toBe(false);
-  expect(records.find((record) => record.id === continuedId)).toMatchObject({
+  const continued = await records();
+  expect(continued.some((record) => record.id === "inactive-root")).toBe(false);
+  expect(continued.find((record) => record.id === continuedId)).toMatchObject({
     type: "message",
     parentId: "plugin-metadata",
   });
 });
 
 it("keeps a reachable branch suffix when an older parent is missing", async () => {
-  const { storePath } = await createParent("parent-missing-ancestor", [
+  const { records } = await forkFixture("parent-missing-ancestor", [
     messageEvent("reachable-tail", "missing-parent", "assistant", "reachable tail"),
   ]);
 
-  const fork = await forkChildTranscript(storePath, "parent-missing-ancestor");
-  const records = await childEvents(storePath, fork.sessionId);
-  const serialized = JSON.stringify(records);
+  const serialized = JSON.stringify(await records());
   expect(serialized).toContain("reachable tail");
   expect(serialized).not.toContain("missing-parent");
 });
 
 it("keeps visible history when the next append explicitly starts a root branch", async () => {
-  const { storePath } = await createParent("parent-root-append", [
+  const { records, open } = await forkFixture("parent-root-append", [
     messageEvent("visible-root", null, "assistant", "visible history"),
     leafEvent("root-append-control", "inactive-tail", "visible-root", {
       appendParentId: null,
     }),
   ]);
 
-  const fork = await forkChildTranscript(storePath, "parent-root-append");
-  const reopened = await openForkedChildSession(storePath, fork);
+  const reopened = await open();
   expect(reopened.buildSessionContext().messages).toHaveLength(1);
   await appendUser(reopened, "new root");
-  const records = await childEvents(storePath, fork.sessionId);
-  expect(records.at(-1)).toMatchObject({ type: "message", parentId: null });
+  expect((await records()).at(-1)).toMatchObject({ type: "message", parentId: null });
 });
 
 it("preserves supported current-version linear transcripts", async () => {
-  const { storePath } = await createParent("parent-linear", [
+  const { records, open } = await forkFixture("parent-linear", [
     messageEvent("linear-user", undefined, "user", "hello"),
     messageEvent("linear-assistant", undefined, "assistant", "hi"),
     metadata("linear-metadata", "linear-assistant"),
   ]);
 
-  const fork = await forkChildTranscript(storePath, "parent-linear");
-  const records = await childEvents(storePath, fork.sessionId);
-  expect(records.slice(1)).toMatchObject([
+  expect((await records()).slice(1)).toMatchObject([
     { id: "linear-user", parentId: null },
     { id: "linear-assistant", parentId: "linear-user" },
     { id: "linear-metadata", parentId: "linear-assistant" },
   ]);
-  const reopened = await openForkedChildSession(storePath, fork);
+  const reopened = await open();
   expect(reopened.buildSessionContext().messages).toHaveLength(2);
   await appendUser(reopened);
-  const continuedRecords = await childEvents(storePath, fork.sessionId);
-  expect(continuedRecords.at(-1)).toMatchObject({
+  expect((await records()).at(-1)).toMatchObject({
     type: "message",
     parentId: "linear-metadata",
   });

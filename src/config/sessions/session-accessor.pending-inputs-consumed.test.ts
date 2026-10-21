@@ -1,10 +1,15 @@
+import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { expectDefined } from "@openclaw/normalization-core/expect";
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { buildAgentRunTerminalOutcome } from "../../agents/agent-run-terminal-outcome.js";
+import { captureRequesterOrigin } from "../../agents/requester-origin.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { runWithSqliteBusyTimeout } from "../../infra/sqlite-busy-timeout.js";
 import { resetLogger, setLoggerOverride } from "../../logging/logger.js";
+import { bindUserTurnTranscriptAnnotation } from "../../sessions/user-turn-transcript-annotation.js";
+import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
+import { buildPersistedUserTurnMessage } from "../../sessions/user-turn-transcript.message.js";
 import type { PersistedUserTurnMessage } from "../../sessions/user-turn-transcript.types.js";
 import {
   closeOpenClawAgentDatabasesAsync,
@@ -18,6 +23,7 @@ import {
   appendTranscriptMessage,
   appendTranscriptMessageSync,
   deleteSessionEntryLifecycle,
+  loadSessionEntry,
   loadTranscriptEvents,
   readSessionSubmittedInput,
   upsertSessionEntryCore,
@@ -74,8 +80,9 @@ const settleMessage = (id: string) => internalMessage(id, "subagent_settle", "ch
 const request = (
   runId: string,
   opts: Partial<Parameters<typeof stageSessionPendingInput>[1]> = {},
+  target = scope(),
 ) =>
-  stageSessionPendingInput(scope(), {
+  stageSessionPendingInput(target, {
     runId,
     message: message(runId),
     assertCurrent: () => {},
@@ -84,8 +91,12 @@ const request = (
 const stage = async (
   id: string,
   stageOptions: Partial<Parameters<typeof stageSessionPendingInput>[1]> = {},
+  target = scope(),
 ) => {
-  const receipt = expectDefined(await request(id, stageOptions), "Expected staged input custody");
+  const receipt = expectDefined(
+    await request(id, stageOptions, target),
+    "Expected staged input custody",
+  );
   receipts.push(receipt);
   return receipt;
 };
@@ -759,3 +770,166 @@ it.each([
     );
   },
 );
+
+async function commitMirroredInput() {
+  const runId = "announce:settle-workers";
+  const target = { ...scope(), sessionKey: "agent:main:subagent:lead", sessionId: "lead-session" };
+  await upsertSessionEntryCore(target, {
+    sessionId: target.sessionId,
+    lifecycleRevision: "lead-lifecycle",
+    activeWriterRunId: runId,
+    updatedAt: 1,
+  });
+  const recorder = createUserTurnTranscriptRecorder({
+    input: {
+      text: "Worker integration ready",
+      display: false,
+      idempotencyKey: `${runId}:user`,
+      requesterOrigin: { operatorProfileId: "gateway-owner", sessionKey: target.sessionKey },
+      provenance: {
+        kind: "inter_session",
+        sourceTool: "subagent_settle",
+        sourceSessionKey: "worker-b",
+      },
+    },
+    target: { ...target, sessionEntry: loadSessionEntry(target) },
+    trackInputCompletion: true,
+  });
+  expect(await recorder.stageApproved?.({ runId, assertCurrent: () => {} })).toBe(true);
+  await recorder.persistApproved();
+  const original = structuredClone(
+    expectDefined(recorder.getPersistedMessage?.(), "admitted input"),
+  );
+  const annotate = expectDefined(
+    bindUserTurnTranscriptAnnotation({ recorder, target, runId, assertCurrent: () => {} }),
+    "native annotation owner",
+  );
+  const upstreamUserText = "Native harness context\nWorker integration ready";
+  await annotate({
+    mirrorIdentity: "native-turn:prompt",
+    mirrorOrigin: "codex-app-server",
+    upstreamUserText,
+    mirrorSourceFingerprint: createHash("sha256")
+      .update(JSON.stringify({ role: "user", content: original.content, upstreamUserText }))
+      .digest("hex")
+      .slice(0, 32),
+  });
+  const committed = structuredClone(
+    expectDefined(recorder.getPersistedMessage?.(), "native prompt"),
+  );
+  const transcript = await loadTranscriptEvents(target);
+  recorder.finishPendingInput?.("interrupted");
+  await closeOpenClawAgentDatabasesAsync();
+  rotateAgentEventLifecycleGeneration();
+  const replay = (input: PersistedUserTurnMessage = original) =>
+    stage(
+      runId,
+      {
+        message: input,
+        trackCompletion: true,
+        replaySourceSessionKeys: ["worker-a", "worker-b"],
+      },
+      target,
+    );
+  return { target, original, committed, transcript, replay };
+}
+
+it("replays a committed native prompt without duplicating the mirrored input", async () => {
+  const { target, original, committed, transcript, replay } = await commitMirroredInput();
+  const receipt = await replay({
+    ...original,
+    provenance: { ...original.provenance, kind: "inter_session", sourceSessionKey: "worker-a" },
+  });
+  expect(receipt.message).toEqual(committed);
+  expect(receipt.run(() => "continued")).toBe("continued");
+  const outcome = buildAgentRunTerminalOutcome({ status: "ok" });
+  await expect(receipt.completeAsync!(outcome)).resolves.toEqual(outcome);
+  expect(await loadTranscriptEvents(target)).toEqual(transcript);
+});
+
+it("still rejects changed completion content and requester facts against a native prompt", async () => {
+  const { target, original, transcript, replay } = await commitMirroredInput();
+  const requesterOrigin = expectDefined(
+    original["__openclaw"]?.requesterOrigin,
+    "requester origin",
+  );
+  const changed: PersistedUserTurnMessage[] = [
+    { ...original, content: "Different result" },
+    {
+      ...original,
+      __openclaw: {
+        ...original["__openclaw"],
+        requesterOrigin: { ...requesterOrigin, operatorProfileId: "other" },
+      },
+    },
+    { ...original, __openclaw: { ...original["__openclaw"], unexpected: "extra metadata" } },
+  ];
+  for (const input of changed) {
+    await expect(replay(input)).rejects.toThrow(/conflicts|does not match/);
+  }
+  expect(await loadTranscriptEvents(target)).toEqual(transcript);
+});
+
+it("replays pre-normalization requester origins only against their complete accepted hash", async () => {
+  const target = { ...scope(), sessionKey: "agent:main:origin-replay", sessionId: "origin-replay" };
+  await upsertSessionEntryCore(target, { sessionId: target.sessionId, updatedAt: 1 });
+  for (const completed of [false, true]) {
+    const runId = `origin-replay-${completed}`;
+    const origin = { sessionKey: target.sessionKey, operatorProfileId: "gateway-owner" };
+    const original = buildPersistedUserTurnMessage({
+      text: "Private worker result",
+      display: false,
+      idempotencyKey: `${runId}:user`,
+      requesterOrigin: captureRequesterOrigin(origin),
+    });
+    const replay = (input = original) =>
+      stage(runId, { message: input, trackCompletion: true }, target);
+    // The old producer hashed these own properties before JSON storage omitted them.
+    const first = await replay({
+      ...original,
+      __openclaw: {
+        ...original["__openclaw"],
+        requesterOrigin: {
+          ...origin,
+          messageProvider: undefined,
+          accountId: undefined,
+          chatType: undefined,
+          conversationId: undefined,
+          messageThreadId: undefined,
+          groupId: undefined,
+          groupChannel: undefined,
+          groupSpace: undefined,
+          senderId: undefined,
+          senderName: undefined,
+          senderUsername: undefined,
+          senderE164: undefined,
+        },
+      },
+    });
+    const outcome = buildAgentRunTerminalOutcome({ status: "ok" });
+    if (completed) {
+      await first.completeAsync!(outcome);
+    }
+    await finish(first);
+    await restart();
+    await expect(replay({ ...original, content: "Changed worker result" })).rejects.toThrow(
+      /conflicts with the accepted input/,
+    );
+    await expect(
+      replay({
+        ...original,
+        __openclaw: {
+          ...original["__openclaw"],
+          requesterOrigin: { ...origin, operatorProfileId: "different-requester" },
+        },
+      }),
+    ).rejects.toThrow(/conflicts with the accepted input/);
+    const receipt = await replay();
+    if (completed) {
+      expect(receipt).toMatchObject({ state: "consumed", completion: outcome });
+    } else {
+      await expect(receipt.completeAsync!(outcome)).resolves.toEqual(outcome);
+    }
+    await finish(receipt);
+  }
+});

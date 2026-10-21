@@ -210,16 +210,7 @@ describe("SQLite transcript archive sessions", () => {
 
     const result = await deleteArchivedSession(sessionKey);
 
-    expect(archiveWorkers.replies.map(({ message }) => message.type)).toEqual([
-      "done",
-      "published",
-      "done",
-      "published",
-      "done",
-      "published",
-    ]);
-    expect(new Set(archiveWorkers.replies.map(({ worker }) => worker)).size).toBe(1);
-    expect(archiveWorkers.replies.every(({ worker }) => worker.threadId > 0)).toBe(true);
+    archiveWorkers.expectReused(3);
     expect(publicationRows).toEqual(sessionIds.map(() => ({ session_key: sessionKey })));
     expect(result.deleted).toBe(true);
     expect(result.archivedTranscripts).toHaveLength(sessionIds.length);
@@ -259,14 +250,7 @@ describe("SQLite transcript archive sessions", () => {
       expect(result.archivedTranscripts).toHaveLength(1);
       expectArchivedEvent(result.archivedTranscripts[0]?.archivedPath, events[0]);
     }
-    expect(archiveWorkers.replies.map(({ message }) => message.type)).toEqual([
-      "done",
-      "published",
-      "done",
-      "published",
-    ]);
-    expect(new Set(archiveWorkers.replies.map(({ worker }) => worker)).size).toBe(1);
-    expect(archiveWorkers.replies.every(({ worker }) => worker.threadId > 0)).toBe(true);
+    archiveWorkers.expectReused(2);
     await closeAgentDatabase(database.path);
     archiveWorkers.expectJoined(1);
   });
@@ -317,12 +301,9 @@ describe("SQLite transcript archive sessions", () => {
     ]);
     archiveWorkers.expectJoined(1);
     expect(loadSessionEntry({ sessionKey, storePath })).toMatchObject({ sessionId: sessionIds[1] });
-    await expect(
-      loadTranscriptEvents({ sessionKey, sessionId: sessionIds[0], storePath }),
-    ).resolves.toEqual([]);
-    await expect(
-      loadTranscriptEvents({ sessionKey, sessionId: sessionIds[1], storePath }),
-    ).resolves.toEqual([events[1]]);
+    const historicalScope = { sessionKey, sessionId: sessionIds[0], storePath };
+    await expect(loadTranscriptEvents(historicalScope)).resolves.toEqual([]);
+    await expectSession({ sessionKey, sessionId: sessionIds[1], storePath }, events[1]);
     expect(archiveRow(sessionIds[0], "published_at, last_publish_error")).toEqual({
       published_at: null,
       last_publish_error: expect.stringContaining("collision"),
@@ -342,9 +323,7 @@ describe("SQLite transcript archive sessions", () => {
       );
       expectArchivedEvent(collisionPath, events[0]);
       expect(readPending()).toEqual(pending);
-      await expect(
-        loadTranscriptEvents({ sessionKey, sessionId: sessionIds[0], storePath }),
-      ).resolves.toEqual([]);
+      await expect(loadTranscriptEvents(historicalScope)).resolves.toEqual([]);
     } finally {
       fault.disable();
     }
@@ -761,66 +740,35 @@ type ArchiveSessionReply = TranscriptArchiveWorkerMessage | TranscriptArchivePub
 
 function observeArchiveMetadata(afterExecute: (type: string, result: unknown) => Promise<void>) {
   const withWorker = sessionWorker.withSessionEntryWorker;
-  return vi
-    .spyOn(sessionWorker, "withSessionEntryWorker")
-    .mockImplementation(
-      (
-        databaseOptions,
-        identity,
-        assertCurrent,
-        withExecution,
-        onCommit,
-        retainedExecution,
-        signal,
-        prepare,
-        onTransaction,
-        onAdmission,
-        releaseSource,
-        operationMode,
-        expectedCreationIdentity,
-        concurrentBoardReads,
-      ) =>
-        withWorker(
-          databaseOptions,
-          identity,
-          assertCurrent,
-          (execution, owner, context) =>
-            withExecution(
-              {
-                ...execution,
-                get fileIdentity() {
-                  return execution.fileIdentity;
-                },
-                runExisting(readSource, read, readOptions) {
-                  return execution.runExisting(
-                    readSource,
-                    (worker) =>
-                      read({
-                        execute: async (command, requestOptions) => {
-                          const result = await worker.execute(command, requestOptions);
-                          await afterExecute(command.type, result);
-                          return result;
-                        },
-                      }),
-                    readOptions,
-                  );
-                },
-              },
-              owner,
-              context,
-            ),
-          onCommit,
-          retainedExecution,
-          signal,
-          prepare,
-          onTransaction,
-          onAdmission,
-          releaseSource,
-          operationMode,
-          expectedCreationIdentity,
-          concurrentBoardReads,
-        ),
-    );
+  return vi.spyOn(sessionWorker, "withSessionEntryWorker").mockImplementation((...args) => {
+    const withExecution = args[3];
+    args[3] = (execution, owner, context) =>
+      withExecution(
+        {
+          ...execution,
+          get fileIdentity() {
+            return execution.fileIdentity;
+          },
+          runExisting(readSource, read, readOptions) {
+            return execution.runExisting(
+              readSource,
+              (worker) =>
+                read({
+                  execute: async (command, requestOptions) => {
+                    const result = await worker.execute(command, requestOptions);
+                    await afterExecute(command.type, result);
+                    return result;
+                  },
+                }),
+              readOptions,
+            );
+          },
+        },
+        owner,
+        context,
+      );
+    return withWorker(...args);
+  });
 }
 
 function observeArchiveSessionWorkers(
@@ -842,6 +790,13 @@ function observeArchiveSessionWorkers(
   process.on("worker", observeWorker);
   return {
     replies,
+    expectReused(count: number) {
+      expect(replies.map(({ message }) => message.type)).toEqual(
+        Array.from({ length: count }, () => ["done", "published"]).flat(),
+      );
+      expect(new Set(replies.map(({ worker }) => worker)).size).toBe(1);
+      expect(replies.every(({ worker }) => worker.threadId > 0)).toBe(true);
+    },
     expectJoined(count: number) {
       const workers = new Set(replies.map(({ worker }) => worker));
       expect(workers.size).toBe(count);

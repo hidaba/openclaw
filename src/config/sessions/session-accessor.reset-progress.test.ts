@@ -1,7 +1,6 @@
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { expect, it } from "vitest";
-import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { readBoardHtml } from "../../boards/board-store.test-support.js";
 import { SqliteBoardStore } from "../../boards/sqlite-board-store.js";
 import {
@@ -12,6 +11,7 @@ import { onSessionLifecycleEvent } from "../../sessions/session-lifecycle-events
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import * as sessions from "./session-accessor.js";
+import { withoutHostSql } from "./session-accessor.observation.test-support.js";
 import { appendTranscriptMessageSync } from "./session-accessor.sqlite-transcript-write.js";
 import { resolveSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
 
@@ -87,10 +87,7 @@ it.each([
         expect(sessions.loadSessionEntry(scope)).toEqual(entryBefore);
         expect(await sessions.loadTranscriptEvents(scope)).toEqual(historyBefore);
       } else {
-        const sql = observeHostDataSql();
-        using _ = { [Symbol.dispose]: sql.restore };
-        await reset();
-        expect(sql.queries, `${writer} reset caller-thread SQL`).toEqual([]);
+        await withoutHostSql(reset);
       }
     } finally {
       unsubscribe();
