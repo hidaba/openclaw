@@ -378,16 +378,27 @@ node --import ./scripts/tsx.mjs scripts/bench-channel-turn.mts \
 Every turn requires the exact echo result in the provider's matching tool output
 as well as the durable channel reply. These timings cover the full channel turn;
 the owner allocation estimate must not be presented as whole-tool allocation.
-Add `--warmup-ms 120000 --steady-duration-ms 480000 --steady-turns 100
+Add `--warmup-ms 120000 --steady-duration-ms 480000 --steady-turns 200
 --allocations` for a combined allocation, GC and latency capture. After at least
 eleven warm-up turns and the requested warm-up duration, it runs until both the
 measurement duration and minimum turn count are met. Steady mode starts a new
 conversation every 20 turns with `session.dmScope: "per-channel-peer"` and retains
 previous sessions, bounding provider history without invoking compaction. Exec
 verification rejects truncated request facts and tool outputs from another
-conversation's turn group. `evidence.json` includes sampled allocated
+conversation's turn group. With an exec policy, each settled turn is followed by
+successful `exec.approvals.get`, `exec.approvals.set`,
+`exec.approvals.native.commit`, `agents.list`, `skills.status`, `tools.invoke`,
+and `sessions.list` RPCs. Set alternates an unused synthetic rule, exercising
+semantic publication; native commit records real allowlist usage; tools.invoke
+verifies a second real echo execution. RPC timings are reported separately from
+the QA turn. Allocation and GC cover the complete turn-plus-RPC bundle, not the
+QA dispatch alone. Attached-environment and Board approval flows are not exercised.
+`evidence.json` includes sampled allocated
 MB per completed turn, main-isolate promoted MB per turn, minor/major GC seconds
 per minute, Gateway event-loop p99, and first-outbound/settled-turn distributions.
+Each RPC tail includes its sample count. Use p99 only with at least 1,000 samples
+per side; otherwise use p95 with at least 200 samples per side. Major GC counts
+below 50 per side are context; total GC (minor plus major) carries the GC gate.
 The shared diagnostics preload identifies the main isolate before Gateway
 startup. Sampling uses a 512 KiB interval and includes collected objects; its
 finalization GC occurs after the measurement window. Worker GC is excluded.

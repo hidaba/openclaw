@@ -20,6 +20,13 @@ import { finished } from "node:stream/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { parseArgs } from "node:util";
 import { startQaBusServer, createQaBusState } from "../extensions/qa-lab/bus-api.ts";
+import type { ToolsInvokeResult } from "../packages/gateway-protocol/src/schema/agents-models-skills.js";
+import type {
+  ExecApprovalsNativeCommitParams,
+  ExecApprovalsSnapshot,
+} from "../packages/gateway-protocol/src/schema/exec-approvals.js";
+import { PROTOCOL_VERSION } from "../packages/gateway-protocol/src/version.js";
+import { isRecord } from "../packages/normalization-core/src/record-coerce.js";
 import type { OpenClawConfig } from "../src/config/types.openclaw.js";
 import type { ExecApprovalUsageAuthorization } from "../src/infra/exec-approvals-contracts.js";
 import type { ExecApprovalsFile } from "../src/infra/exec-approvals-core.js";
@@ -42,6 +49,7 @@ import {
   waitForInitialProbe,
   writeGatewayBenchConfig,
 } from "./lib/gateway-bench-runtime.ts";
+import { createGatewayWsClient } from "./lib/gateway-ws-client.ts";
 const EXEC_POLICY_MARKER = "synthetic-exec-policy";
 const STEADY_TURNS_PER_SESSION = 20;
 const { values } = parseArgs({
@@ -53,7 +61,7 @@ const { values } = parseArgs({
     samples: { type: "string", default: "5" },
     "start-at": { type: "string" },
     "steady-duration-ms": { type: "string" },
-    "steady-turns": { type: "string", default: "100" },
+    "steady-turns": { type: "string", default: "200" },
     "warmup-ms": { type: "string" },
     allocations: { type: "boolean" },
     "prepare-only": { type: "boolean" },
@@ -63,7 +71,7 @@ const { values } = parseArgs({
 });
 if (values.help) {
   console.log(
-    "Usage: node --expose-gc --import ./scripts/tsx.mjs scripts/bench-channel-turn.mts [--entry dist/entry.js] [--exec-policy-rules 100|1000] [--exec-policy-only --iterations 1000 --samples 5] [--warmup-ms 120000 --steady-duration-ms 480000 --steady-turns 100 --allocations] [--prepare-only | --prepared-fixture <output-dir>] [--start-at <epoch-ms>]\nRuns one cold and ten warmed QA-channel turns. Steady mode measures at least the requested duration and turn count, with main-isolate GC and loop diagnostics; --allocations samples collected objects in that same window. --start-at synchronizes the measured phase after warm-up. --prepare-only creates synthetic state without starting servers. Exec policy mode verifies one real exec call per turn; --exec-policy-only measures the retained final guard without a Gateway.",
+    "Usage: node --expose-gc --import ./scripts/tsx.mjs scripts/bench-channel-turn.mts [--entry dist/entry.js] [--exec-policy-rules 100|1000] [--exec-policy-only --iterations 1000 --samples 5] [--warmup-ms 120000 --steady-duration-ms 480000 --steady-turns 200 --allocations] [--prepare-only | --prepared-fixture <output-dir>] [--start-at <epoch-ms>]\nRuns one cold and ten warmed QA-channel turns. Steady mode measures at least the requested duration and turn count, with main-isolate GC and loop diagnostics; --allocations samples collected objects in that same window. --start-at synchronizes the measured phase after warm-up. --prepare-only creates synthetic state without starting servers. Exec policy mode verifies one real exec call per turn; --exec-policy-only measures the retained final guard without a Gateway.",
   );
   process.exit(0);
 }
@@ -79,7 +87,7 @@ if (values["exec-policy-only"] && ruleCount === undefined) {
 const steadyDurationMs = values["steady-duration-ms"]
   ? parsePositiveInt(values["steady-duration-ms"], 120000, "steady-duration-ms")
   : 0;
-const steadyTurns = parsePositiveInt(values["steady-turns"], 100, "steady-turns");
+const steadyTurns = parsePositiveInt(values["steady-turns"], 200, "steady-turns");
 const warmupMs = values["warmup-ms"]
   ? parsePositiveInt(values["warmup-ms"], 120000, "warmup-ms")
   : 0;
@@ -468,7 +476,130 @@ function summarizeTurnLatency(samples: number[]) {
   const sorted = samples.toSorted((left, right) => left - right);
   return {
     ...summarizeNumbers(samples),
+    count: samples.length,
+    p95: sorted[Math.ceil(sorted.length * 0.95) - 1] ?? null,
     p99: sorted[Math.ceil(sorted.length * 0.99) - 1] ?? null,
+  };
+}
+
+async function connectExecPolicyRpcProbes(port: number, expectedPid: number) {
+  const { readActiveGatewayLockIdentity } = await import("../src/infra/gateway-lock.js");
+  const owner = await readActiveGatewayLockIdentity({
+    env: createGatewayBenchEnv(fixture, path.join(fixture, "openclaw.json"), {}),
+    requireInspection: true,
+    timeoutMs: 5000,
+  });
+  if (!owner?.ownerId || owner.pid !== expectedPid || owner.port !== port) {
+    throw new Error("Exec policy probes could not bind to their isolated Gateway owner");
+  }
+  const expectedOwnerId = owner.ownerId;
+  const client = createGatewayWsClient({ url: `ws://127.0.0.1:${port}` });
+  const samples: Record<string, number>[] = [];
+  async function request<T>(method: string, params: unknown, timings?: Record<string, number>) {
+    const started = performance.now();
+    const response = await client.request(method, params, 60000);
+    if (!response.ok) {
+      throw new Error(`${method} failed: ${JSON.stringify(response.error)}`);
+    }
+    if (timings) {
+      timings[method] = performance.now() - started;
+    }
+    return response.payload as T;
+  }
+  try {
+    await client.waitOpen();
+    await request("connect", {
+      minProtocol: PROTOCOL_VERSION,
+      maxProtocol: PROTOCOL_VERSION,
+      client: {
+        id: "gateway-client",
+        displayName: "exec-policy-benchmark",
+        version: "1.0.0",
+        platform: process.platform,
+        mode: "backend",
+      },
+      role: "operator",
+      scopes: ["operator.read", "operator.write", "operator.admin"],
+      caps: [],
+    });
+  } catch (error) {
+    client.close();
+    throw error;
+  }
+  return {
+    close: client.close,
+    samples,
+    async run(turn: number, sessionKey: string) {
+      const timings: Record<string, number> = {};
+      const before = await request<ExecApprovalsSnapshot>(
+        "exec.approvals.get",
+        { expectedOwnerId },
+        timings,
+      );
+      const editedPattern = `/synthetic/bin/rpc-toggle-${turn % 2}`;
+      // The decoded RPC response belongs to this driver until it is sent back.
+      before.file.agents!["*"]!.allowlist!.at(-1)!.pattern = editedPattern;
+      const after = await request<ExecApprovalsSnapshot>(
+        "exec.approvals.set",
+        { baseHash: before.hash, file: before.file, expectedOwnerId },
+        timings,
+      );
+      if (
+        after.hash === before.hash ||
+        after.file.agents!["*"]!.allowlist!.at(-1)!.pattern !== editedPattern
+      ) {
+        throw new Error("Exec policy RPC probe did not commit its semantic rule edit");
+      }
+      const match = after.file.agents!.main!.allowlist![0]!;
+      const authorization = await request<{ authorized: boolean }>(
+        "exec.approvals.native.commit",
+        {
+          expectedOwnerId,
+          agentId: "main",
+          command: `${match.pattern} ${EXEC_POLICY_MARKER}`,
+          uses: [{ match, resolvedPath: match.pattern }],
+          grants: [],
+          authorization: {
+            source: "current-policy",
+            security: "allowlist",
+            ask: "on-miss",
+            allowlistSatisfied: true,
+          },
+        } satisfies ExecApprovalsNativeCommitParams,
+        timings,
+      );
+      if (!authorization.authorized) {
+        throw new Error("Native policy RPC probe was not authorized");
+      }
+      await request("agents.list", {}, timings);
+      await request("skills.status", { agentId: "main", sessionKey }, timings);
+      const invoked = await request<ToolsInvokeResult>(
+        "tools.invoke",
+        {
+          name: "exec",
+          sessionKey,
+          args: {
+            command: `${JSON.stringify(realpathSync("/bin/echo"))} ${EXEC_POLICY_MARKER}`,
+            workdir: path.join(fixture, "workspace"),
+          },
+        },
+        timings,
+      );
+      const result = invoked.output;
+      if (
+        !invoked.ok ||
+        !isRecord(result) ||
+        result.isError ||
+        !isRecord(result.details) ||
+        result.details.status !== "completed" ||
+        result.details.exitCode !== 0 ||
+        result.details.aggregated !== EXEC_POLICY_MARKER
+      ) {
+        throw new Error(`RPC exec did not complete successfully: ${JSON.stringify(invoked)}`);
+      }
+      await request("sessions.list", {}, timings);
+      samples.push(timings);
+    },
   };
 }
 const evidence: {
@@ -490,6 +621,7 @@ const evidence: {
     diagnostics: Awaited<ReturnType<Awaited<ReturnType<typeof startGatewayDiagnostics>>>>;
     firstOutboundMs: ReturnType<typeof summarizeTurnLatency>;
     settledMs: ReturnType<typeof summarizeTurnLatency>;
+    rpcTails?: Record<string, ReturnType<typeof summarizeTurnLatency>>;
     allocations?: ReturnType<typeof readGatewayHeapProfile> & { allocatedMbPerTurn: number };
     gc?: ReturnType<typeof readGatewayGcTrace> & {
       promotedMbPerTurn: number;
@@ -513,6 +645,7 @@ let phase = "01.boot";
 let phaseStart = Date.now();
 let bus: Awaited<ReturnType<typeof startQaBusServer>> | undefined;
 let gateway: ChildProcess | undefined;
+let rpcProbes: Awaited<ReturnType<typeof connectExecPolicyRpcProbes>> | undefined;
 let interrupted = false;
 let cleanupPromise: Promise<void> | undefined;
 function save() {
@@ -521,6 +654,7 @@ function save() {
 function cleanup() {
   return (cleanupPromise ??= (async () => {
     try {
+      rpcProbes?.close();
       await Promise.all(
         children.map((child) => stopChild(child, { teardownGraceMs: 10000, killGraceMs: 2000 })),
       );
@@ -705,6 +839,9 @@ try {
   if (ready.status !== 200) {
     throw new Error("Gateway not ready");
   }
+  if (steadyDurationMs && ruleCount) {
+    rpcProbes = await connectExecPolicyRpcProbes(port, gateway.pid!);
+  }
   await delay(1000);
   if (!steadyDurationMs) {
     await waitForBenchmarkStart();
@@ -832,6 +969,9 @@ try {
       outboundId: result.id,
       ...(tool ? { execToolVerified: true } : {}),
     });
+    // RPC timings are separate from the settled QA turn; their work is included
+    // in the same allocation/GC capture and repeated once per measured turn.
+    await rpcProbes?.run(i, `agent:main:qa-channel:direct:dm:${conversationId}`);
     save();
     if (i < 11) {
       await delay(1000);
@@ -855,6 +995,18 @@ try {
       diagnostics,
       firstOutboundMs: summarizeTurnLatency(measuredTurns.map((turn) => turn.firstOutboundMs)),
       settledMs: summarizeTurnLatency(measuredTurns.map((turn) => turn.settledMs)),
+      ...(rpcProbes
+        ? {
+            rpcTails: Object.fromEntries(
+              Object.keys(rpcProbes.samples[0]!).map((method) => [
+                method,
+                summarizeTurnLatency(
+                  rpcProbes.samples.slice(measuredTurnIndex).map((sample) => sample[method]!),
+                ),
+              ]),
+            ),
+          }
+        : {}),
       ...(allocations
         ? {
             allocations: {
