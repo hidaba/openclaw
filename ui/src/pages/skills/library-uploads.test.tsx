@@ -148,6 +148,22 @@ it("retains library controls and keyed rows through pending, failed, and retried
   expect(view.container.querySelector(".settings-row")).toBe(row);
   expect(view.container.querySelector('[role="alert"]')).toBeNull();
   expect(request).toHaveBeenCalledTimes(3);
+
+  const retainedRefresh = createDeferred<SkillsLibraryListResult>();
+  request.mockReturnValueOnce(retainedRefresh.promise);
+  const pendingRefresh = library.load();
+  flush();
+  view.unmount();
+  const remounted = mountSolid(() => <SkillLibrary library={library} navigationActions={null} />);
+  flush();
+  expect(remounted.container.querySelector(".settings-row")?.textContent).toContain(
+    "Updated library skill",
+  );
+  expect(
+    remounted.container.querySelector<HTMLButtonElement>(".settings-row button")?.disabled,
+  ).toBe(true);
+  retainedRefresh.resolve(list);
+  await pendingRefresh;
 });
 
 it.each(["list", "save"] as const)("ignores stale %s failures", async (operation) => {
