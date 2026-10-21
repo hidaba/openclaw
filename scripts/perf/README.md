@@ -1975,7 +1975,21 @@ happens after measurement. The sample preserves parsed payload content, not the
 original wire encoding or response envelope. Use it for offline content and
 serialized-payload comparison, accounting explicitly for expected dynamic fields
 such as timestamps and IDs. Exact uncompressed response-frame byte totals remain
-in the RPC metrics. Neither option changes defaults or generates additional RPCs.
+in the RPC metrics. For `--scenario sessions.list`, capture also writes
+`list-responses.json`: twenty filter, sort, pin, archive, and paging requests issued
+after measurement and removal of the harness-created parent/child sessions (unless
+using a preseeded history). Compare these payloads across revisions with identical fixtures,
+normalizing only recorded envelope timestamps, process-local `rowsRevision` tokens,
+and sandbox paths. Capture remains
+opt-in; the additional requests do not warm the measured workload.
+
+For a bounded owner probe without a Gateway, run
+`node --import ./scripts/tsx.mjs scripts/perf/session-list-order-measure.ts`.
+It reports five sampled allocation/thread-CPU observations for preparation per row
+and warm top-200 sorting over 5,000 rows, plus the selected keys for all three sorts.
+Use `--count-work` in a separate process for exact comparator, pin, activity, and
+key-normalization call counts. That pass enables coverage before loading the owner
+and excludes performance measurements. Run the same script on both revisions.
 
 Turn scenarios use `--runs` (forced
 to one for `chat.send`); `--chunks` controls streamed answer size. `plugins.reload`
