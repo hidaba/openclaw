@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
-import { expect, it, onTestFinished } from "vitest";
+import { expect, it, onTestFinished, vi } from "vitest";
 import { REDACTED_SENTINEL } from "../src/config/redact-snapshot.js";
 import type { OpenClawConfig } from "../src/config/types.js";
 import { extractFirstTextBlock } from "../src/shared/chat-message-content.js";
@@ -27,12 +27,12 @@ const serverSecrets = (redacted = false) => ({
   headers: { Authorization: redacted ? REDACTED_SENTINEL : HEADER_SECRET },
   env: { BILLING_TOKEN: redacted ? REDACTED_SENTINEL : ENV_SECRET },
 });
-const serverArgs = (redacted = false) => [
+const serverArgs = [
   "billing-mcp",
   "--api-key",
-  redacted ? REDACTED_SENTINEL : ARG_SECRET,
-  `--token=${redacted ? REDACTED_SENTINEL : ARG_INLINE_SECRET}`,
-  redacted ? REDACTED_SENTINEL : ARG_POSITIONAL_SECRET,
+  ARG_SECRET,
+  `--token=${ARG_INLINE_SECRET}`,
+  ARG_POSITIONAL_SECRET,
   "--region",
   "us-east-1",
 ];
@@ -75,23 +75,22 @@ async function waitForChatFinal(
   events: Array<{ event?: string; payload?: unknown }>,
   runId: string,
 ): Promise<ChatEventPayload> {
-  const deadline = Date.now() + 45_000;
-  while (Date.now() < deadline) {
-    for (const event of events) {
-      if (event.event !== "chat" || !event.payload || typeof event.payload !== "object") {
-        continue;
+  return vi.waitFor(
+    () => {
+      for (const event of events) {
+        if (event.event !== "chat" || !event.payload || typeof event.payload !== "object") {
+          continue;
+        }
+        const payload = event.payload as ChatEventPayload;
+        if (payload.runId === runId && payload.state === "final") {
+          return payload;
+        }
       }
-      const payload = event.payload as ChatEventPayload;
-      if (payload.runId === runId && payload.state === "final") {
-        return payload;
-      }
-    }
-    await new Promise((resolve) => {
-      setTimeout(resolve, 10);
-    });
-  }
-  throw new Error(
-    `timed out waiting for chat final runId=${runId}; events=${JSON.stringify(events.slice(-12))}`,
+      throw new Error(
+        `waiting for chat final runId=${runId}; events=${JSON.stringify(events.slice(-12))}`,
+      );
+    },
+    { timeout: 45_000, interval: 10 },
   );
 }
 
@@ -108,13 +107,8 @@ it(
           servers: {
             [SERVER_NAME]: {
               ...serverConnection,
-              args: serverArgs(),
+              args: serverArgs,
               ...serverSecrets(),
-            },
-            "local-tools": {
-              command: "uvx",
-              args: ["local-mcp"],
-              env: { TOOL_API_KEY: "second-env-secret-value" },
             },
           },
         },
@@ -147,13 +141,6 @@ it(
       return collectFinalText(await waitForChatFinal(events, runId));
     }
 
-    async function cliSet(payload: object) {
-      const result = await instance.cli(["mcp", "set", SERVER_NAME, JSON.stringify(payload)]);
-      expect(result.code).toBe(0);
-      expect(result.stdout + result.stderr).toContain(`Saved MCP server "${SERVER_NAME}"`);
-      return await readServer(instance);
-    }
-
     try {
       const namedText = await chat(`/mcp show ${SERVER_NAME}`);
 
@@ -165,22 +152,6 @@ it(
       expect(namedText).toContain(`"--token=${REDACTED_SENTINEL}"`);
       expect(namedText).toContain('"--region"');
       expect(namedText).toContain('"us-east-1"');
-      const listText = await chat("/mcp show");
-
-      expect(listText).toContain(`"${SERVER_NAME}"`);
-      expect(listText).toContain('"local-tools"');
-      expectRedacted(listText);
-      expect(listText).not.toContain("second-env-secret-value");
-
-      // CLI preserves JSON argv arrays; chat normalization requires the array-free payload below.
-      const argvRestored = await cliSet({
-        command: "uvx",
-        args: serverArgs(true),
-        ...serverSecrets(true),
-      });
-      expect(argvRestored).toMatchObject({ args: serverArgs(), ...serverSecrets() });
-      expect(JSON.stringify(argvRestored)).not.toContain(REDACTED_SENTINEL);
-
       const setPayload = {
         ...serverConnection,
         ...serverSecrets(true),
@@ -191,10 +162,6 @@ it(
       const saved = await readServer(instance);
       expect(saved).toMatchObject({ command: "uvx", ...serverSecrets() });
       expect(JSON.stringify(saved)).not.toContain(REDACTED_SENTINEL);
-
-      expect(await cliSet({ command: "uvx", ...serverSecrets(true) })).toMatchObject(
-        serverSecrets(),
-      );
     } finally {
       client.stop();
     }

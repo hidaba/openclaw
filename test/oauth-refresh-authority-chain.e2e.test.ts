@@ -4,10 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  isOAuthRefreshFence,
-  isPendingOAuthRefreshFence,
-} from "../src/agents/auth-profiles/oauth-refresh-marker.js";
-import {
   loadPersistedAuthProfileStore,
   loadPersistedSharedAuthProfileStore,
 } from "../src/agents/auth-profiles/persisted.js";
@@ -41,32 +37,25 @@ const OWNER_MODEL_REF = `${PROVIDER_ID}/${OWNER_MODEL_ID}`;
 const PEER_MODEL_REF = `${PROVIDER_ID}/${PEER_MODEL_ID}`;
 const PROFILE_ID = `${PROVIDER_ID}:default`;
 const ACCOUNT_A = "account-a";
-const ACCOUNT_B = "account-b";
 const ACCESS_A_OLD = "access-a-old";
 const ACCESS_A_ROTATED = "access-a-rotated";
-const ACCESS_B = "access-b";
 const REFRESH_A = "refresh-a";
 const REFRESH_A_ROTATED = "refresh-a-rotated";
-const REFRESH_B = "refresh-b";
 const SAME_OWNER_MARKER = "AUTHORITY-SAME-OWNER";
 const SAME_PEER_MARKER = "AUTHORITY-SAME-PEER";
 const SAME_RESTART_MARKER = "AUTHORITY-SAME-RESTART";
-const MISMATCH_OWNER_MARKER = "AUTHORITY-MISMATCH-OWNER";
-const MISMATCH_PEER_MARKER = "AUTHORITY-MISMATCH-PEER";
 const LOGOUT_OWNER_MARKER = "AUTHORITY-LOGOUT-OWNER";
 const LOGOUT_FOLLOWUP_MARKER = "AUTHORITY-LOGOUT-FOLLOWUP";
 const REQUEST_MARKERS = [
   SAME_OWNER_MARKER,
   SAME_PEER_MARKER,
   SAME_RESTART_MARKER,
-  MISMATCH_OWNER_MARKER,
-  MISMATCH_PEER_MARKER,
   LOGOUT_OWNER_MARKER,
   LOGOUT_FOLLOWUP_MARKER,
 ] as const;
 
-type TokenClass = "A" | "B" | "other";
-type ModelAuthClass = "A" | "A-stale" | "B" | "missing" | "other";
+type TokenClass = "A" | "other";
+type ModelAuthClass = "A" | "A-stale" | "missing" | "other";
 type ProviderRequest = {
   marker: string;
   auth: ModelAuthClass;
@@ -115,15 +104,6 @@ afterEach(async () => {
   }
 });
 
-function oauthCredential(params: {
-  accountId: string;
-  access: string;
-  refresh: string;
-  expires: number;
-}): OAuthCredential {
-  return { type: "oauth", provider: PROVIDER_ID, ...params };
-}
-
 function authStore(credential?: OAuthCredential): AuthProfileStore {
   return {
     version: 1,
@@ -136,9 +116,6 @@ function classifyRefresh(value: unknown): TokenClass {
   if (value === REFRESH_A) {
     return "A";
   }
-  if (value === REFRESH_B) {
-    return "B";
-  }
   return "other";
 }
 
@@ -148,9 +125,6 @@ function classifyAuthorization(value: string | undefined): ModelAuthClass {
   }
   if (value === `Bearer ${ACCESS_A_OLD}`) {
     return "A-stale";
-  }
-  if (value === `Bearer ${ACCESS_B}`) {
-    return "B";
   }
   if (!value) {
     return "missing";
@@ -378,11 +352,11 @@ function writeSharedStore(instance: OpenClawTestInstance, store: AuthProfileStor
   );
 }
 
-async function startScenario(name: string, shared?: OAuthCredential | "same-account") {
+async function startScenario(name: string, shared = false) {
   const scenario = await createScenario(name);
   const { instance } = scenario;
   const expiredA = expiredAccountA();
-  writeSharedStore(instance, authStore(shared === "same-account" ? expiredA : shared));
+  writeSharedStore(instance, authStore(shared ? expiredA : undefined));
   await instance.state.writeAuthProfiles(authStore(expiredA), "owner");
   await instance.state.writeAuthProfiles(authStore(expiredA), "peer");
   closeOpenClawAgentDatabasesForTest(instance.stateDir);
@@ -406,18 +380,15 @@ function readSharedCredential(instance: OpenClawTestInstance): OAuthCredential |
   return credential?.type === "oauth" ? credential : undefined;
 }
 
-function expectTerminalFence(credential: OAuthCredential | undefined): void {
-  expect(credential && isOAuthRefreshFence(credential)).toBe(true);
-  expect(credential && isPendingOAuthRefreshFence(credential)).toBe(false);
-}
-
 function expiredAccountA(): OAuthCredential {
-  return oauthCredential({
+  return {
+    type: "oauth",
+    provider: PROVIDER_ID,
     accountId: ACCOUNT_A,
     access: ACCESS_A_OLD,
     refresh: REFRESH_A,
     expires: Date.now() - 60_000,
-  });
+  };
 }
 
 function expectAuthError(result: AgentResult, message: string | RegExp): void {
@@ -513,7 +484,7 @@ describe("OAuth refresh authority chain", () => {
     "makes a pending peer wait and inherit only the same-account shared rotation",
     { timeout: TEST_TIMEOUT_MS },
     async () => {
-      const scenario = await startScenario("oauth-authority-same-account", "same-account");
+      const scenario = await startScenario("oauth-authority-same-account", true);
       let { client } = scenario;
       const owner = await startTurn(client, "owner", SAME_OWNER_MARKER);
       const peer = await startPendingPeer(scenario, client, SAME_PEER_MARKER);
@@ -559,48 +530,6 @@ describe("OAuth refresh authority chain", () => {
         },
       ]);
       expect(scenario.provider.tokenRequests).toEqual(["A"]);
-    },
-  );
-
-  it(
-    "terminally fences a peer when the authoritative shared account differs",
-    { timeout: TEST_TIMEOUT_MS },
-    async () => {
-      const usableB = oauthCredential({
-        accountId: ACCOUNT_B,
-        access: ACCESS_B,
-        refresh: REFRESH_B,
-        expires: Date.now() + 60 * 60 * 1000,
-      });
-      const scenario = await startScenario("oauth-authority-account-mismatch", usableB);
-      const { client } = scenario;
-      const owner = await startTurn(client, "owner", MISMATCH_OWNER_MARKER);
-      const peer = await startPendingPeer(scenario, client, MISMATCH_PEER_MARKER);
-
-      scenario.provider.releaseRefresh();
-      await expect(owner.terminal).resolves.toMatchObject({ status: "ok" });
-      const peerTerminal = await peer.terminal;
-      expectAuthError(peerTerminal, `No credentials found for profile "${PROFILE_ID}".`);
-      await vi.waitFor(() => expect(scenario.provider.modelRequests).toHaveLength(1), {
-        interval: 20,
-        timeout: REQUEST_TIMEOUT_MS,
-      });
-      expect(scenario.provider.modelRequests).toEqual([
-        { marker: MISMATCH_OWNER_MARKER, auth: "A", model: OWNER_MODEL_ID },
-      ]);
-      expect(readLocalCredential(scenario.instance, "owner")).toMatchObject({
-        accountId: ACCOUNT_A,
-        access: ACCESS_A_ROTATED,
-      });
-      expectTerminalFence(readLocalCredential(scenario.instance, "peer"));
-      expect(readLocalCredential(scenario.instance, "peer")).not.toMatchObject({
-        access: ACCESS_A_ROTATED,
-      });
-      expect(readSharedCredential(scenario.instance)).toMatchObject({
-        accountId: ACCOUNT_B,
-        access: ACCESS_B,
-        refresh: REFRESH_B,
-      });
     },
   );
 

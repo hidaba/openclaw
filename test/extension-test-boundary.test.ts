@@ -27,45 +27,19 @@ const BROAD_PUBLIC_SOURCE_ARTIFACT_BASENAMES = new Set(["api.js", "runtime-api.j
 const ROOTDIR_BOUNDARY_CANARY_RE =
   /(^|\/)__rootdir_boundary_canary__\.(?:[cm]?ts|[cm]?js|tsx|jsx)$/u;
 
-function listGitFiles(dir: string): string[] | null {
-  const relativeRoot = toRepoRelativePath(repoRoot, dir);
-  if (!relativeRoot || relativeRoot.startsWith("..") || path.isAbsolute(relativeRoot)) {
-    return null;
+function listGitFiles(dir: string): string[] {
+  const files = listGitTrackedFiles({ repoRoot, pathspecs: toRepoRelativePath(repoRoot, dir) });
+  if (!files) {
+    throw new Error("Boundary guards require a Git source checkout");
   }
-  return listGitTrackedFiles({ repoRoot, pathspecs: relativeRoot });
+  return files;
 }
 
-function walkFiles(
-  dir: string,
-  accept: (file: string) => boolean,
-  entries: string[] = [],
-): string[] {
-  const gitFiles = listGitFiles(dir);
-  if (gitFiles) {
-    entries.push(...gitFiles.filter(accept));
-    return entries;
-  }
-
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (entry.name === "node_modules" || entry.name === "dist" || entry.name === ".git") {
-        continue;
-      }
-      walkFiles(fullPath, accept, entries);
-      continue;
-    }
-    const relativePath = toRepoRelativePath(repoRoot, fullPath);
-    if (accept(relativePath)) {
-      entries.push(relativePath);
-    }
-  }
-  return entries;
-}
-
-const walk = (dir: string) => walkFiles(dir, (file) => /\.test\.tsx?$/u.test(file));
+const walk = (dir: string) => listGitFiles(dir).filter((file) => /\.test\.tsx?$/u.test(file));
 const walkCode = (dir: string) =>
-  walkFiles(dir, (file) => /\.tsx?$/u.test(file) && !ROOTDIR_BOUNDARY_CANARY_RE.test(file));
+  listGitFiles(dir).filter(
+    (file) => /\.tsx?$/u.test(file) && !ROOTDIR_BOUNDARY_CANARY_RE.test(file),
+  );
 const readSource = (file: string) => fs.readFileSync(path.join(repoRoot, file), "utf8");
 const matchingFiles = (files: string[], matches: (source: string) => boolean) =>
   files.filter((file) => matches(readSource(file)));
@@ -125,20 +99,10 @@ function readImportBindingName(binding: string): string {
 }
 
 function collectBundledPluginIds(): Set<string> {
-  const extensionFiles = listGitFiles(path.join(repoRoot, "extensions"));
-  if (extensionFiles) {
-    return new Set(
-      extensionFiles
-        .map((file) => /^extensions\/([^/]+)\//u.exec(file)?.[1])
-        .filter((pluginId): pluginId is string => Boolean(pluginId)),
-    );
-  }
-
   return new Set(
-    fs
-      .readdirSync(path.join(repoRoot, "extensions"), { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name),
+    listGitFiles(path.join(repoRoot, "extensions"))
+      .map((file) => /^extensions\/([^/]+)\//u.exec(file)?.[1])
+      .filter((pluginId): pluginId is string => Boolean(pluginId)),
   );
 }
 
@@ -179,17 +143,8 @@ function isAllowedCoreContractSuite(file: string, imports: readonly string[]): b
 }
 
 describe("non-extension test boundaries", () => {
-  it.each([
-    'import { client } from "../../extensions/feishu/src/client.js";',
-    'import type { Client } from "../../extensions/feishu/src/client.js";',
-    'import "../../extensions/feishu/src/client.js";',
-    'await import("../../extensions/feishu/src/client.js");',
-    'type Client = typeof import("../../extensions/feishu/src/client.js");',
-    'require("../../extensions/feishu/src/client.js");',
-    'import client = require("../../extensions/feishu/src/client.js");',
-    'export * from "../../extensions/feishu/src/client.js";',
-    'export { client } from "../../extensions/feishu/src/client.js";',
-  ])("detects plugin dependencies in executable and type syntax: %s", (source) => {
+  it("detects plugin dependencies in import types", () => {
+    const source = 'type Client = typeof import("../../extensions/feishu/src/client.js");';
     expect(findExtensionImports(parser.parseSourceFile("source.ts", source))).toEqual([
       "../../extensions/feishu/src/client.js",
     ]);

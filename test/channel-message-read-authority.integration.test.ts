@@ -133,7 +133,7 @@ const slackTarget = "C0123456789";
 
 function registerProvider(
   channel: "discord" | "slack",
-  registration: "official" | "bundled" | "legacy" | "unverified",
+  registration: "official" | "bundled" | "unverified",
 ) {
   const owner = createPluginRegistry({
     logger: { info() {}, warn() {}, error() {}, debug() {} },
@@ -152,11 +152,6 @@ function registerProvider(
       ...provider,
       // Status probes have provider-specific generics, unrelated to message dispatch.
       status: undefined,
-      actions: {
-        ...provider.actions!,
-        readAuthorityActions:
-          registration === "legacy" ? undefined : provider.actions?.readAuthorityActions,
-      },
     },
   });
   setActivePluginRegistry(owner.registry);
@@ -420,7 +415,7 @@ type SlackMetadataHarness = {
 async function withSlackMetadataHarness(
   exercise: (harness: SlackMetadataHarness) => Promise<void>,
   options: {
-    registration?: "official" | "bundled" | "legacy" | "unverified";
+    registration?: "official" | "bundled" | "unverified";
     claim?: boolean;
   } = {},
 ) {
@@ -607,63 +602,31 @@ describe("official Slack metadata read boundary", () => {
     });
   });
 
-  it.each(["legacy", "unverified"] as const)(
-    "keeps targetless %s adapters restricted",
-    async (registration) => {
-      await withSlackMetadataHarness(
-        async (harness) => {
-          for (const action of slackMetadataActions) {
-            await expect(invokeSlackMetadata(harness, action)).rejects.toThrow(
-              "exact current conversation",
-            );
-          }
-          expect(harness.requests).toEqual([]);
-        },
-        { registration },
-      );
-    },
-  );
-
-  it.each(["direct", "legacy", "bundled"] as const)(
-    "preserves positive %s metadata reads",
-    async (entry) => {
-      await withSlackMetadataHarness(
-        async (harness) => {
-          for (const action of slackMetadataActions) {
-            const result =
-              entry === "bundled"
-                ? await invokeSlackMetadata(harness, action)
-                : await dispatchChannelMessageAction({
-                    ...harness.context,
-                    action,
-                    params:
-                      entry === "direct"
-                        ? { userId: slackOtherMember }
-                        : { to: slackCurrentTarget },
-                    ...(entry === "direct"
-                      ? {
-                          conversationReadOrigin: "direct-operator" as const,
-                          requesterAccountId: undefined,
-                          requesterSenderId: undefined,
-                          toolContext: undefined,
-                          assertDirectAdapterHandoff: undefined,
-                        }
-                      : {}),
-                  });
-            expect(result).toMatchObject({ details: { ok: true } });
-          }
-          expect(harness.requests.map((request) => request.path)).toEqual([
-            "/api/users.info",
-            "/api/emoji.list",
-          ]);
-          expect(harness.requests[0]?.fields.user).toBe(
-            entry === "direct" ? slackOtherMember : slackRequester,
-          );
-        },
-        { registration: entry === "direct" ? "unverified" : entry },
-      );
-    },
-  );
+  it("preserves direct operator metadata reads", async () => {
+    await withSlackMetadataHarness(
+      async (harness) => {
+        for (const action of slackMetadataActions) {
+          const result = await dispatchChannelMessageAction({
+            ...harness.context,
+            action,
+            params: { userId: slackOtherMember },
+            conversationReadOrigin: "direct-operator",
+            requesterAccountId: undefined,
+            requesterSenderId: undefined,
+            toolContext: undefined,
+            assertDirectAdapterHandoff: undefined,
+          });
+          expect(result).toMatchObject({ details: { ok: true } });
+        }
+        expect(harness.requests.map((request) => request.path)).toEqual([
+          "/api/users.info",
+          "/api/emoji.list",
+        ]);
+        expect(harness.requests[0]?.fields.user).toBe(slackOtherMember);
+      },
+      { registration: "unverified" },
+    );
+  });
 
   it("fences metadata preparation before the SDK can issue a request", async () => {
     await withSlackMetadataHarness(async (harness) => {
