@@ -6,7 +6,7 @@ import type { ExecApprovalRequest } from "../../app/exec-approval.ts";
 import type { SolidBridgeElement } from "../../lib/solid-bridge.ts";
 import { flush, waitForSolid } from "../../test-helpers/solid-settle.ts";
 import { resetChatViewState } from "./chat-view-state.test-support.ts";
-import { renderChatView, requireElement } from "./chat-view.test-helpers.ts";
+import { renderChatInto, renderChatView, requireElement } from "./chat-view.test-helpers.ts";
 import {
   installTranscriptDomMocks,
   resetTranscriptTestDom,
@@ -51,17 +51,28 @@ it("keeps Swarm progress between the transcript and composer", async () => {
     { key: sessionKey, kind: "direct", swarm: { groups: [group], otherActiveGroups: 0 } },
     { key: childKey, kind: "direct", swarmGroupId: groupId, label: "Worker A" },
   ];
-  const container = renderChatView({
+  const props = {
     sessionKey,
     canAbort: true,
     showNewMessages: true,
-    swarm: { sessionKey, sessions },
-  });
+    draft: "Keep the draft while progress arrives",
+  };
+  const container = renderChatView({ ...props, swarm: { sessionKey, sessions: [] } });
+  const textarea = container.querySelector<HTMLTextAreaElement>("textarea")!;
+  textarea.focus();
+  expect(container.querySelector("[data-test-id=chat-swarm]")).toBeNull();
+  renderChatInto(container, { ...props, swarm: { sessionKey, sessions } });
   const widget = await waitForSolid(() =>
     requireElement(container, "[data-test-id=chat-swarm]", "Swarm progress"),
   );
   expectFooterContext(container, widget);
   expect(container.querySelector(".chat-swarm__task-name")?.textContent).toBe("Worker A");
+  expect(container.querySelector("textarea")).toBe(textarea);
+  expect(textarea.value).toBe(props.draft);
+  expect(document.activeElement).toBe(textarea);
+  renderChatInto(container, { ...props, swarm: { sessionKey, sessions: [] } });
+  expect(container.querySelector("[data-test-id=chat-swarm]")).toBeNull();
+  expect(document.activeElement).toBe(textarea);
 });
 
 it("places inline approval above the composer and enforces its grant projection", async () => {

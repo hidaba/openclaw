@@ -13,6 +13,7 @@ import { elementRef } from "../../../lib/reactive/element-ref.ts";
 import { t } from "../../../lib/reactive/i18n.ts";
 import { PaneSubagentStop } from "../chat-pane-header-view.tsx";
 import "../../../styles/chat/composer-context-strip.css";
+import { hasVisibleChatActivityPills } from "./chat-activity-pills-visibility.ts";
 import { createChatAttachmentInputHandle } from "./chat-attachment-inputs.ts";
 import { ChatAttachmentInputs } from "./chat-attachment-inputs.tsx";
 import { AttachmentPreview, AttachmentReadStatus } from "./chat-attachments.tsx";
@@ -332,7 +333,15 @@ export function renderChatComposerView(
             }}
           </Show>
         </div>
-        <Show when={props.mobileComposer && props.mobileActivityPills}>
+        <Show
+          when={
+            props.mobileComposer &&
+            props.mobileActivityPills &&
+            hasVisibleChatActivityPills(props.mobileActivityPills)
+              ? props.mobileActivityPills
+              : undefined
+          }
+        >
           {(activities) => (
             <Loading>
               <ChatActivityPills {...activities()} onLayout={props.onActivityPillsLayout} />

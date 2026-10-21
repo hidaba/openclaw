@@ -5,7 +5,7 @@ import { formatDurationCompact } from "../../../lib/format-duration.ts";
 import { t } from "../../../lib/reactive/i18n.ts";
 import { resolveSessionDisplayName } from "../../../lib/session-display.ts";
 import { isSessionRunStateActive } from "../../../lib/session-run-state.ts";
-import { areUiSessionKeysEquivalent } from "../../../lib/sessions/session-key.ts";
+import { resolveChatSwarmParent } from "./chat-swarm-progress-parent.ts";
 
 type SwarmDotStatus = "queued" | "running" | "done" | "failed";
 
@@ -81,14 +81,7 @@ export type ChatSwarmProgressProps = {
 };
 
 export function ChatSwarmProgress(props: ChatSwarmProgressProps) {
-  const parent = createMemo(() =>
-    props.sessions.find(
-      (row) =>
-        areUiSessionKeysEquivalent(row.key, props.sessionKey) &&
-        ((props.sessionKey !== "global" && props.sessionKey !== "unknown") ||
-          Boolean(props.agentId && row.agentId === props.agentId)),
-    ),
-  );
+  const parent = createMemo(() => resolveChatSwarmParent(props));
   const summary = () => parent()?.swarm;
   const details = createMemo(() => collectSwarmTasks(props.sessions, summary()?.groups ?? []));
   const outcome = () =>

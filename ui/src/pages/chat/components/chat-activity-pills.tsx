@@ -21,6 +21,7 @@ import { createScrollStateRef } from "../../../lib/reactive/scroll-state.ts";
 import type { SessionProgressCardRefreshState } from "../../../lib/session-progress-cards.ts";
 import type { GitHubPublicationView } from "../../../lib/sessions/github-publication-owner.ts";
 import type { ChatSubagentActivity } from "../chat-subagent-wait.ts";
+import { hasVisibleChatActivityPills } from "./chat-activity-pills-visibility.ts";
 import { chatPullRequestId } from "./chat-pull-requests.ts";
 import type { ComposerActivityLayout } from "./chat-transcript-layout-owner.ts";
 import "./chat-activity-pills.css";
@@ -520,14 +521,6 @@ export function ChatActivityPills(props: ChatActivityPillsProps) {
       ) ?? [],
   );
   const hasGoal = () => Boolean(props.goal && !props.goal.hidden);
-  const hasOther = () =>
-    !props.approvalPending &&
-    Boolean(
-      working().length ||
-      props.progress?.showInChat ||
-      props.pullRequests?.items.length ||
-      props.publication,
-    );
   onSettled(() => {
     const scroll = observeScrollState(
       strip,
@@ -604,7 +597,7 @@ export function ChatActivityPills(props: ChatActivityPillsProps) {
         strip = element;
       }}
       class="chat-activity-pills"
-      hidden={!hasGoal() && !hasOther()}
+      hidden={!hasVisibleChatActivityPills(props)}
       data-presented={props.presented ? "true" : "false"}
       role="group"
       aria-label={t("chat.activityPills.label")}

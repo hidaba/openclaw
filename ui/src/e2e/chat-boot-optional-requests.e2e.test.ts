@@ -7,7 +7,7 @@ import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts"
 const suite = createControlUiE2eSuite({ name: "Chat boot optional requests" });
 
 suite.define(() => {
-  it("defers media, login modules and hidden topbar artwork until their surfaces are needed", async () => {
+  it("defers media, empty activity, login modules and hidden artwork until their surfaces are needed", async () => {
     await suite.withPage(
       { viewport: { width: 1440, height: 900 }, serviceWorkers: "block" },
       async ({ page }) => {
@@ -24,6 +24,12 @@ suite.define(() => {
         ].map((file) => controlUiE2eBuiltModuleRequest(`ui/src/pages/chat/components/${file}`));
         const mediaRequests = () =>
           requested.filter((path) => mediaModules.some((module) => module.test(path)));
+        const swarmModule = controlUiE2eBuiltModuleRequest(
+          "ui/src/pages/chat/components/chat-swarm-progress.solid.tsx",
+        );
+        const activityPillsModule = controlUiE2eBuiltModuleRequest(
+          "ui/src/pages/chat/components/chat-activity-pills.tsx",
+        );
         const iconRequests = () =>
           requested.filter((path) => path.endsWith("/apple-touch-icon.png"));
         const sessionKey = "agent:main:dashboard:12345678-90ab-cdef-1234-567890abcdef";
@@ -49,6 +55,7 @@ suite.define(() => {
         expect(iconRequests()).toEqual([]);
         expect(loginRequests()).toEqual([]);
         expect(mediaRequests()).toEqual([]);
+        expect(requested.filter((path) => swarmModule.test(path))).toEqual([]);
 
         const imageMessage = {
           role: "assistant",
@@ -74,6 +81,10 @@ suite.define(() => {
         expect(mediaRequests().length).toBeGreaterThan(0);
 
         await page.setViewportSize({ width: 600, height: 900 });
+        await page.locator('.agent-chat__composer-shell[data-mobile-composer="true"]').waitFor();
+        await page.waitForLoadState("networkidle");
+        expect(requested.filter((path) => activityPillsModule.test(path))).toEqual([]);
+        expect(requested.filter((path) => swarmModule.test(path))).toEqual([]);
         await page.goto(`${suite.server.baseUrl}new`);
         await gateway.waitForRequest("connect");
         await gateway.resolveDeferred("connect");

@@ -45,6 +45,7 @@ import { ChatConversationMobile } from "./components/chat-conversation-presentat
 import { isImageLightboxEvent, openInlineChatImage } from "./components/chat-image-lightbox.ts";
 import { ChatPullRequests } from "./components/chat-pull-requests.tsx";
 import { ChatSelectionAnnotations } from "./components/chat-selection-annotations.tsx";
+import { resolveChatSwarmParent } from "./components/chat-swarm-progress-parent.ts";
 import {
   getTranscriptState,
   toggleTranscriptSearch,
@@ -97,6 +98,12 @@ function ChatFooterContent(
     activities?: ChatActivityPillsProps;
   },
 ) {
+  const swarm = createMemo(() => {
+    const progress = input.props.swarm;
+    return progress && resolveChatSwarmParent(progress)?.swarm?.groups.length
+      ? progress
+      : undefined;
+  });
   const pendingInputs = () => input.frame.pendingInputs;
   const pendingButton = (page: "earlier" | "latest") => (
     <button
@@ -190,10 +197,10 @@ function ChatFooterContent(
           />
         </Loading>
       </Show>
-      <Show when={input.props.swarm}>
-        {(swarm) => (
+      <Show when={swarm()}>
+        {(progress) => (
           <Loading>
-            <ChatSwarmProgress {...swarm()} />
+            <ChatSwarmProgress {...progress()} />
           </Loading>
         )}
       </Show>

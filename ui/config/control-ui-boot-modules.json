@@ -1687,6 +1687,7 @@
   "ui/src/pages/chat/components/browser-tab-tweet.ts",
   "ui/src/pages/chat/components/chat-activity-headline-selection.ts",
   "ui/src/pages/chat/components/chat-activity-headline.solid.tsx",
+  "ui/src/pages/chat/components/chat-activity-pills-visibility.ts",
   "ui/src/pages/chat/components/chat-agent-run-frame.tsx",
   "ui/src/pages/chat/components/chat-async-question-draft.ts",
   "ui/src/pages/chat/components/chat-async-question-summary.tsx",
@@ -1833,7 +1834,7 @@
   "ui/src/pages/chat/components/chat-subagents-panel-desktop.css",
   "ui/src/pages/chat/components/chat-subagents-panel-desktop.tsx",
   "ui/src/pages/chat/components/chat-subagents-working.css",
-  "ui/src/pages/chat/components/chat-swarm-progress.solid.tsx",
+  "ui/src/pages/chat/components/chat-swarm-progress-parent.ts",
   "ui/src/pages/chat/components/chat-system-events.tsx",
   "ui/src/pages/chat/components/chat-thread-interactions.ts",
   "ui/src/pages/chat/components/chat-thread-menu.tsx",
@@ -1959,7 +1960,6 @@
   "chat": [
    "ui/src/lib/sessions/session-message-subscriptions.runtime.ts",
    "ui/src/lib/sessions/swarm-roster.ts",
-   "ui/src/pages/chat/components/chat-swarm-progress.solid.tsx",
    "ui/src/pages/chat/route-entry.ts",
    "ui/src/pages/chat/route-loader.ts"
   ]
