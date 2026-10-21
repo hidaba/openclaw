@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, Errored, For, Loading } from "solid-js";
+import { createMemo, Errored, For, latest, Loading } from "solid-js";
 import { ShellLayoutBoundary } from "../../app/shell-layout-traits-solid.tsx";
 import { HubTabs } from "../../components/solid/hub-tabs.tsx";
 import {
@@ -310,6 +310,8 @@ function AddonStatus(props: { state: MemoryPluginState }) {
 
 function AddonRow(props: { addon: MemoryAddonRow; owner: MemoryViewProps }) {
   // Read optimistic affordances at the control, outside the held catalog row snapshot.
+  // A retry dismisses the old error ahead of its action's held catalog update.
+  const error = () => (props.owner.readAddonBusy(props.addon.id) ? null : props.addon.error);
   return (
     <>
       {props.owner.canToggleAddons &&
@@ -331,10 +333,10 @@ function AddonRow(props: { addon: MemoryAddonRow; owner: MemoryViewProps }) {
           control={<AddonStatus state={props.addon.state} />}
         />
       )}
-      {props.addon.error === null ? undefined : (
+      {latest(error) === null ? undefined : (
         <SettingsRow
           title={t("memoryPage.addons.changeFailed", { plugin: props.addon.label })}
-          description={props.addon.error}
+          description={error()}
           control={<SettingsStatus kind="danger" label={t("common.failed")} />}
         />
       )}
