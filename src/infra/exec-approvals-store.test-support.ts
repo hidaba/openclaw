@@ -1,8 +1,8 @@
 import { runClientCredentialOperation } from "./client-credential-store.js";
-import type { ExecApprovalsFile } from "./exec-approvals-core.js";
+import type { ReadonlyExecApprovalsFile } from "./exec-approvals-core.js";
 import { updateExecApprovalsForMaintenance } from "./exec-approvals-maintenance.js";
 
-export function saveExecApprovals(file: ExecApprovalsFile): void {
+export function saveExecApprovals(file: ReadonlyExecApprovalsFile): void {
   updateExecApprovalsForMaintenance({ update: () => file });
   if (file.socket?.path || file.socket?.token) {
     runClientCredentialOperation(process.env, {

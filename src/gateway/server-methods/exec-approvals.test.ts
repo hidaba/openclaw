@@ -2,7 +2,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
 import { applyExecApprovalsUpdate } from "../../infra/exec-approvals-mutation.kernel.js";
 import * as execApprovalsSocket from "../../infra/exec-approvals-socket.js";
-import type { ExecApprovalsFile } from "../../infra/exec-approvals.js";
+import type { ReadonlyExecApprovalsFile } from "../../infra/exec-approvals.js";
 import { acquireGatewayLock, readLockPayloadSync } from "../../infra/gateway-lock.js";
 import * as workerAdmission from "../../infra/sqlite-worker-operation-admission.js";
 import { sqliteWorkerOwnerProbe as probe } from "../../infra/sqlite-worker-owner-probe.test-support.js";
@@ -29,7 +29,7 @@ vi.mock("../../infra/exec-approvals.js", async (importOriginal) => {
 
 const { execApprovalsHandlers } = await import("./exec-approvals.js");
 
-function makeSnapshot(file: ExecApprovalsFile = { version: 1, agents: {} }) {
+function makeSnapshot(file: ReadonlyExecApprovalsFile = { version: 1, agents: {} }) {
   return {
     path: "/tmp/exec-approvals.json",
     exists: true,
@@ -409,7 +409,7 @@ describe("exec approvals gateway methods", () => {
       hash: "sha256:missing",
     };
     readExecApprovalsSnapshotMock.mockReturnValueOnce(missingSnapshot);
-    let createdFile: ExecApprovalsFile | undefined;
+    let createdFile: ReadonlyExecApprovalsFile | undefined;
     updateExecApprovalsMock.mockImplementationOnce(
       async (
         params: Parameters<typeof import("../../infra/exec-approvals.js").updateExecApprovals>[0],

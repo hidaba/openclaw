@@ -134,8 +134,10 @@ describe("Claude CLI node command", () => {
           stagedPrompt = args[0];
           if (revoke) {
             const current = loadExecApprovals();
-            current.defaults = { ...current.defaults, security: "deny", ask: "off" };
-            saveExecApprovals(current);
+            saveExecApprovals({
+              ...current,
+              defaults: { ...current.defaults, security: "deny", ask: "off" },
+            });
           }
         });
         try {

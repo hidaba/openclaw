@@ -18,6 +18,7 @@ function loadExecApprovalsDeprecated(): ExecApprovalsFile {
     method: "loadExecApprovals",
     replacement: "loadExecApprovalsReadOnlyAsync",
   });
+  // SAFETY: structuredClone detaches and thaws the readonly owner data for the mutable SDK contract.
   return structuredClone(loadExecApprovalsSync()) as ExecApprovalsFile;
 }
 
@@ -28,6 +29,7 @@ function readExecApprovalsSnapshotDeprecated(): ExecApprovalsSnapshot {
     method: "readExecApprovalsSnapshot",
     replacement: "readExecApprovalsSnapshotAsync",
   });
+  // SAFETY: structuredClone detaches and thaws the readonly owner data for the mutable SDK contract.
   return structuredClone(readExecApprovalsSnapshotSync()) as ExecApprovalsSnapshot;
 }
 
@@ -40,18 +42,21 @@ export {
 async function loadDetachedExecApprovalsReadOnlyAsync(
   ...args: Parameters<typeof loadExecApprovalsReadOnlyInternal>
 ): Promise<ExecApprovalsFile> {
+  // SAFETY: structuredClone detaches and thaws the readonly owner data for the mutable SDK contract.
   return structuredClone(await loadExecApprovalsReadOnlyInternal(...args)) as ExecApprovalsFile;
 }
 
 async function readDetachedExecApprovalsSnapshotAsync(
   ...args: Parameters<typeof readExecApprovalsSnapshotInternal>
 ): Promise<ExecApprovalsSnapshot> {
+  // SAFETY: structuredClone detaches and thaws the readonly owner data for the mutable SDK contract.
   return structuredClone(await readExecApprovalsSnapshotInternal(...args)) as ExecApprovalsSnapshot;
 }
 
 function resolveDetachedExecApprovalsFromFile(
   ...args: Parameters<typeof resolveExecApprovalsFromFileInternal>
 ): ExecApprovalsResolved {
+  // SAFETY: structuredClone detaches and thaws the readonly owner data for the mutable SDK contract.
   return structuredClone(resolveExecApprovalsFromFileInternal(...args)) as ExecApprovalsResolved;
 }
 
