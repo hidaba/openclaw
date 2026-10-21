@@ -28,9 +28,7 @@ import "../styles/mcp-app-extensions.css";
 
 registerMcpAppEnglish();
 
-const DiscoveryStatus = lazy(() => import("./mcp-app-discovery-status.tsx"), {
-  export: "McpAppDiscoveryStatus",
-});
+const DiscoveryStatus = lazy(() => import("./mcp-app-discovery-status.tsx"));
 
 type McpAppCatalogProps = {
   sessionKey?: string;

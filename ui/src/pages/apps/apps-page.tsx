@@ -19,9 +19,7 @@ import { Apps } from "./view.tsx";
 
 registerEnglishCatalog(registerMcpAppEnglish);
 
-const DiscoveryStatus = lazy(() => import("../../components/mcp-app-discovery-status.tsx"), {
-  export: "McpAppDiscoveryStatus",
-});
+const DiscoveryStatus = lazy(() => import("../../components/mcp-app-discovery-status.tsx"));
 
 type AppsPageProps = { appSearch?: string };
 type AppLaunch = { key: string; detail?: McpAppOpenDetail };

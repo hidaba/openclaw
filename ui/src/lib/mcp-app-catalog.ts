@@ -180,13 +180,14 @@ export function createMcpAppCatalog(
       }
     }
   }
-  const snapshot = () => ({
-    ...state,
+  const snapshot = () => {
+    const servers = state.servers;
+    const onboarding = state.onboarding;
     // Consumers can retain a launch during render, before the refresh effect clears old results.
-    ...(discoveryIdentity() === identity && gateway.read().snapshot.client === identityClient
-      ? {}
-      : { servers: [], onboarding: [] }),
-  });
+    return discoveryIdentity() === identity && gateway.read().snapshot.client === identityClient
+      ? { servers, onboarding }
+      : { servers: [], onboarding: [] };
+  };
   return {
     snapshot,
     request,

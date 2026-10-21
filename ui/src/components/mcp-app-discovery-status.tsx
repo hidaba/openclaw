@@ -10,7 +10,7 @@ type DiscoveryStatusProps = {
   retryDisabled?: boolean;
 };
 
-export function McpAppDiscoveryStatus(props: DiscoveryStatusProps) {
+export default function McpAppDiscoveryStatus(props: DiscoveryStatusProps) {
   return (
     <For
       each={props.request ? [props.request] : []}
