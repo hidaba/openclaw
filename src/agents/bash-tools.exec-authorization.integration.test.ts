@@ -3,8 +3,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { execApprovalsPublication } from "../infra/exec-approvals-publication.js";
 import { saveExecApprovals } from "../infra/exec-approvals-store.test-support.js";
-import { loadExecApprovalsReadOnly } from "../infra/exec-approvals.js";
+import {
+  loadExecApprovalsReadOnly,
+  recordAllowlistMatchesUse,
+  updateExecApprovals,
+} from "../infra/exec-approvals.js";
 import type { ExecAutoReviewer } from "../infra/exec-auto-review.js";
 import { resolveExecutablePath } from "../infra/executable-path.js";
 import { createProcessSupervisor } from "../process/supervisor/supervisor.js";
@@ -295,6 +300,94 @@ describe.skipIf(process.platform === "win32")("gateway execution authorization b
       expect(review.mock.calls.length).toBe(authority === "auto" ? 1 : 0);
       expect(boundary.prepare.mock.calls.length).toBe(1);
       expect(loadExecApprovalsReadOnly().defaults?.security).toBe("deny");
+    },
+  );
+
+  it.each(["usage-only", "revoked", "downgraded"] as const)(
+    "checks delayed approval after usage publication before a real child effect (%s)",
+    async (change) => {
+      vi.stubEnv("OPENCLAW_EXEC_SHELL_SNAPSHOT", "0");
+      const marker = path.join(root, "executed");
+      const entry = {
+        id: "touch",
+        pattern: fs.realpathSync("/usr/bin/touch"),
+        source: "allow-always" as const,
+      };
+      saveExecApprovals({
+        version: 1,
+        defaults: { security: "allowlist", ask: "on-miss", askFallback: "deny" },
+        agents: { main: { allowlist: [entry] } },
+      });
+      approve("allow-once");
+      const publications: string[] = [];
+      const releaseFacts = execApprovalsPublication.subscribeFacts((event) => {
+        if (event.kind === "committed") {
+          const fact = event.receipt.facts.get("current");
+          if (fact?.kind === "postimage") {
+            publications.push(fact.value.change);
+          }
+        }
+      });
+      boundary.prepare.mockImplementation(async () => {
+        publications.length = 0;
+        await recordAllowlistMatchesUse({
+          agentId: "main",
+          matches: [entry],
+          command: "subsequent synthetic usage",
+          authorization: {
+            source: "current-policy",
+            security: "allowlist",
+            ask: "on-miss",
+            allowlistSatisfied: true,
+          },
+        });
+        if (change !== "usage-only") {
+          const current = loadExecApprovalsReadOnly();
+          await updateExecApprovals({
+            update: {
+              kind: "replace",
+              file: {
+                ...current,
+                agents: {
+                  ...current.agents,
+                  main: {
+                    ...current.agents?.main,
+                    allowlist:
+                      change === "revoked"
+                        ? []
+                        : current.agents?.main?.allowlist?.map((rule) =>
+                            Object.assign({}, rule, { source: undefined }),
+                          ),
+                  },
+                },
+              },
+            },
+          });
+        }
+      });
+      try {
+        const pending = tool(reviewer(), "ask").execute("delayed-usage-publication", {
+          command: "/usr/bin/touch executed",
+        });
+        const allowed = change === "usage-only";
+        if (allowed) {
+          const result = await pending;
+          expect(result.details).toMatchObject({ status: "completed", exitCode: 0 });
+        } else {
+          await expect(pending).rejects.toThrow("Exec approval changed before execution");
+        }
+        expect(publications).toEqual(allowed ? ["usage"] : ["usage", "policy"]);
+        expect(boundary.prepare.mock.calls.length).toBe(1);
+        expect(boundary.spawn.mock.calls.length).toBe(allowed ? 1 : 0);
+        expect(fs.existsSync(marker)).toBe(allowed);
+        expect(
+          vi
+            .mocked(callGatewayTool)
+            .mock.calls.filter(([method]) => method === "exec.approval.waitDecision"),
+        ).toHaveLength(1);
+      } finally {
+        releaseFacts();
+      }
     },
   );
 
