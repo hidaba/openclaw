@@ -135,19 +135,27 @@ function sourceAuthority(isCurrent: () => boolean) {
     }
   };
 }
-async function pendingRun(question: string) {
+async function pendingRun(question: string, warm = false) {
   const pending = createDeferredCore<string>();
   const started = createDeferredCore();
+  const controller = new AbortController();
+  let runs = 0;
   const harness = createHarness({
     run: async () => {
+      if (warm && runs++ === 0) {
+        return "existing answer";
+      }
       started.resolve();
       return pending.promise;
     },
   });
-  const active = harness.service.ask(askRequest(question));
+  if (warm) {
+    await harness.service.ask(askRequest("What is already known?"));
+  }
+  const active = harness.service.ask(askRequest(question, { signal: controller.signal }));
   await awaitGateBeforeSettlement(started.promise, active, "Side chat settled before model start");
-  expect(harness.run).toHaveBeenCalledOnce();
-  return { ...harness, pending, active };
+  expect(harness.run).toHaveBeenCalledTimes(warm ? 2 : 1);
+  return { ...harness, pending, active, controller };
 }
 afterEach(async () => {
   vi.useRealTimers();
@@ -499,56 +507,29 @@ it("times out a pending context read and fences it from a replacement ask", asyn
   }
 });
 
-it.each([
-  ["reset", (service: Companion) => service.reset(target), "unavailable"],
-  [
-    "backing-session reset",
-    () => notifyGatewaySessionReset(target.sessionKey, target.agentId),
-    "context-unavailable",
-  ],
-  ["disposal", (service: Companion) => service.dispose(), "unavailable"],
-] as const)(
+it.each(["reset", "backing-session reset", "disposal", "request-abort"] as const)(
   "%s cancels an active ask without committing its late result",
-  async (_cause, cancel, reason) => {
-    const { service, pending, active } = await pendingRun("Still there?");
-    cancel(service);
+  async (cause) => {
+    const warm = cause === "request-abort";
+    const { service, pending, active, controller } = await pendingRun("Still there?", warm);
+    if (cause === "reset") {
+      service.reset(target);
+    } else if (cause === "backing-session reset") {
+      notifyGatewaySessionReset(target.sessionKey, target.agentId);
+    } else if (cause === "disposal") {
+      service.dispose();
+    } else {
+      controller.abort();
+    }
     pending.resolve("late answer");
-    await expect(active).rejects.toMatchObject({ reason });
-    expectEmpty(service);
+    await expect(active).rejects.toMatchObject({
+      reason: cause === "backing-session reset" ? "context-unavailable" : "unavailable",
+    });
+    expect(service.state(target).exchanges).toEqual(
+      warm ? [savedExchange("What is already known?", "existing answer")] : [],
+    );
   },
 );
-
-it("cancels a disconnected request before a late model result can commit", async () => {
-  const pending = createDeferredCore<string>();
-  const controller = new AbortController();
-  const started = createDeferredCore();
-  let runCount = 0;
-  const harness = createHarness({
-    run: async () => {
-      if (runCount++ === 0) {
-        return "existing answer";
-      }
-      started.resolve();
-      return pending.promise;
-    },
-  });
-  await harness.service.ask(askRequest("What is already known?"));
-  const active = harness.service.ask(
-    askRequest("Will a disconnected request commit?", { signal: controller.signal }),
-  );
-  await awaitGateBeforeSettlement(started.promise, active, "Side chat settled before model start");
-  expect(harness.run).toHaveBeenCalledTimes(2);
-
-  controller.abort();
-  pending.resolve("late answer");
-
-  await expect(active).rejects.toMatchObject({
-    reason: "unavailable",
-  });
-  expect(harness.service.state(target).exchanges).toEqual([
-    savedExchange("What is already known?", "existing answer"),
-  ]);
-});
 
 it("keeps provider failures terminal after one model call", async () => {
   const harness = createHarness({

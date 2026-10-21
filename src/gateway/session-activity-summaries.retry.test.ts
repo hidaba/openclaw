@@ -12,7 +12,6 @@ import {
   persistSessionTranscriptTurn,
   readSessionTranscriptWatermark,
   SessionTranscriptProjectionUnavailableError,
-  upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
 import { seedUnindexedTranscriptForTest } from "../config/sessions/session-accessor.sqlite-import.test-support.js";
 import { readSessionEntryReadOnlyInWorker } from "../config/sessions/session-entry-read-runtime.js";
@@ -33,11 +32,11 @@ import {
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
-import { sessionActivitySummaryHandlers } from "./server-methods/session-activity-summary.js";
 import {
   createSessionActivitySummaries,
   type SessionActivitySummaryService,
 } from "./session-activity-summaries.js";
+import { recapRpc, seedRecapConversation } from "./session-activity-summaries.test-support.js";
 import { readActivitySummaryBatch } from "./session-activity-summary-source.worker.js";
 import {
   projectSessionActivitySummary,
@@ -85,13 +84,7 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
     });
   const addSession = async (index: number, agentId = "main") => {
     const target = { agentId, key: `agent:${agentId}:recap-${index}` };
-    await upsertSessionEntryCore(scope(target), { sessionId: target.key, updatedAt: 1 });
-    await persistSessionTranscriptTurn(scope(target), {
-      messages: [
-        { eventId: `message-${index}`, message: { role: "user", content: `Request ${index}` } },
-      ],
-      touchSessionEntry: false,
-    });
+    await seedRecapConversation(scope(target), `Request ${index}`, {}, `message-${index}`);
     return target;
   };
   const appendMessage = (
@@ -722,17 +715,9 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
       getRuntimeConfig: () => cfg,
       sessionActivitySummaries: service,
     });
-    const respond = vi.fn();
+    const { respond, invoke } = recapRpc("sessions.activitySummary.ensure", context, "capacity");
     const ensure = async (sessions: ActivitySummaryTarget[]) => {
-      const params = { sessions };
-      await sessionActivitySummaryHandlers["sessions.activitySummary.ensure"]!({
-        req: { type: "req", id: "capacity", method: "sessions.activitySummary.ensure", params },
-        params,
-        context,
-        client: null,
-        respond,
-        isWebchatConnect: () => false,
-      });
+      await invoke({ sessions });
       expect(respond.mock.calls.at(-1)?.[0]).toBe(true);
     };
     try {

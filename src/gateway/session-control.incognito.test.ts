@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement } from "../../test/helpers/promise.js";
 import "../test-utils/prepare-compiled-subprocesses.js";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
@@ -26,12 +26,18 @@ import {
   createGatewaySchedulerClock,
   createTestGatewayScheduler,
 } from "../test-utils/gateway-scheduler-clock.js";
+import { observeMainThreadSql } from "../test-utils/main-thread-sql-spies.test-support.js";
+import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
 import * as chatSend from "./server-methods/chat-send-handler.js";
+import { environmentsSessionHandlers } from "./server-methods/environments.session.js";
+import { sessionActivitySummaryHandlers } from "./server-methods/session-activity-summary.js";
 import { flushPendingSessionsChangedEvents } from "./server-methods/session-change-event.js";
 import { withSessionMutationCommitGuard } from "./server-methods/session-mutation-guards.js";
 import { sessionDeleteHandlers } from "./server-methods/sessions-delete.js";
 import { sessionGoalHandlers } from "./server-methods/sessions-goal.js";
+import { sessionProviderReviewHandlers } from "./server-methods/sessions-provider-review.js";
 import { initializeSessionReadContext } from "./server-methods/sessions-read-cache.test-support.js";
+import { soloClient } from "./server-methods/sessions-sharing.test-support.js";
 import { sessionSuggestionHandlers } from "./server-methods/sessions-suggestions.js";
 import { skillsLibraryHandlers } from "./server-methods/skills-library.js";
 import { taskSuggestionsHandlers } from "./server-methods/task-suggestions.js";
@@ -42,6 +48,7 @@ import type {
   RespondFn,
   SessionMutationAuthorization,
 } from "./server-methods/types.js";
+import type { SessionActivitySummaryService } from "./session-activity-summaries.js";
 import { defaultSessionCompanionContextReader } from "./session-companion-context.js";
 import { sessionCompanionHandlers } from "./session-companion-rpc.js";
 import {
@@ -51,6 +58,7 @@ import {
   readCompanionSeed,
 } from "./session-companion-runtime.test-support.js";
 import { createSessionCompanion } from "./session-companion.js";
+import * as sharing from "./session-sharing.js";
 import { resolveSessionMutationAuthorization } from "./session-sharing.js";
 import { sharingPolicyClient } from "./session-sharing.test-utils.js";
 const runLoop = vi.hoisted(() =>
@@ -76,7 +84,8 @@ const refused = (error: object) => [false, undefined, expect.objectContaining(er
 let client: GatewayClient;
 let location: { agentId: string; path: string };
 let env: NodeJS.ProcessEnv;
-const context = {
+let context: GatewayRequestContext;
+const controlContext = {
   getRuntimeConfig: () => cfg,
   getCommittedRuntimeConfig: () => cfg,
   broadcast: vi.fn(),
@@ -85,33 +94,34 @@ const context = {
   logGateway: { warn: vi.fn() },
 } as unknown as GatewayRequestContext;
 
-beforeAll(async () => {
-  env = { OPENCLAW_STATE_DIR: dirs.make("incognito-controls-") };
-  vi.stubEnv("OPENCLAW_STATE_DIR", env.OPENCLAW_STATE_DIR);
-  location = {
-    agentId: "main",
-    path: resolveIncognitoOpenClawAgentSqlitePath({ agentId: "main", env }),
-  };
-  const profile = ensureProfileForEmail("private-control@example.test");
-  client = {
-    ...sharingPolicyClient({ user: profile.id, scopes: ["operator.admin"] }),
-    connId: "private-control",
-  };
-});
-beforeEach(() => {
-  vi.stubEnv("OPENCLAW_STATE_DIR", env.OPENCLAW_STATE_DIR);
-  setRuntimeConfigSnapshot(cfg);
-});
-afterEach(() => {
-  clearRuntimeConfigSnapshot();
-  vi.restoreAllMocks();
-});
-afterAll(async () => {
-  await flushPendingSessionsChangedEvents();
-  memorySessionActorOwners.closeDatabase(location);
-  await closeOpenClawAgentDatabasesAsync();
-  vi.unstubAllEnvs();
-});
+function setupControls(prefix: string, config: OpenClawConfig, initialize: () => Promise<void>) {
+  beforeAll(async () => {
+    cfg = config;
+    env = { OPENCLAW_STATE_DIR: dirs.make(prefix) };
+    vi.stubEnv("OPENCLAW_STATE_DIR", env.OPENCLAW_STATE_DIR);
+    setRuntimeConfigSnapshot(cfg);
+    location = {
+      agentId: "main",
+      path: resolveIncognitoOpenClawAgentSqlitePath({ agentId: "main", env }),
+    };
+    await initialize();
+  });
+  beforeEach(() => {
+    vi.stubEnv("OPENCLAW_STATE_DIR", env.OPENCLAW_STATE_DIR);
+    setRuntimeConfigSnapshot(cfg);
+  });
+  afterEach(() => {
+    clearRuntimeConfigSnapshot();
+    vi.restoreAllMocks();
+  });
+  afterAll(async () => {
+    await flushPendingSessionsChangedEvents();
+    memorySessionActorOwners.closeDatabase(location);
+    await closeOpenClawAgentDatabasesAsync();
+    clearRuntimeConfigSnapshot();
+    vi.unstubAllEnvs();
+  });
+}
 
 async function seed(
   sessionKey: string,
@@ -168,294 +178,403 @@ function requests(
 const read = (sessionKey: string) =>
   memorySessionActorOwners.read(location)?.readSession(sessionKey, authority)?.entry;
 
-it("returns the unbound memory Goal receipt on retry and serves suggestion mutations without host SQL", async () => {
-  const sessionKey = "agent:main:dashboard:incognito-controls";
-  const sessionId = "controls";
-  const suggest = requests(sessionSuggestionHandlers, "session.suggestions", { sessionKey });
-  await seed(sessionKey, {
-    sessionId,
-    lifecycleRevision: "first",
-    visibility: "suggest",
-    label: "Keep this label",
-    goal: {
-      schemaVersion: 1,
-      id: "goal",
-      objective: "Before",
-      status: "paused",
-      createdAt: 1,
-      updatedAt: 1,
-      tokenStart: 0,
-      tokensUsed: 0,
-      continuationTurns: 0,
+describe("incognito preflight without a durable profile", () => {
+  const key = "agent:main:dashboard:incognito-preflight";
+  setupControls(
+    "incognito-control-preflights-",
+    { agents: { entries: { main: {}, absent: {} } } },
+    async () => {
+      await seed(key, { sessionId: "private-preflight" });
     },
-  });
-  await initializeSessionReadContext(context);
-  const host = observeHostDataSql();
-  try {
-    const request = {
-      sessionKey,
-      agentId: "main",
-      sessionId,
-      goalId: "goal",
-      action: "edit",
-      objective: "After",
-      operationId: "edit-once",
-      issuedAtMs: Date.now(),
-    };
-    const first = await invoke(
-      sessionGoalHandlers,
-      "sessions.goal.update",
-      request,
-      ok({ goal: expect.objectContaining({ objective: "After" }) }),
-    );
-    const replay = await invoke(sessionGoalHandlers, "sessions.goal.update", request);
-    result(replay, true, { ...(first.mock.calls[0]![1] as object), replayed: true }, undefined);
-    expect(read(sessionKey)).toMatchObject({
-      label: "Keep this label",
-      goal: { objective: "After", status: "paused" },
-    });
-    const otherRoot = dirs.make("incognito-controls-other-root-");
-    const addSuggestion = sessionMetadataWrites.addSessionSuggestionInWorker;
-    const addSpy = vi
-      .spyOn(sessionMetadataWrites, "addSessionSuggestionInWorker")
-      .mockImplementationOnce(async (...args) => {
-        vi.stubEnv("OPENCLAW_STATE_DIR", otherRoot);
-        try {
-          return await addSuggestion(...args);
-        } finally {
-          vi.stubEnv("OPENCLAW_STATE_DIR", env.OPENCLAW_STATE_DIR);
-        }
-      });
-    const added = await suggest("add", { text: "Check this" });
-    expect(addSpy).toHaveBeenCalledOnce();
-    expect(
-      memorySessionActorOwners.read({
-        agentId: "main",
-        path: resolveIncognitoOpenClawAgentSqlitePath({
-          agentId: "main",
-          env: { OPENCLAW_STATE_DIR: otherRoot },
-        }),
-      }),
-    ).toBeUndefined();
-    result(
-      added,
-      true,
-      expect.objectContaining({ suggestion: expect.objectContaining({ text: "Check this" }) }),
-    );
-    const suggestion = (added.mock.calls[0]![1] as { suggestion: { id: string } }).suggestion;
-    await suggest("list", {}, [
-      true,
-      expect.objectContaining({ suggestions: [expect.objectContaining({ id: suggestion.id })] }),
-    ]);
-    await suggest("resolve", { id: suggestion.id, resolution: "dismiss" }, [
-      true,
-      expect.objectContaining({ suggestion: expect.objectContaining({ state: "dismissed" }) }),
-    ]);
-    expect(host.queries).toEqual([]);
-  } finally {
-    host.restore();
+  );
+  function preflight() {
+    const sql = observeMainThreadSql();
+    const target = vi.spyOn(sharing, "resolveSessionSharingTargetAsync");
+    client = soloClient();
+    client.connect.client.mode = "ui";
+    context = createDirectChatContext({ getRuntimeConfig: () => cfg });
+    return { sql, target };
   }
-});
-
-it("retains an unbound memory Side chat source for durable writes and refuses a closed transport", async () => {
-  const sessionKey = "agent:main:dashboard:incognito-side-chat";
-  const sessionId = "side-chat-source";
-  const ask = requests(sessionCompanionHandlers, "sessions.companion", { sessionKey });
-  await seed(sessionKey, { sessionId, lifecycleRevision: "first" }, [
-    { type: "session", id: sessionId, version: 3, cwd: "/synthetic" },
-    {
-      type: "message",
-      id: "private-context",
-      parentId: null,
-      message: { role: "user", content: "Original private context", timestamp: 1 },
+  const paramsByAction = {
+    provider: {
+      sessionId: "private-preflight",
+      reviewId: "private-review",
+      idempotencyKey: "private-run",
     },
-  ]);
-  const destination = { agentId: "main", sessionKey: "agent:main:companion-destination" };
-  await upsertSessionEntryCore(destination, {
-    sessionId: "durable-destination",
-    updatedAt: 1,
-    label: "Before",
-  });
-  let pause = false;
-  const entered = createDeferredCore();
-  const resume = createDeferredCore();
-  const originalConfig = cfg;
-  const originalConfigPath = process.env.OPENCLAW_CONFIG_PATH;
-  cfg = companionRuntimeConfig(cfg, path.join(env.OPENCLAW_STATE_DIR!, "workspace"));
-  vi.stubEnv("OPENCLAW_CONFIG_PATH", path.join(env.OPENCLAW_STATE_DIR!, "openclaw.json"));
-  await publishCompanionRuntime(cfg, process.env.OPENCLAW_CONFIG_PATH);
-  const settleCleanup = observeCompanionCleanup();
-  runLoop.mockReset().mockImplementation(async (_refresh, { runParams }) => {
-    expect(JSON.stringify(await readCompanionSeed(runParams.sessionTarget))).toContain(
-      "Original private context",
-    );
-    const assertSourceCurrent = runParams.preparedRunAdmission?.assertSourceCurrent;
-    assert(assertSourceCurrent, "Expected the real prepared source assertion");
-    if (pause) {
-      entered.resolve();
-      await resume.promise;
-    }
-    assertSourceCurrent();
-    await patchSessionEntryCore(
-      destination,
-      () => ({ label: pause ? "Unexpected write" : "After" }),
-      { workerGuard: { source: assertSourceCurrent } },
-    );
-    return { meta: { durationMs: 1, finalAssistantVisibleText: "Answer" } };
-  });
-  const companion = createSessionCompanion({
-    scheduler: createTestGatewayScheduler(createGatewaySchedulerClock(10).clock),
-    getConfig: () => cfg,
-    contextReader: defaultSessionCompanionContextReader,
-    sessionObserver: { getCompanionSnapshotAsync: async () => ({ agentId: "main", notes: [] }) },
-  });
-  context.sessionCompanion = companion;
-  try {
-    const first = await ask("ask", { question: "Summarize" });
-    calls(first, true, { answer: "Answer", ts: 10 });
-    pause = true;
-    const pending = ask("ask", { question: "Again" });
+    create: { profileId: "development", idempotencyKey: "private-environment" },
+    status: {},
+    destroy: { environmentId: "private-environment" },
+  };
+  const handlers = { ...sessionProviderReviewHandlers, ...environmentsSessionHandlers };
+  it.each([
+    ["provider", "main"],
+    ["provider", "absent"],
+    ["create", "main"],
+    ["status", "main"],
+    ["destroy", "main"],
+  ] as const)("refuses private %s for %s before acquisition or SQL", async (action, agentId) => {
+    const { sql, target } = preflight();
     try {
-      await awaitGateBeforeSettlement(
-        entered.promise,
-        pending,
-        "Side chat returned before model execution",
+      const method =
+        action === "provider"
+          ? "sessions.providerReview.continue"
+          : `environments.session.${action}`;
+      await invoke(
+        handlers,
+        method,
+        {
+          sessionKey: `agent:${agentId}:dashboard:incognito-preflight`,
+          ...paramsByAction[action],
+        },
+        refused({
+          code: "INVALID_REQUEST",
+          message:
+            action === "provider"
+              ? "Could not continue this chat. Refresh its current findings before trying again."
+              : "A persistent conversation is required for an attached environment",
+        }),
       );
-      memorySessionActorOwners.closeSession(location, sessionKey);
-      client.invalidated = true;
+      expect(target).not.toHaveBeenCalled();
+      expect(
+        memorySessionActorOwners.read({
+          agentId: "absent",
+          path: resolveIncognitoOpenClawAgentSqlitePath({ agentId: "absent", env }),
+        }),
+      ).toBeUndefined();
+      sql.expectIdle();
+    } finally {
+      sql.restore();
+    }
+  });
+  it("reports private activity recaps unavailable without acquiring a source or scheduling work", async () => {
+    const { sql, target } = preflight();
+    const ensure = vi.fn<SessionActivitySummaryService["ensure"]>();
+    context.sessionActivitySummaries = {
+      beginCompletion: () => undefined,
+      ensure,
+      handleEvent() {},
+      handleTranscript() {},
+      handleLifecycle() {},
+      async dispose() {},
+    };
+    try {
+      const response = await invoke(
+        sessionActivitySummaryHandlers,
+        "sessions.activitySummary.ensure",
+        { sessions: [{ key }] },
+      );
+      result(response, true, {
+        sessions: [
+          { key, agentId: "main", activitySummary: { state: "unavailable", canEnsure: true } },
+        ],
+      });
+      expect(ensure).not.toHaveBeenCalled();
+      expect(target).not.toHaveBeenCalled();
+      sql.expectIdle();
+    } finally {
+      sql.restore();
+    }
+  });
+});
+describe("unbound memory controls", () => {
+  setupControls("incognito-controls-", { agents: { entries: { main: {} } } }, async () => {
+    context = controlContext;
+    const profile = ensureProfileForEmail("private-control@example.test");
+    client = {
+      ...sharingPolicyClient({ user: profile.id, scopes: ["operator.admin"] }),
+      connId: "private-control",
+    };
+  });
+  it("returns the unbound memory Goal receipt on retry and serves suggestion mutations without host SQL", async () => {
+    const sessionKey = "agent:main:dashboard:incognito-controls";
+    const sessionId = "controls";
+    const suggest = requests(sessionSuggestionHandlers, "session.suggestions", { sessionKey });
+    await seed(sessionKey, {
+      sessionId,
+      lifecycleRevision: "first",
+      visibility: "suggest",
+      label: "Keep this label",
+      goal: {
+        schemaVersion: 1,
+        id: "goal",
+        objective: "Before",
+        status: "paused",
+        createdAt: 1,
+        updatedAt: 1,
+        tokenStart: 0,
+        tokensUsed: 0,
+        continuationTurns: 0,
+      },
+    });
+    await initializeSessionReadContext(context);
+    const host = observeHostDataSql();
+    try {
+      const request = {
+        sessionKey,
+        agentId: "main",
+        sessionId,
+        goalId: "goal",
+        action: "edit",
+        objective: "After",
+        operationId: "edit-once",
+        issuedAtMs: Date.now(),
+      };
+      const first = await invoke(
+        sessionGoalHandlers,
+        "sessions.goal.update",
+        request,
+        ok({ goal: expect.objectContaining({ objective: "After" }) }),
+      );
+      const replay = await invoke(sessionGoalHandlers, "sessions.goal.update", request);
+      result(replay, true, { ...(first.mock.calls[0]![1] as object), replayed: true }, undefined);
+      expect(read(sessionKey)).toMatchObject({
+        label: "Keep this label",
+        goal: { objective: "After", status: "paused" },
+      });
+      const otherRoot = dirs.make("incognito-controls-other-root-");
+      const addSuggestion = sessionMetadataWrites.addSessionSuggestionInWorker;
+      const addSpy = vi
+        .spyOn(sessionMetadataWrites, "addSessionSuggestionInWorker")
+        .mockImplementationOnce(async (...args) => {
+          vi.stubEnv("OPENCLAW_STATE_DIR", otherRoot);
+          try {
+            return await addSuggestion(...args);
+          } finally {
+            vi.stubEnv("OPENCLAW_STATE_DIR", env.OPENCLAW_STATE_DIR);
+          }
+        });
+      const added = await suggest("add", { text: "Check this" });
+      expect(addSpy).toHaveBeenCalledOnce();
+      expect(
+        memorySessionActorOwners.read({
+          agentId: "main",
+          path: resolveIncognitoOpenClawAgentSqlitePath({
+            agentId: "main",
+            env: { OPENCLAW_STATE_DIR: otherRoot },
+          }),
+        }),
+      ).toBeUndefined();
+      result(
+        added,
+        true,
+        expect.objectContaining({ suggestion: expect.objectContaining({ text: "Check this" }) }),
+      );
+      const suggestion = (added.mock.calls[0]![1] as { suggestion: { id: string } }).suggestion;
+      await suggest("list", {}, [
+        true,
+        expect.objectContaining({ suggestions: [expect.objectContaining({ id: suggestion.id })] }),
+      ]);
+      await suggest("resolve", { id: suggestion.id, resolution: "dismiss" }, [
+        true,
+        expect.objectContaining({ suggestion: expect.objectContaining({ state: "dismissed" }) }),
+      ]);
+      expect(host.queries).toEqual([]);
+    } finally {
+      host.restore();
+    }
+  });
+
+  it("retains an unbound memory Side chat source for durable writes and refuses a closed transport", async () => {
+    const sessionKey = "agent:main:dashboard:incognito-side-chat";
+    const sessionId = "side-chat-source";
+    const ask = requests(sessionCompanionHandlers, "sessions.companion", { sessionKey });
+    await seed(sessionKey, { sessionId, lifecycleRevision: "first" }, [
+      { type: "session", id: sessionId, version: 3, cwd: "/synthetic" },
+      {
+        type: "message",
+        id: "private-context",
+        parentId: null,
+        message: { role: "user", content: "Original private context", timestamp: 1 },
+      },
+    ]);
+    const destination = { agentId: "main", sessionKey: "agent:main:companion-destination" };
+    await upsertSessionEntryCore(destination, {
+      sessionId: "durable-destination",
+      updatedAt: 1,
+      label: "Before",
+    });
+    let pause = false;
+    const entered = createDeferredCore();
+    const resume = createDeferredCore();
+    const originalConfig = cfg;
+    const originalConfigPath = process.env.OPENCLAW_CONFIG_PATH;
+    cfg = companionRuntimeConfig(cfg, path.join(env.OPENCLAW_STATE_DIR!, "workspace"));
+    vi.stubEnv("OPENCLAW_CONFIG_PATH", path.join(env.OPENCLAW_STATE_DIR!, "openclaw.json"));
+    await publishCompanionRuntime(cfg, process.env.OPENCLAW_CONFIG_PATH);
+    const settleCleanup = observeCompanionCleanup();
+    runLoop.mockReset().mockImplementation(async (_refresh, { runParams }) => {
+      expect(JSON.stringify(await readCompanionSeed(runParams.sessionTarget))).toContain(
+        "Original private context",
+      );
+      const assertSourceCurrent = runParams.preparedRunAdmission?.assertSourceCurrent;
+      assert(assertSourceCurrent, "Expected the real prepared source assertion");
+      if (pause) {
+        entered.resolve();
+        await resume.promise;
+      }
+      assertSourceCurrent();
+      await patchSessionEntryCore(
+        destination,
+        () => ({ label: pause ? "Unexpected write" : "After" }),
+        { workerGuard: { source: assertSourceCurrent } },
+      );
+      return { meta: { durationMs: 1, finalAssistantVisibleText: "Answer" } };
+    });
+    const companion = createSessionCompanion({
+      scheduler: createTestGatewayScheduler(createGatewaySchedulerClock(10).clock),
+      getConfig: () => cfg,
+      contextReader: defaultSessionCompanionContextReader,
+      sessionObserver: { getCompanionSnapshotAsync: async () => ({ agentId: "main", notes: [] }) },
+    });
+    context.sessionCompanion = companion;
+    try {
+      const first = await ask("ask", { question: "Summarize" });
+      calls(first, true, { answer: "Answer", ts: 10 });
+      pause = true;
+      const pending = ask("ask", { question: "Again" });
+      try {
+        await awaitGateBeforeSettlement(
+          entered.promise,
+          pending,
+          "Side chat returned before model execution",
+        );
+        memorySessionActorOwners.closeSession(location, sessionKey);
+        client.invalidated = true;
+      } finally {
+        resume.resolve();
+      }
+      const rejected = await pending;
+      result(rejected, false, undefined, expect.objectContaining({ code: "UNAVAILABLE" }));
+      expect(loadSessionEntry(destination)?.label).toBe("After");
     } finally {
       resume.resolve();
-    }
-    const rejected = await pending;
-    result(rejected, false, undefined, expect.objectContaining({ code: "UNAVAILABLE" }));
-    expect(loadSessionEntry(destination)?.label).toBe("After");
-  } finally {
-    resume.resolve();
-    companion.dispose();
-    await settleCleanup();
-    runLoop.mockReset();
-    await resetPreparedModelRuntimeSnapshotsForTest();
-    cfg = originalConfig;
-    vi.stubEnv("OPENCLAW_CONFIG_PATH", originalConfigPath);
-    context.sessionCompanion = undefined;
-    client.invalidated = false;
-  }
-});
-
-it("attaches unbound memory skill pins for the next turn and refuses a detached revision", async () => {
-  const sessionKey = "agent:main:dashboard:incognito-skills";
-  await seed(sessionKey, { sessionId: "skills" });
-  const saved = await invoke(skillsLibraryHandlers, "skills.library.save", {
-    slug: "actor-skill",
-    content: "---\nname: actor-skill\ndescription: Synthetic skill\n---\n# Actor skill\n",
-    expectedRevision: null,
-  });
-  calls(
-    saved,
-    true,
-    expect.objectContaining({ entry: expect.objectContaining({ skillId: expect.any(String) }) }),
-    undefined,
-  );
-  const entry = (saved.mock.calls[0]![1] as { entry: { skillId: string; revision: string } }).entry;
-  const skills = requests(skillsLibraryHandlers, "skills.library", { sessionKey });
-  const selection = { skillId: entry.skillId, revision: entry.revision };
-  await skills(
-    "activate",
-    { skillId: entry.skillId, action: "attach" },
-    ok({ sessionActivation: "next-turn", selections: [expect.objectContaining(selection)] }),
-  );
-  await skills(
-    "list",
-    {},
-    ok({
-      session: expect.objectContaining({
-        selections: [expect.objectContaining({ skillId: entry.skillId })],
-      }),
-    }),
-  );
-  const detached = await skills("activate", { skillId: entry.skillId, action: "detach" });
-  calls(detached, true, expect.objectContaining({ selections: [] }), undefined);
-  await skills("read", selection, refused({ details: { code: "SKILL_LIBRARY_FORBIDDEN" } }));
-});
-
-it("restores a refused unbound memory task suggestion and retains accepted chat authority after its ACK", async () => {
-  const sessionKey = "agent:main:dashboard:incognito-task-rollback";
-  const sessionId = "task-rollback";
-  const tasks = requests(taskSuggestionsHandlers, "taskSuggestions");
-  await seed(sessionKey, { sessionId, lifecycleRevision: "first" });
-  let refuse = true;
-  let acceptedAuthority: SessionMutationAuthorization | undefined;
-  vi.spyOn(chatSend, "handleChatSend").mockImplementation(async (options) => {
-    const resolved = options.sessionMutationAuthorization
-      ? { authorization: options.sessionMutationAuthorization, error: null }
-      : resolveSessionMutationAuthorization({
-          client: options.client,
-          context: options.context,
-          method: "chat.send",
-          requestParams: options.params,
-        });
-    assert(!resolved.error);
-    const chatAuthority = withSessionMutationCommitGuard(
-      resolved.authorization,
-      options.sessionMutationCommitGuard,
-      undefined,
-    );
-    assert(chatAuthority);
-    const prepared = await prepareSessionSourceAuthority(chatAuthority.assertCurrent);
-    try {
-      prepared.assertCurrent();
-      if (refuse) {
-        options.respond(false, undefined, {
-          code: "UNAVAILABLE",
-          message: "delivery refused before admission",
-        });
-      } else {
-        acceptedAuthority = chatAuthority;
-        options.respond(true, { runId: "accepted-task", status: "started" });
-      }
-    } finally {
-      await prepared.release?.();
+      companion.dispose();
+      await settleCleanup();
+      runLoop.mockReset();
+      await resetPreparedModelRuntimeSnapshotsForTest();
+      cfg = originalConfig;
+      vi.stubEnv("OPENCLAW_CONFIG_PATH", originalConfigPath);
+      context.sessionCompanion = undefined;
+      client.invalidated = false;
     }
   });
-  const deletion = vi.spyOn(sessionDeleteHandlers, "sessions.delete");
-  const host = observeHostDataSql();
-  try {
-    const created = await tasks("create", {
-      title: "Follow up",
-      prompt: "Continue the synthetic task",
-      tldr: "Synthetic task",
-      cwd: process.cwd(),
-      sessionKey,
-      agentId: "main",
+
+  it("attaches unbound memory skill pins for the next turn and refuses a detached revision", async () => {
+    const sessionKey = "agent:main:dashboard:incognito-skills";
+    await seed(sessionKey, { sessionId: "skills" });
+    const saved = await invoke(skillsLibraryHandlers, "skills.library.save", {
+      slug: "actor-skill",
+      content: "---\nname: actor-skill\ndescription: Synthetic skill\n---\n# Actor skill\n",
+      expectedRevision: null,
     });
-    calls(created, true, expect.objectContaining({ taskId: expect.any(String) }), undefined);
-    const taskId = (created.mock.calls[0]![1] as { taskId: string }).taskId;
-    const acceptance = { taskId, mode: "session" };
-    const rejected = await tasks("accept", acceptance);
     calls(
-      rejected,
-      false,
+      saved,
+      true,
+      expect.objectContaining({ entry: expect.objectContaining({ skillId: expect.any(String) }) }),
       undefined,
-      expect.objectContaining({ message: "delivery refused before admission" }),
     );
-    const restored = await tasks("list", { sessionKey });
-    calls(restored, true, { suggestions: [expect.objectContaining({ id: taskId })] }, undefined);
-    expect(read(sessionKey)?.sessionId).toBe(sessionId);
-    expect(deletion).not.toHaveBeenCalled();
-    refuse = false;
-    const accepted = await tasks("accept", acceptance);
-    calls(accepted, true, { taskId, key: sessionKey }, undefined);
-    assert(acceptedAuthority);
-    const forwarded = await prepareSessionSourceAuthority(acceptedAuthority.assertCurrent);
+    const entry = (saved.mock.calls[0]![1] as { entry: { skillId: string; revision: string } })
+      .entry;
+    const skills = requests(skillsLibraryHandlers, "skills.library", { sessionKey });
+    const selection = { skillId: entry.skillId, revision: entry.revision };
+    await skills(
+      "activate",
+      { skillId: entry.skillId, action: "attach" },
+      ok({ sessionActivation: "next-turn", selections: [expect.objectContaining(selection)] }),
+    );
+    await skills(
+      "list",
+      {},
+      ok({
+        session: expect.objectContaining({
+          selections: [expect.objectContaining({ skillId: entry.skillId })],
+        }),
+      }),
+    );
+    const detached = await skills("activate", { skillId: entry.skillId, action: "detach" });
+    calls(detached, true, expect.objectContaining({ selections: [] }), undefined);
+    await skills("read", selection, refused({ details: { code: "SKILL_LIBRARY_FORBIDDEN" } }));
+  });
+
+  it("restores a refused unbound memory task suggestion and retains accepted chat authority after its ACK", async () => {
+    const sessionKey = "agent:main:dashboard:incognito-task-rollback";
+    const sessionId = "task-rollback";
+    const tasks = requests(taskSuggestionsHandlers, "taskSuggestions");
+    await seed(sessionKey, { sessionId, lifecycleRevision: "first" });
+    let refuse = true;
+    let acceptedAuthority: SessionMutationAuthorization | undefined;
+    vi.spyOn(chatSend, "handleChatSend").mockImplementation(async (options) => {
+      const resolved = options.sessionMutationAuthorization
+        ? { authorization: options.sessionMutationAuthorization, error: null }
+        : resolveSessionMutationAuthorization({
+            client: options.client,
+            context: options.context,
+            method: "chat.send",
+            requestParams: options.params,
+          });
+      assert(!resolved.error);
+      const chatAuthority = withSessionMutationCommitGuard(
+        resolved.authorization,
+        options.sessionMutationCommitGuard,
+        undefined,
+      );
+      assert(chatAuthority);
+      const prepared = await prepareSessionSourceAuthority(chatAuthority.assertCurrent);
+      try {
+        prepared.assertCurrent();
+        if (refuse) {
+          options.respond(false, undefined, {
+            code: "UNAVAILABLE",
+            message: "delivery refused before admission",
+          });
+        } else {
+          acceptedAuthority = chatAuthority;
+          options.respond(true, { runId: "accepted-task", status: "started" });
+        }
+      } finally {
+        await prepared.release?.();
+      }
+    });
+    const deletion = vi.spyOn(sessionDeleteHandlers, "sessions.delete");
+    const host = observeHostDataSql();
     try {
-      forwarded.assertCurrent();
+      const created = await tasks("create", {
+        title: "Follow up",
+        prompt: "Continue the synthetic task",
+        tldr: "Synthetic task",
+        cwd: process.cwd(),
+        sessionKey,
+        agentId: "main",
+      });
+      calls(created, true, expect.objectContaining({ taskId: expect.any(String) }), undefined);
+      const taskId = (created.mock.calls[0]![1] as { taskId: string }).taskId;
+      const acceptance = { taskId, mode: "session" };
+      const rejected = await tasks("accept", acceptance);
+      calls(
+        rejected,
+        false,
+        undefined,
+        expect.objectContaining({ message: "delivery refused before admission" }),
+      );
+      const restored = await tasks("list", { sessionKey });
+      calls(restored, true, { suggestions: [expect.objectContaining({ id: taskId })] }, undefined);
+      expect(read(sessionKey)?.sessionId).toBe(sessionId);
+      expect(deletion).not.toHaveBeenCalled();
+      refuse = false;
+      const accepted = await tasks("accept", acceptance);
+      calls(accepted, true, { taskId, key: sessionKey }, undefined);
+      assert(acceptedAuthority);
+      const forwarded = await prepareSessionSourceAuthority(acceptedAuthority.assertCurrent);
+      try {
+        forwarded.assertCurrent();
+      } finally {
+        await forwarded.release?.();
+      }
+      memorySessionActorOwners.closeSession(location, sessionKey);
+      expect(() => acceptedAuthority!.assertCurrent()).toThrow();
+      expect(host.queries).toEqual([]);
     } finally {
-      await forwarded.release?.();
+      host.restore();
     }
-    memorySessionActorOwners.closeSession(location, sessionKey);
-    expect(() => acceptedAuthority!.assertCurrent()).toThrow();
-    expect(host.queries).toEqual([]);
-  } finally {
-    host.restore();
-  }
+  });
 });

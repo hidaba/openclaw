@@ -1,5 +1,6 @@
 import http from "node:http";
 import { afterEach, expect, it, vi } from "vitest";
+import { writeOpenAiResponsesText } from "../../test/helpers/openai-responses-sse.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { getDeliveryQueueEntryStatus } from "../infra/delivery-queue-sqlite.test-support.js";
 import { scheduleSessionDelivery } from "../infra/session-delivery-queue-runtime.js";
@@ -12,7 +13,7 @@ import { SESSION_DELIVERY_QUEUE_NAME } from "../infra/session-delivery-queue.rec
 import { getActiveGatewayRootWorkCount } from "../process/gateway-work-admission.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
-import { listenProvider } from "./gateway-provider-fixture.test-support.js";
+import { listenProvider, readProviderBody } from "./gateway-provider-fixture.test-support.js";
 import {
   createGatewayConfigPath,
   removeGatewayTempHome,
@@ -29,40 +30,15 @@ vi.mock("./server-idle-task.js", () => ({
 }));
 
 async function startProofProvider(requests: string[]) {
-  const server = http.createServer((request, response) => {
-    let body = "";
-    request.setEncoding("utf8");
-    request.on("data", (chunk: string) => {
-      body += chunk;
-    });
-    request.on("end", () => {
-      requests.push(body);
-      const outputText = body.includes("clock-jump readiness marker")
+  const server = http.createServer(async (request, response) => {
+    const body = await readProviderBody(request);
+    requests.push(body);
+    writeOpenAiResponsesText(response, {
+      text: body.includes("clock-jump readiness marker")
         ? "CLOCK_JUMP READY"
-        : "CLOCK_JUMP DELIVERED";
-      const message = { type: "message", id: "clock-jump-message", role: "assistant" };
-      const events = [
-        {
-          type: "response.output_item.added",
-          item: { ...message, content: [], status: "in_progress" },
-        },
-        {
-          type: "response.output_item.done",
-          item: {
-            ...message,
-            status: "completed",
-            content: [{ type: "output_text", text: outputText, annotations: [] }],
-          },
-        },
-        {
-          type: "response.completed",
-          response: { status: "completed" },
-        },
-      ];
-      response.writeHead(200, { "content-type": "text/event-stream" });
-      response.end(
-        `${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`,
-      );
+        : "CLOCK_JUMP DELIVERED",
+      messageId: "clock-jump-message",
+      responseId: "clock-jump-response",
     });
   });
   return { server, baseUrl: await listenProvider(server) };

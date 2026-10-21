@@ -4,7 +4,10 @@ import { backup } from "node:sqlite";
 import { queryObjects } from "node:v8";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred, withinTest } from "../../test/helpers/promise.js";
-import { observeSqliteReadSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
+import {
+  observeHostDataSql,
+  observeSqliteReadSql,
+} from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { normalizePersistedSessionEntryShape } from "../commands/doctor/shared/session-entry-shape.js";
 import { clearRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { ACTIVITY_SUMMARY_FORMAT_REVISION } from "../config/sessions/activity-summary.js";
@@ -20,9 +23,12 @@ import {
 } from "../config/sessions/session-accessor.js";
 import { writeSessionEntry } from "../config/sessions/session-accessor.sqlite-entry-store.js";
 import { runExclusiveSqliteSessionWrite } from "../config/sessions/session-accessor.sqlite-scope.js";
+import { appendTranscriptEvent } from "../config/sessions/session-accessor.transcript.js";
 import { getSessionColdStorageStatus } from "../config/sessions/session-cold-storage-status.js";
 import { runSessionColdStorageMaintenance } from "../config/sessions/session-cold-storage.js";
 import { readSessionEntryReadOnlyInWorker } from "../config/sessions/session-entry-read-runtime.js";
+import { waitForSessionTranscriptProjection } from "../config/sessions/session-transcript-reconcile.js";
+import { readSessionTranscriptWatermarkAsync } from "../config/sessions/session-transcript-watermark.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { registerAgentRunContext, clearAgentRunContext } from "../infra/agent-run-registry.js";
@@ -40,8 +46,6 @@ import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-cloc
 import { requireNativeSqliteDatabase } from "../test-utils/native-sqlite.js";
 import type { OpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
-import { sessionActivitySummaryHandlers } from "./server-methods/session-activity-summary.js";
-import { sessionByKeyReadHandlers } from "./server-methods/sessions-read-by-key.js";
 import {
   createSessionActivitySummaries,
   type SessionActivitySummaryService,
@@ -49,12 +53,15 @@ import {
 import {
   activityRecapResult as result,
   createActivityRecapSessionFixture,
+  seedRecapConversation as seedConversation,
+  recapRpc as rpc,
   messages,
   preparedActivityRecapModel as prepared,
   scope,
   target,
   terminal,
 } from "./session-activity-summaries.test-support.js";
+import * as summarySource from "./session-activity-summary-source.js";
 import { projectSessionActivitySummary } from "./session-activity-summary-state.js";
 import { listSessionFixture } from "./session-list.test-support.js";
 import type { defaultCompleteModel, defaultPrepareModel } from "./session-observer-model.js";
@@ -129,19 +136,6 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     };
   };
 
-  const seedConversation = async (
-    session: typeof scope,
-    content: string,
-    entry: Partial<SessionEntry> = {},
-    eventId = `event-${session.sessionKey}`,
-  ) => {
-    await upsertSessionEntryCore(session, { sessionId: session.sessionId, updatedAt: 1, ...entry });
-    await persistSessionTranscriptTurn(session, {
-      messages: [{ eventId, message: { role: "user", content } }],
-      touchSessionEntry: false,
-    });
-  };
-
   const transcript = (
     turns: Parameters<typeof persistSessionTranscriptTurn>[1]["messages"],
     session = scope,
@@ -174,29 +168,6 @@ describe("Activity recap lifecycle with the canonical session store", () => {
       opts: { includeActivitySummary: true },
       ...extra,
     });
-  const rpc = (
-    method: "sessions.describe" | "sessions.activitySummary.ensure",
-    context: ReturnType<typeof createDirectChatContext>,
-  ) => {
-    const respond = vi.fn();
-    const handler =
-      method === "sessions.describe"
-        ? sessionByKeyReadHandlers[method]!
-        : sessionActivitySummaryHandlers[method]!;
-    return {
-      respond,
-      invoke: (params: Record<string, unknown>) =>
-        handler({
-          req: { type: "req", id: "recap", method, params },
-          params,
-          context,
-          client: null,
-          respond,
-          isWebchatConnect: () => false,
-        }),
-    };
-  };
-
   const publication = (ready = () => view()?.state === "current") => {
     const published = createDeferred();
     changed.mockImplementation(() => {
@@ -933,5 +904,127 @@ describe("Activity recap lifecycle with the canonical session store", () => {
     await service.dispose();
     expect(read(relocatedScope)?.activitySummary?.text).toBe("Recap from the relocated store.");
     expect(read(originalScope)?.activitySummary).toMatchObject(summary(2));
+  });
+  describe("freshness", () => {
+    const recap = completedText;
+    const freshnessView = (
+      entry = read(),
+      watermark = readSessionTranscriptWatermark(scope),
+      enabled?: boolean,
+    ) => projectSessionActivitySummary({ ...target, cfg, entry, watermark, enabled });
+    const ensure = async (entry = read()) => {
+      const work = new AsyncWorkScope();
+      const response = await work.track(() => service.ensure(target, entry));
+      await work.drain();
+      expect(freshnessView()?.state).toBe("current");
+      return response;
+    };
+    const expectPrompt = (call: number, previousRecap: string, notes: string[]) => {
+      expect(complete).toHaveBeenCalledTimes(call);
+      expect(JSON.parse(complete.mock.calls[call - 1]![0].prompt)).toMatchObject({
+        previousRecap,
+        messages: notes,
+      });
+    };
+
+    it("keeps committed recap progress across stale requests and summarizes new activity once", async () => {
+      await messages(1);
+      await patchSessionEntryCore(scope, () => ({
+        activitySummary: {
+          version: 1,
+          formatRevision: 1,
+          text: "Earlier work.",
+          updatedAt: 1,
+          sessionId: scope.sessionId,
+          lifecycleRevision: "lifecycle-1",
+          ...readSessionTranscriptWatermark(scope),
+          leafEntryId: "message-0",
+          coveredMessages: 1,
+          totalMessages: 1,
+          omittedContent: false,
+        },
+      }));
+      // A batched ensure can retain this entry while another request finishes its recap.
+      const requestedEntry = read()!;
+      await ensure(requestedEntry);
+      expectPrompt(1, "Earlier work.", []);
+
+      changed.mockClear();
+      const sourceReads = vi.spyOn(summarySource, "readActivitySummarySource");
+      for (let request = 0; request < 3; request += 1) {
+        const response = await ensure(requestedEntry);
+        expect(response.text).toBe(recap);
+        expect(complete).toHaveBeenCalledTimes(1);
+      }
+      expect(changed).not.toHaveBeenCalled();
+      expect(sourceReads).not.toHaveBeenCalled();
+
+      await messages(1, 1);
+      await ensure(requestedEntry);
+      expectPrompt(2, recap, ["assistant: Outcome 1"]);
+      expect(sourceReads).toHaveBeenCalledTimes(1);
+      await ensure(requestedEntry);
+      expect(complete).toHaveBeenCalledTimes(2);
+      expect(read()?.activitySummary).toMatchObject({ coveredMessages: 2, totalMessages: 2 });
+    });
+
+    it("prepares recap freshness off thread and observes an in-process transcript append", async () => {
+      await messages(1);
+      await ensure();
+      const entry = read()!;
+      cfg = { agents: { defaults: {} } };
+      const observed = observeHostDataSql();
+      try {
+        await service.ensure(target, entry);
+        const before = await readSessionTranscriptWatermarkAsync(scope);
+        expect(freshnessView(entry, before, true)?.state).toBe("current");
+        await messages(1, 1);
+        const after = await readSessionTranscriptWatermarkAsync(scope);
+        expect(after.maxSeq).toBeGreaterThan(before.maxSeq!);
+        expect(freshnessView(entry, after, true)?.state).toBe("stale");
+        expect(observed.queries.join("\n")).not.toMatch(
+          /transcript_events|transcript_rewrite_watermarks|session_transcript_cold_archives/i,
+        );
+      } finally {
+        observed.restore();
+      }
+    });
+
+    it("invalidates cached projection after an offline branch change without changing activity ordering", async () => {
+      await messages(3);
+      await ensure();
+      expect(freshnessView()?.state).toBe("current");
+      await service.dispose();
+      const oldActivity = read()?.updatedAt;
+      const oldWatermark = readSessionTranscriptWatermark(scope);
+      await appendTranscriptEvent(scope, {
+        type: "leaf",
+        id: "rewind",
+        parentId: "message-0",
+        targetId: "message-0",
+      });
+      expect(readSessionTranscriptWatermark(scope).generation).toBe(oldWatermark.generation);
+      expect(read()?.updatedAt).toBe(oldActivity);
+      expect(freshnessView()?.state).toBe("stale");
+      // Offline edits rebuild asynchronously; finish the fixture before restarting its observer.
+      await waitForSessionTranscriptProjection(scope);
+      service = createService();
+      await ensure();
+      expect(freshnessView()?.state).toBe("current");
+      expectPrompt(2, "", ["user: Outcome 0"]);
+      const entry = read()!;
+      const listFreshness = (includeActivitySummary: boolean) =>
+        listSessionFixture({
+          cfg,
+          storePath: resolveSessionStorePathCore(cfg.session?.store, { agentId: scope.agentId }),
+          store: { [target.key]: entry },
+          opts: includeActivitySummary ? { includeActivitySummary } : {},
+        });
+      expect((await listFreshness(false)).sessions[0]?.activitySummary).toBeUndefined();
+      expect((await listFreshness(true)).sessions[0]?.activitySummary).toMatchObject({
+        text: recap,
+        state: "current",
+      });
+    });
   });
 });

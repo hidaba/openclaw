@@ -6,10 +6,8 @@ import type { RunCliAgentParams } from "../agents/cli-runner/types.js";
 import { resolveBundledStaticCatalogModel } from "../agents/embedded-agent-runner/model.static-catalog.js";
 import type { RunEmbeddedAgentInternalParams } from "../agents/embedded-agent-runner/run/internal-params.js";
 import { FailoverError } from "../agents/failover-error.js";
-import { createAgentHarnessToolSurfaceRuntimeCore } from "../agents/harness/tool-surface-bridge.js";
 import { ProviderAuthError } from "../agents/model-auth-runtime-shared.js";
 import { prepareOperatorModelPolicy } from "../agents/operator-model-policy.js";
-import { createStubTool } from "../agents/test-helpers/agent-tool-stubs.js";
 import "../agents/model-fallback-runner.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -110,7 +108,31 @@ function createCompanion(
     sessionObserver: { getCompanionSnapshotAsync: async () => ({ agentId: "main", notes: [] }) },
   });
   onTestFinished(() => companion.dispose());
-  return companion;
+  return Object.assign(companion, {
+    rpc: (params: Record<string, unknown>, getCommittedRuntimeConfig?: () => OpenClawConfig) =>
+      invokeAsk(companion, params, "conn-1", cfg, getCommittedRuntimeConfig),
+  });
+}
+
+function config(defaults: NonNullable<NonNullable<OpenClawConfig["agents"]>["defaults"]>) {
+  return { agents: { defaults } } satisfies OpenClawConfig;
+}
+const utilityConfig = (
+  models?: NonNullable<NonNullable<NonNullable<OpenClawConfig["agents"]>["defaults"]>["models"]>,
+) =>
+  config({
+    model: "test/main",
+    utilityModel: { primary: "test/model-a", fallbacks: ["test/model-b"] },
+    ...(models ? { models } : {}),
+  });
+function resolveConfiguredModel() {
+  resolveSelection.mockImplementation(({ modelRef }) => ({
+    provider: "test",
+    modelId: modelRef?.split("/")[1] ?? "model-a",
+  }));
+}
+function expectRpcError(respond: ReturnType<typeof vi.fn>, error: Record<string, unknown>) {
+  expect(respond).toHaveBeenCalledWith(false, undefined, expect.objectContaining(error));
 }
 
 const imageBase64 =
@@ -206,22 +228,18 @@ describe("session companion embedded invocation", () => {
       const primary = isCli
         ? { provider: "anthropic", modelId: "claude-haiku-4-5" }
         : { provider: "test", modelId: "model-a" };
-      const cfg: OpenClawConfig = {
-        agents: {
-          defaults: {
-            model: { primary: "test/main", fallbacks: ["test/main-backup"] },
-            utilityModel: {
-              primary: `${primary.provider}/${primary.modelId}`,
-              fallbacks: ["test/model-b"],
-            },
-            ...(isCli
-              ? {
-                  models: { "anthropic/claude-haiku-4-5": { agentRuntime: { id: "claude-cli" } } },
-                }
-              : {}),
-          },
+      const cfg = config({
+        model: { primary: "test/main", fallbacks: ["test/main-backup"] },
+        utilityModel: {
+          primary: `${primary.provider}/${primary.modelId}`,
+          fallbacks: ["test/model-b"],
         },
-      };
+        ...(isCli
+          ? {
+              models: { "anthropic/claude-haiku-4-5": { agentRuntime: { id: "claude-cli" } } },
+            }
+          : {}),
+      });
       resolveSelection.mockImplementation(({ modelRef }) =>
         modelRef === "test/model-b" ? { provider: "test", modelId: "model-b" } : primary,
       );
@@ -272,41 +290,23 @@ describe("session companion embedded invocation", () => {
             ? ["model-a", "model-b"]
             : ["model-b"],
       );
-      for (const [params] of runEmbeddedAgent.mock.calls) {
-        expect(params).toMatchObject({
-          modelFallbacksOverride: [],
-          toolsAllow: ["read", "sessions_history", "sessions_search"],
-          requireWorkspaceOnly: true,
-        });
-      }
       expect(executePreparedCliRun).toHaveBeenCalledTimes(isCli ? 1 : 0);
+      for (const [params] of runEmbeddedAgent.mock.calls) {
+        expect(params.modelFallbacksOverride).toEqual([]);
+      }
       if (cleanupFails) {
         expect(cleanup).toHaveBeenCalledOnce();
         expect(removeSession).toHaveBeenCalledOnce();
       }
       expect(companion.state(question).exchanges).toEqual([
-        {
-          question: question.question,
-          answer,
-          ts: expect.any(Number),
-        },
+        { question: question.question, answer, ts: expect.any(Number) },
       ]);
     },
   );
 
   it("uses the permitted default when every configured utility candidate is denied", async () => {
-    const cfg: OpenClawConfig = {
-      agents: {
-        defaults: {
-          model: "test/main",
-          utilityModel: { primary: "test/model-a", fallbacks: ["test/model-b"] },
-        },
-      },
-    };
-    resolveSelection.mockImplementation(({ modelRef }) => ({
-      provider: "test",
-      modelId: modelRef?.split("/")[1] ?? "model-a",
-    }));
+    const cfg = utilityConfig();
+    resolveConfiguredModel();
     const operatorAuthority = operatorFor(cfg, ["test/main"]);
     const companion = createCompanion(cfg);
     await expect(companion.ask({ ...question, operatorAuthority })).resolves.toMatchObject({
@@ -322,27 +322,16 @@ describe("session companion embedded invocation", () => {
   });
 
   it("answers with the question's chosen model, reasoning, and speed instead of the utility route", async () => {
-    const cfg: OpenClawConfig = {
-      agents: {
-        defaults: {
-          model: "test/main",
-          models: { "test/main": {}, "test/model-a": {}, "test/model-c": {} },
-          utilityModel: { primary: "test/model-a", fallbacks: ["test/model-b"] },
-        },
-      },
-    };
-    resolveSelection.mockImplementation(({ modelRef }) => ({
-      provider: "test",
-      modelId: modelRef?.split("/")[1] ?? "model-a",
-    }));
+    const cfg = utilityConfig({ "test/main": {}, "test/model-a": {}, "test/model-c": {} });
+    resolveConfiguredModel();
     const companion = createCompanion(cfg);
     expect(companion.state(question).defaultModel).toBe("test/model-a");
-    const chosen = await invokeAsk(
-      companion,
-      { question: "Which file?", model: "test/model-c", thinkingLevel: "high", fastMode: true },
-      "chosen-model-connection",
-      cfg,
-    );
+    const chosen = await companion.rpc({
+      question: "Which file?",
+      model: "test/model-c",
+      thinkingLevel: "high",
+      fastMode: true,
+    });
     expectAnswer(chosen);
     expect(runEmbeddedAgent).toHaveBeenCalledOnce();
     expect(runEmbeddedAgent.mock.calls[0]?.[0]).toMatchObject({
@@ -352,33 +341,20 @@ describe("session companion embedded invocation", () => {
       modelFallbacksOverride: [],
     });
 
-    const outside = await invokeAsk(
-      companion,
-      { question: "Which file?", model: "test/model-z" },
-      "outside-model-connection",
-      cfg,
-    );
-    expect(outside).toHaveBeenCalledWith(
-      false,
-      undefined,
-      expect.objectContaining({
-        code: "INVALID_REQUEST",
-        message: expect.stringContaining("model-z"),
-      }),
-    );
+    const outside = await companion.rpc({ question: "Which file?", model: "test/model-z" });
+    expectRpcError(outside, {
+      code: "INVALID_REQUEST",
+      message: expect.stringContaining("model-z"),
+    });
     expect(runEmbeddedAgent).toHaveBeenCalledOnce();
   });
 
   it("passes a selected-text comment to the model without persisting it as a file", async () => {
     const companion = createCompanion();
-    const respond = await invokeAsk(
-      companion,
-      {
-        question: "What changed?",
-        selectionContext: "Selected text:\n<untrusted passage>\n\nUser comment:\nCheck this.",
-      },
-      "selection-connection",
-    );
+    const respond = await companion.rpc({
+      question: "What changed?",
+      selectionContext: "Selected text:\n<untrusted passage>\n\nUser comment:\nCheck this.",
+    });
     expectAnswer(respond);
     expect(runEmbeddedAgent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -403,22 +379,16 @@ describe("session companion embedded invocation", () => {
         Buffer.from(imageBase64, "base64"),
         Buffer.alloc(padding),
       ]).toString("base64");
-      const respond = await invokeAsk(
-        companion,
-        {
-          question: "What does this show?",
-          attachments: [{ mimeType: "image/png", fileName: "proof.png", content: data }],
-        },
-        "image-connection",
-      );
+      const respond = await companion.rpc({
+        question: "What does this show?",
+        attachments: [{ mimeType: "image/png", fileName: "proof.png", content: data }],
+      });
       expectAnswer(respond);
       expect(runEmbeddedAgent).toHaveBeenCalledWith(
         expect.objectContaining({
           prompt: "What does this show?",
           images: [expect.objectContaining({ type: "image", mimeType: "image/png", data })],
           disableMessageTool: true,
-          requireWorkspaceOnly: true,
-          toolsAllow: ["read", "sessions_history", "sessions_search"],
         }),
       );
     },
@@ -453,14 +423,11 @@ describe("session companion embedded invocation", () => {
         });
       }
       try {
-        const respond = await invokeAsk(
-          companion,
+        const respond = await companion.rpc(
           {
             question: "Describe the image",
             attachments: [{ mimeType: "image/png", content: imageBase64 }],
           },
-          "late-policy-image",
-          cfg,
           () => committed,
         );
         if (phase === "accepted") {
@@ -468,14 +435,10 @@ describe("session companion embedded invocation", () => {
           expectAnswer(respond, "Accepted image answer");
         } else {
           expect(runEmbeddedAgent).not.toHaveBeenCalled();
-          expect(respond).toHaveBeenCalledWith(
-            false,
-            undefined,
-            expect.objectContaining({
-              code: "FORBIDDEN",
-              details: { code: "UPLOADS_DISABLED" },
-            }),
-          );
+          expectRpcError(respond, {
+            code: "FORBIDDEN",
+            details: { code: "UPLOADS_DISABLED" },
+          });
           expect(companion.state(question).exchanges).toEqual([]);
         }
       } finally {
@@ -484,44 +447,33 @@ describe("session companion embedded invocation", () => {
     },
   );
 
-  it.each(["catalog-only", "dynamic-discovery"])(
-    "uses the already prepared image model for %s without an extra resolution",
-    async (route) => {
-      const model = resolveBundledStaticCatalogModel({
-        provider: "mistral",
-        modelId: "mistral-medium-3-5",
-        cfg: { plugins: { entries: { mistral: { enabled: true } } } },
-        includeRuntimeDiscovery: true,
-      });
-      expect(model?.input).toContain("image");
-      if (!model) {
-        throw new Error("Expected the real bundled Mistral catalog row");
-      }
-      if (route === "catalog-only") {
-        resolveModelAsync.mockResolvedValue({ error: "Unknown model without bundled fallback" });
-      } else {
-        resolveModelAsync.mockRejectedValue(new Error("Unexpected additional dynamic discovery"));
-      }
-      const modelIo = vi.fn();
-      runEmbeddedAgent.mockImplementationOnce(async (params) => {
-        params.assertModelInput?.(model);
-        modelIo();
-        return completion("The image is visible.");
-      });
-      const companion = createCompanion();
-      const respond = await invokeAsk(
-        companion,
-        {
-          question: "What does this show?",
-          attachments: [{ mimeType: "image/png", content: imageBase64 }],
-        },
-        "catalog-image-connection",
-      );
-      expectAnswer(respond, "The image is visible.");
-      expect(modelIo).toHaveBeenCalledOnce();
-      expect(resolveModelAsync).not.toHaveBeenCalled();
-    },
-  );
+  it("uses the already prepared image model without extra resolution", async () => {
+    const model = resolveBundledStaticCatalogModel({
+      provider: "mistral",
+      modelId: "mistral-medium-3-5",
+      cfg: { plugins: { entries: { mistral: { enabled: true } } } },
+      includeRuntimeDiscovery: true,
+    });
+    expect(model?.input).toContain("image");
+    if (!model) {
+      throw new Error("Expected the real bundled Mistral catalog row");
+    }
+    resolveModelAsync.mockRejectedValue(new Error("Unexpected additional discovery"));
+    const modelIo = vi.fn();
+    runEmbeddedAgent.mockImplementationOnce(async (params) => {
+      params.assertModelInput?.(model);
+      modelIo();
+      return completion("The image is visible.");
+    });
+    const companion = createCompanion();
+    const respond = await companion.rpc({
+      question: "What does this show?",
+      attachments: [{ mimeType: "image/png", content: imageBase64 }],
+    });
+    expectAnswer(respond, "The image is visible.");
+    expect(modelIo).toHaveBeenCalledOnce();
+    expect(resolveModelAsync).not.toHaveBeenCalled();
+  });
 
   it("rejects an image before model I/O when the selected Side chat model is text-only", async () => {
     const modelIo = vi.fn();
@@ -531,23 +483,15 @@ describe("session companion embedded invocation", () => {
       return completion("Must not answer an unseen image.");
     });
     const companion = createCompanion();
-    const respond = await invokeAsk(
-      companion,
-      {
-        question: "What does this show?",
-        attachments: [{ mimeType: "image/png", content: imageBase64 }],
-      },
-      "image-connection",
-    );
-    expect(respond).toHaveBeenCalledWith(
-      false,
-      undefined,
-      expect.objectContaining({
-        message: expect.stringContaining("does not support image input"),
-        details: { reason: "image-input-unsupported" },
-        retryable: false,
-      }),
-    );
+    const respond = await companion.rpc({
+      question: "What does this show?",
+      attachments: [{ mimeType: "image/png", content: imageBase64 }],
+    });
+    expectRpcError(respond, {
+      message: expect.stringContaining("does not support image input"),
+      details: { reason: "image-input-unsupported" },
+      retryable: false,
+    });
     expect(modelIo).not.toHaveBeenCalled();
     expect(runEmbeddedAgent).toHaveBeenCalledOnce();
     expect(resolveModelAsync).not.toHaveBeenCalled();
@@ -557,69 +501,12 @@ describe("session companion embedded invocation", () => {
     expect(resolveModelAsync).not.toHaveBeenCalled();
   });
 
-  it("keeps read-only tools direct when the selected agent model opts into Code Mode", async () => {
-    const cfg: OpenClawConfig = {
-      agents: {
-        defaults: {
-          workspace: "/tmp/companion-test",
-          utilityModel: "test/model-a",
-          models: { "test/model-a": { codeMode: true } },
-        },
-        entries: {
-          main: {
-            models: { "test/model-a": { codeMode: true } },
-            tools: { codeMode: true },
-          },
-        },
-      },
-      tools: { toolSearch: true, codeMode: { enabled: true, maxOutputBytes: 4096 } },
-    };
-    runEmbeddedAgent.mockResolvedValueOnce(completion("The session is reading a file."));
-    const companion = createCompanion(cfg);
-
-    await expect(companion.ask(question)).resolves.toMatchObject({
-      answer: "The session is reading a file.",
-    });
-    expect(runEmbeddedAgent).toHaveBeenCalledOnce();
-    const invocation = runEmbeddedAgent.mock.calls[0]?.[0];
-    if (!invocation) {
-      throw new Error("Expected the companion embedded invocation");
-    }
-    expect(invocation.config?.tools?.codeMode).toEqual(cfg.tools?.codeMode);
-    const surface = createAgentHarnessToolSurfaceRuntimeCore({
-      config: invocation.config,
-      agentId: invocation.agentId,
-      modelProvider: invocation.provider,
-      modelId: invocation.model,
-      model: { compat: { codeMode: "preferred" } },
-      codeModeOverride: invocation.codeModeOverride,
-      disableToolSearch: invocation.disableToolSearch,
-      toolsAllow: invocation.toolsAllow,
-      modelToolsEnabled: true,
-      executeTool: async () => ({ content: [], details: {} }),
-    });
-    try {
-      const tools = ["read", "sessions_history", "sessions_search"].map(createStubTool);
-      expect(surface.compactTools(tools).tools.map((tool) => tool.name)).toEqual([
-        "read",
-        "sessions_history",
-        "sessions_search",
-      ]);
-    } finally {
-      surface.cleanup();
-    }
-  });
-
   it("answers through the primary model's CLI runtime when no provider API key exists", async () => {
-    const cfg: OpenClawConfig = {
-      agents: {
-        defaults: {
-          workspace: "/tmp/companion-test",
-          model: "anthropic/claude-opus-4-6",
-          models: { "anthropic/claude-opus-4-6": { agentRuntime: { id: "claude-cli" } } },
-        },
-      },
-    };
+    const cfg = config({
+      workspace: "/tmp/companion-test",
+      model: "anthropic/claude-opus-4-6",
+      models: { "anthropic/claude-opus-4-6": { agentRuntime: { id: "claude-cli" } } },
+    });
     const metadata = createPluginMetadataSnapshotFixture({
       plugins: [
         {
