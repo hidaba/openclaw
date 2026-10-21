@@ -126,7 +126,9 @@ export async function integrateManagedWorkspaceSource(
     });
     guestHead = observed.head;
     guestDirty = observed.dirty;
-    if (!initialImport && observed.partiallyStaged) {
+    // Only admitting a new source needs this check. A resumed integration passed it,
+    // and its own conflict return leaves refreshed imported files staged at their prior bytes.
+    if (!initialImport && !params.source.resuming && observed.partiallyStaged) {
       throw new Error(
         "Commit the staged changes in files that also have unstaged changes before refreshing this PR; its existing files and index were preserved.",
       );

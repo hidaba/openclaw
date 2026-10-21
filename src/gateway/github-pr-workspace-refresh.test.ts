@@ -26,7 +26,11 @@ describe("imported PR source refresh", () => {
       using _ = runtime?.projection;
       await fs.writeFile(path.join(f.projection, "artifact.txt"), "guest saved conflict\n");
       await fs.writeFile(path.join(f.projection, "untracked.txt"), "retained through recovery\n");
-      const acceptedHead = await f.advanceHead({ "artifact.txt": "remote PR change\n" });
+      // pr.txt is an imported file the guest has staged but not committed.
+      const acceptedHead = await f.advanceHead({
+        "artifact.txt": "remote PR change\n",
+        "pr.txt": "remote PR update\n",
+      });
       const withStore = workspaceStore.withLocalWorkspaceStore;
       let interrupted = false;
       const interruption = vi
@@ -98,6 +102,7 @@ describe("imported PR source refresh", () => {
         headChanged: true,
       });
       expect(f.readSession().worktree?.githubPullRequest?.preparedHeadCommit).toBe(acceptedHead);
+      expect(await f.guestGit("show", ":pr.txt")).toBe("remote PR update");
       expect(await f.invoke()).toMatchObject({
         status: "prepared",
         headCommit: f.pr.head.sha,
