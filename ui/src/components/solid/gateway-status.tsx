@@ -60,19 +60,8 @@ export function GatewayStatus(params: GatewayStatusProps & { row?: boolean }): J
               type="button"
               class="gateway-status__retry"
               aria-label={`${label()} — ${t("connection.retryNow")}`}
-              aria-busy={params.retryPending ? "true" : "false"}
-              disabled={params.retryPending}
-              onClick={() => {
-                if (!params.retryPending) {
-                  params.onRetry?.();
-                }
-              }}
+              onClick={() => params.onRetry?.()}
             >
-              <Show when={params.retryPending}>
-                <span class="gateway-status__spinner" aria-hidden="true">
-                  <Icon name="refresh" />
-                </span>
-              </Show>
               {params.row ? t("common.retry") : content()}
             </button>
           ) : (

@@ -3569,31 +3569,21 @@ openclaw-tooltip.sidebar-hover-tooltip {
 .gateway-status__retry {
   flex: none;
   padding: 3px 8px;
-  border: 1px solid currentColor;
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   background: transparent;
-  color: inherit;
+  color: var(--text);
   font: inherit;
   cursor: var(--cursor-action);
 }
 
-.gateway-status__retry:hover:not(:disabled) {
-  background: color-mix(in srgb, currentColor 12%, transparent);
+.gateway-status__retry:hover {
+  background: var(--bg-hover);
 }
 
-.gateway-status__retry:disabled {
-  cursor: default;
-}
-
-.gateway-status__spinner {
+.gateway-status__icon {
   display: inline-flex;
-  animation: btn-spinner-spin 1s linear infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .gateway-status__spinner {
-    animation: none;
-  }
+  flex: none;
 }
 
 .gateway-status__retry:focus-visible {
@@ -3604,8 +3594,7 @@ openclaw-tooltip.sidebar-hover-tooltip {
 .session-menu__color-swatch svg,
 .sidebar-gateway-check svg,
 .sidebar-build-hover-card__copy svg,
-.gateway-status__icon svg,
-.gateway-status__spinner svg {
+.gateway-status__icon svg {
   width: 12px;
   height: 12px;
 }
