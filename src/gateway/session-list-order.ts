@@ -4,9 +4,10 @@ import type { SessionsListParams } from "../../packages/gateway-protocol/src/ind
 import type { InternalSessionEntry as SessionEntry } from "../config/sessions/types.js";
 import { sortAndLimitByWork } from "../shared/sort-and-limit.js";
 import type { SynchronousWork } from "../shared/synchronous-work.js";
-import type { readSessionListSelectionFacts } from "./session-list-target.js";
 
-type SelectionFacts = ReturnType<typeof readSessionListSelectionFacts>;
+type SelectionFacts = Readonly<
+  Record<NonNullable<SessionsListParams["sortBy"]>, number> & { pinnedAt?: number }
+>;
 export type SessionListEntry = readonly [
   key: string,
   entry: SessionEntry,
