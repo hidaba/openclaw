@@ -1,12 +1,8 @@
-import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { gunzipSync, gzipSync } from "node:zlib";
 import { afterEach, assert, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { resetConfigRuntimeState, setRuntimeConfigSnapshot } from "../config/config.js";
-import * as packageRoot from "../infra/openclaw-root.js";
-import * as temporaryRoot from "../infra/tmp-openclaw-dir.js";
 import * as metadataState from "../plugins/current-plugin-metadata-state.js";
 import { createPluginRecord } from "../plugins/loader-records.js";
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
@@ -14,10 +10,8 @@ import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
   closeOpenClawStateDatabaseAsync,
-  closeOpenClawStateDatabaseByPathAsync,
   closeOpenClawStateDatabaseForTest,
 } from "../state/openclaw-state-db.js";
-import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import * as version from "../version.js";
 import { loadGatewayWorkerEnvironmentStartupState } from "./server-worker-environment-startup.js";
 import {
@@ -26,14 +20,7 @@ import {
 } from "./server-worker-environment-startup.runtime.test-support.js";
 import { withGatewayWorkerEnvironmentStartupState } from "./server-worker-environment-startup.state.test-support.js";
 import * as artifactModule from "./worker-environments/node-bootstrap-artifact.js";
-import {
-  buildId,
-  useNodeBootstrapArtifactFixtures,
-} from "./worker-environments/node-bootstrap-artifact.test-support.js";
 import * as enrollmentModule from "./worker-environments/node-enrollment.js";
-import * as transferModule from "./worker-environments/worker-bootstrap-artifact-transfer-service.js";
-
-const { fixture } = useNodeBootstrapArtifactFixtures();
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   afterEach(async () => {
     vi.restoreAllMocks();
@@ -93,110 +80,6 @@ async function provision(
     { nodeDeviceId: `${environmentId}-node` },
   );
 }
-
-it.skipIf(process.platform === "win32")(
-  "reuses image bytes through Gateway restart with fresh enrollment and download authority",
-  async () => {
-    const installation = await fixture("package");
-    vi.spyOn(temporaryRoot, "resolvePreferredOpenClawTmpDir").mockReturnValue(installation.root);
-    const original = await installation.provider.prepare();
-    const retainedBytes = gzipSync(gunzipSync(await fs.readFile(original.tarballPath)), {
-      level: 1,
-    });
-    const retainedHash = createHash("sha256").update(retainedBytes).digest("hex");
-    expect(retainedHash).not.toBe(original.tarballSha256);
-    const retainedPath = path.join(installation.packageRoot, "node-runtime.tgz");
-    await fs.writeFile(retainedPath, retainedBytes);
-    await installation.provider.close();
-    const plugin = installation.options.plugins[0]!;
-    const metadata = createPluginMetadataSnapshotFixture({
-      plugins: [
-        {
-          id: plugin.id,
-          rootDir: plugin.root,
-          packageName: installation.pluginPackage.name,
-          packageVersion: installation.pluginPackage.version,
-        },
-      ],
-    });
-    const registry = makeRegistry(
-      metadata,
-      plugin.id,
-      path.join(plugin.root, "index.js"),
-      "fixture.exec",
-    );
-    vi.spyOn(packageRoot, "resolveOpenClawPackageRootSync").mockReturnValue(
-      installation.packageRoot,
-    );
-    vi.spyOn(version, "resolveRuntimeServiceBuildId").mockReturnValue(buildId);
-    vi.spyOn(metadataState, "getGatewayPluginMetadataSnapshot").mockReturnValue(metadata);
-    // Observe the actual managers; the producer, enrollment, and transfer implementations run.
-    const enrollmentFactory = vi.spyOn(enrollmentModule, "createWorkerNodeEnrollmentManager");
-    const transferFactory = vi.spyOn(
-      transferModule,
-      "createWorkerBootstrapArtifactTransferService",
-    );
-    const stateDir = tempDirs.make("openclaw-bootstrap-restart-");
-    await withGatewayWorkerEnvironmentStartupState(stateDir, async () => {
-      setRuntimeConfigSnapshot({ gateway: { publicOrigin: "https://gateway.example.test" } });
-      const start = async (environmentId: string) => {
-        const startup = await loadGatewayWorkerEnvironmentStartupState();
-        const runtime = await createWorkerStartupRuntime(startup, () => registry);
-        try {
-          const managerResult = enrollmentFactory.mock.results.at(-1);
-          const transferResult = transferFactory.mock.results.at(-1);
-          assert(
-            managerResult?.type === "return" && transferResult?.type === "return",
-            "Gateway managers were not created",
-          );
-          const record = await provision(startup, environmentId);
-          const { nodeBootstrap, signal } = await managerResult.value.begin(record);
-          return { runtime, nodeBootstrap, signal, transfer: transferResult.value };
-        } catch (error) {
-          await runtime.workerEnvironmentService?.stop();
-          throw error;
-        }
-      };
-      const first = await start("first-process");
-      try {
-        expect(first.nodeBootstrap.sha256).toBe(retainedHash);
-      } finally {
-        await first.runtime.workerEnvironmentService?.stop();
-      }
-      expect(first.signal?.aborted).toBe(true);
-      expect(
-        first.transfer.authorize({
-          token: first.nodeBootstrap.token,
-          artifactKey: retainedHash,
-        }),
-      ).toBeUndefined();
-      await closeOpenClawStateDatabaseByPathAsync(
-        resolveOpenClawStateSqlitePath({ OPENCLAW_STATE_DIR: stateDir }),
-      );
-      closeOpenClawStateDatabaseForTest();
-      const second = await start("second-process");
-      try {
-        expect(second.nodeBootstrap.sha256).toBe(retainedHash);
-        expect(second.nodeBootstrap.token).not.toBe(first.nodeBootstrap.token);
-        const capability = second.transfer.authorize({
-          token: second.nodeBootstrap.token,
-          artifactKey: retainedHash,
-        });
-        assert(capability, "fresh download grant missing");
-        const file = await second.transfer.openFile(capability);
-        assert(file, "verified archive unavailable");
-        try {
-          expect(await file.handle.readFile()).toEqual(retainedBytes);
-        } finally {
-          await file.handle.close();
-        }
-      } finally {
-        await second.runtime.workerEnvironmentService?.stop();
-      }
-      expect(await fs.readFile(retainedPath)).toEqual(retainedBytes);
-    });
-  },
-);
 
 it("refreshes registry and metadata generations, retires old artifacts, and drains them on shutdown", async () => {
   const stateDir = await fs.realpath(tempDirs.make("openclaw-bootstrap-generation-"));

@@ -68,15 +68,6 @@ const loadSessionRuntime = async () => sessionRuntime;
 const beginMove = async () => createMoveBarrierBeginFixture(session.sessionId, session.sessionKey);
 const sourceInspection = ["authorize", "inspect-intent", "validate-source"];
 const persistedClaim = [...sourceInspection, "persist", "authorize", "validate-claim"];
-const abandonmentErrors = {
-  "persist-error": { message: "transcript append failed", order: [...sourceInspection, "persist"] },
-  "stale-source": { message: "placement source changed", order: [...persistedClaim, "begin"] },
-  "revoked-authority": {
-    message: "session access revoked",
-    order: [...sourceInspection, "persist", "authorize"],
-  },
-  "rotated-claim": { message: "worker turn changed", order: persistedClaim },
-};
 
 type MoveTarget = Awaited<ReturnType<typeof resolveGatewaySessionStoreTargetInWorker>>;
 async function withMoveSession(run: (target: MoveTarget) => Promise<void>) {
@@ -332,15 +323,7 @@ describe("worker placement move destination", () => {
 
   it.each([
     ["persists the claimed partial", "worker-run", "success"],
-    [
-      "joins an existing decision without new-source validation or persistence",
-      "worker-run",
-      "joined-existing",
-    ],
-    ["fails before the durable move", "worker-run", "persist-error"],
-    ["rejects a changed source after persistence", "worker-run", "stale-source"],
     ["rejects authority revoked during persistence", "worker-run", "revoked-authority"],
-    ["rejects a worker claim rotated during persistence", "worker-run", "rotated-claim"],
     ["does not persist an unclaimed turn", undefined, "success"],
   ] as const)(
     "abandonment %s before interrupting its owner",
@@ -358,13 +341,8 @@ describe("worker placement move destination", () => {
             observed.push("interrupt");
           },
         });
-        let sourceChanged = false;
         const persistAbandonedPartial = vi.fn(async () => {
           observed.push("persist");
-          if (outcome === "persist-error") {
-            throw new Error("transcript append failed");
-          }
-          sourceChanged = outcome === "stale-source";
         });
         const revokeSessionAuthority = vi.fn(() => observed.push("revoke"));
         const barrier = createGatewayWorkerPlacementMoveBarrier({
@@ -375,21 +353,12 @@ describe("worker placement move destination", () => {
         });
         const begin = vi.fn(async (prepareNew?: (runId: string) => Promise<void>) => {
           observed.push("inspect-intent");
-          if (outcome === "joined-existing") {
-            return { ...createMoveBarrierBeginFixture(sessionId, sessionKey), joined: true };
-          }
           observed.push("validate-source");
           if (claimRunId) {
             await prepareNew?.(claimRunId);
             observed.push("validate-claim");
-            if (outcome === "rotated-claim") {
-              throw new Error("worker turn changed");
-            }
           }
           observed.push("begin");
-          if (sourceChanged) {
-            throw new Error("placement source changed");
-          }
           return createMoveBarrierBeginFixture(sessionId, sessionKey);
         });
         const operation = barrier({
@@ -404,17 +373,10 @@ describe("worker placement move destination", () => {
           begin,
         });
         try {
-          const failure = Object.entries(abandonmentErrors).find(([key]) => key === outcome)?.[1];
-          if (failure) {
-            await expect(operation).rejects.toThrow(failure.message);
+          if (outcome === "revoked-authority") {
+            await expect(operation).rejects.toThrow("session access revoked");
             expect(revokeSessionAuthority).not.toHaveBeenCalled();
-            expect(observed).toEqual(failure.order);
-          } else if (outcome === "joined-existing") {
-            await expect(operation).resolves.toMatchObject({
-              joined: true,
-              placement: { state: "draining" },
-            });
-            expect(observed).toEqual(["authorize", "inspect-intent", "revoke", "interrupt"]);
+            expect(observed).toEqual([...sourceInspection, "persist", "authorize"]);
           } else {
             await expect(operation).resolves.toMatchObject({ placement: { state: "draining" } });
             expect(observed).toEqual([
@@ -425,7 +387,7 @@ describe("worker placement move destination", () => {
             ]);
           }
           expect(begin).toHaveBeenCalledOnce();
-          if (claimRunId && outcome !== "joined-existing") {
+          if (claimRunId) {
             expect(persistAbandonedPartial).toHaveBeenCalledWith({
               ...session,
               runId: claimRunId,

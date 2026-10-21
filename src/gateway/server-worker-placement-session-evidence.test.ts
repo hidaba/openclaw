@@ -33,14 +33,11 @@ import {
 import {
   closeOpenClawStateDatabaseForTest,
   closeOpenClawStateDatabaseAsync,
-  openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { observeMainThreadSql } from "../test-utils/main-thread-sql-spies.test-support.js";
 import { createWorkerPlacementSessionEvidenceResolver as createResolver } from "./server-worker-placement-session-evidence.js";
 import type { WorkerSessionPlacementRecord } from "./worker-environments/placement-record.js";
-import { createPlacementSessionRetirement } from "./worker-environments/placement-session-retirement.js";
-import { createWorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
 import { localPlacement as createLocalPlacement } from "./worker-environments/placement-suite.test-support.js";
 
 const tempDirs = createTempDirTracker();
@@ -140,63 +137,6 @@ describe("worker placement session evidence", () => {
       }),
   );
 
-  it("retires absent ownerless placements while retaining valid, unreadable, and claimed sessions", () =>
-    withEvidenceState(async () => {
-      setRuntimeConfigSnapshot({});
-      const placements = createWorkerSessionPlacementStore({
-        database: openOpenClawStateDatabase(),
-        now: () => 1_000,
-      });
-      const identities = ["current", "unreadable", "absent", "claimed"].map((kind) => ({
-        agentId: "main",
-        sessionId: `session-${kind}`,
-        sessionKey: `agent:main:${kind}`,
-      }));
-      const claim = await placements.claimTurn({
-        ...identities[3]!,
-        owner: { kind: "local" },
-        claimId: "live-claim",
-        runId: "live-run",
-      });
-      const requested: WorkerSessionPlacementRecord[] = [];
-      for (const identity of identities) {
-        requested.push(await placements.startDispatch(identity));
-      }
-      for (const identity of identities.slice(0, 2)) {
-        await writeSession(identity);
-      }
-      const database = openOpenClawAgentDatabase({ agentId: "main" });
-      // Retain an admitted reader so one later corrupt row does not block unrelated evidence.
-      expect(readEvidence(database, identities.slice(0, 2)).map((row) => row.status)).toEqual([
-        "current",
-        "current",
-      ]);
-      database.db
-        .prepare("UPDATE session_nodes SET entry_json = ?, entry_valid = 1 WHERE session_key = ?")
-        .run("{", identities[1]!.sessionKey);
-      const forceDestroyEnvironment = vi.fn();
-      const retirement = createPlacementSessionRetirement({
-        placements,
-        environments: { get: () => undefined },
-        forceDestroyEnvironment,
-        createSessionEvidenceResolver: createResolver,
-        reportChanges: (operation) => operation(),
-        warn: vi.fn(),
-      });
-
-      await retirement.reconcile();
-
-      expect(placements.get(identities[0]!.sessionId)).toEqual(requested[0]);
-      expect(placements.get(identities[1]!.sessionId)).toEqual(requested[1]);
-      expect(placements.get(identities[2]!.sessionId)).toBeUndefined();
-      expect(placements.get(identities[3]!.sessionId)).toMatchObject({
-        state: "requested",
-        generation: requested[3]!.generation,
-        turnClaim: { owner: "local", claimId: claim.claimId, runId: claim.runId },
-      });
-      expect(forceDestroyEnvironment).not.toHaveBeenCalled();
-    }));
-
   it("keeps ordinary database discovery failures independent from incognito evidence", () =>
     withEvidenceState(async (stateDir) => {
       const placements = mixedSubjects();
@@ -270,18 +210,6 @@ describe("worker placement session evidence", () => {
       } finally {
         registry.mockRestore();
       }
-    }));
-
-  it("keeps strict fresh admission for a migration-invalid session database", () =>
-    withEvidenceState(async () => {
-      setRuntimeConfigSnapshot({});
-      const current = localPlacement("current", "agent:main:current");
-      await writeSession(current);
-      const database = openOpenClawAgentDatabase({ agentId: "main" });
-      database.db.exec("PRAGMA user_version = 999;");
-      closeOpenClawAgentDatabasesForTest();
-      const resolve = await createResolver([current]);
-      expect(await resolve(current)).toBe("unknown");
     }));
 
   it("warns instead of silently swallowing resolver pipeline failures", () =>

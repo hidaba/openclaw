@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 
 const cfg: OpenClawConfig = {
@@ -34,15 +34,10 @@ vi.mock("../agents/prepared-model-runtime.js", () => ({
   refreshPreparedModelRuntimeSnapshots: refreshPreparedModelRuntimeSnapshotsMock,
 }));
 
-let publishConfiguredModelRuntimeSnapshots: typeof import("./server-startup-model-runtime.js").publishConfiguredModelRuntimeSnapshots;
-let hydrateConfiguredExternalCliAuth: typeof import("./server-startup-model-runtime.js").hydrateConfiguredExternalCliAuth;
+const { publishConfiguredModelRuntimeSnapshots, hydrateConfiguredExternalCliAuth } =
+  await import("./server-startup-model-runtime.js");
 
 describe("gateway startup model runtime publication", () => {
-  beforeAll(async () => {
-    ({ publishConfiguredModelRuntimeSnapshots, hydrateConfiguredExternalCliAuth } =
-      await import("./server-startup-model-runtime.js"));
-  });
-
   beforeEach(() => {
     refreshPreparedModelRuntimeSnapshotsMock.mockClear();
     collectConfiguredRefs.mockClear();

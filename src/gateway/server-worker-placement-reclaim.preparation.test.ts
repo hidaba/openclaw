@@ -1,13 +1,20 @@
+import path from "node:path";
 import { expect, it, vi } from "vitest";
+import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
+import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import { clearAgentRunContext } from "../infra/agent-run-registry.js";
 import * as operationAdmission from "../infra/sqlite-worker-operation-admission.js";
 import { sqliteWorkerOwnerProbe as probe } from "../infra/sqlite-worker-owner-probe.test-support.js";
+import { beginSessionEffect } from "../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { createGatewayWorkerDispatchAdmission } from "./server-worker-placement-dispatch-admission.js";
 import { createGatewayWorkerPlacementMoveBarrier } from "./server-worker-placement-move-barrier.js";
 import { createGatewayWorkerPlacementReclaimBarriers } from "./server-worker-placement-reclaim.js";
-import { useReclaimFixtures } from "./server-worker-placement-reclaim.test-support.js";
+import {
+  sessionRuntime,
+  useReclaimFixtures,
+} from "./server-worker-placement-reclaim.test-support.js";
 import {
   admitWorkerStopChat,
   createWorkerStopChatContext,
@@ -18,6 +25,7 @@ import { createHarness } from "./worker-environments/placement-dispatch-test-har
 import {
   placementSource as source,
   placementTransition,
+  sessionIdentity,
 } from "./worker-environments/placement-suite.test-support.js";
 import { prepareSessionWorkerPlacementStop } from "./worker-environments/session-placement-lifecycle.js";
 
@@ -721,3 +729,181 @@ it.each(["transaction", "commit"] as const)(
     }
   },
 );
+
+async function barrierFixture(name: string) {
+  setRuntimeConfigSnapshot({});
+  const request = sessionIdentity(name);
+  const storePath = path.join(fixtures.makeRoot(`reclaim-preparation-${name}-`), "sessions.sqlite");
+  const entry = { sessionId: request.sessionId, lifecycleRevision: "original", updatedAt: 1 };
+  await replaceSessionEntry({ ...request, storePath }, entry);
+  const placement = {
+    ...request,
+    state: "active" as const,
+    generation: 4,
+    environmentId: "worker",
+    activeOwnerEpoch: 7,
+  };
+  const cancel = vi.fn(async (input: { assertCurrent: () => void }) => input.assertCurrent());
+  const barriers = createGatewayWorkerPlacementReclaimBarriers({
+    placements: {
+      get: () => ({ ...placement }) as never,
+      getAsync: async () => ({ ...placement }) as never,
+      waitForTurnClaimRelease: async () => {},
+    },
+    loadSessionRuntime: async () => sessionRuntime(storePath),
+    cancelSessionWork: cancel,
+    revokeSessionAuthority: vi.fn(),
+  });
+  const run = vi.fn(async () => ({ ...placement, state: "reclaimed" as const }) as never);
+  return {
+    placement,
+    cancel,
+    run,
+    admit: (onInterrupt?: () => void) =>
+      beginSessionEffect({
+        agentId: request.agentId,
+        scope: storePath,
+        identities: [request.sessionKey, request.sessionId],
+        assertAllowed: () => {},
+        onInterrupt,
+      }),
+    replaceEntry: (lifecycleRevision: string) => {
+      entry.lifecycleRevision = lifecycleRevision;
+      return replaceSessionEntry({ ...request, storePath }, entry);
+    },
+    prepare: (options: Partial<Parameters<typeof barriers.runReclaimPreparation>[0]> = {}) =>
+      barriers.runReclaimPreparation({ ...request, run, ...options }),
+  };
+}
+
+it("one failed Stop cannot reopen ingress while another Stop still owns its closure", async () => {
+  const f = await barrierFixture("overlap");
+  const entered = createDeferredCore();
+  const release = createDeferredCore();
+  let calls = 0;
+  f.cancel.mockImplementation(async ({ assertCurrent }) => {
+    assertCurrent();
+    if (++calls === 1) {
+      entered.resolve();
+      await release.promise;
+    } else {
+      throw new Error("second cancellation failed");
+    }
+  });
+  const first = f.prepare();
+  await entered.promise;
+  try {
+    await expect(f.prepare()).rejects.toThrow("second cancellation failed");
+    await expect(f.admit()).rejects.toThrow();
+    expect(f.run).not.toHaveBeenCalled();
+  } finally {
+    release.resolve();
+    await first;
+  }
+  (await f.admit()).release();
+});
+
+it.each(["authorization", "incarnation", "worker"] as const)(
+  "rejects changed %s after cancellation and reopens admission on failure",
+  async (change) => {
+    const f = await barrierFixture(`changed-${change}`);
+    const entered = createDeferredCore();
+    const release = createDeferredCore();
+    let authorized = true;
+    const interrupted = vi.fn();
+    const signalled = vi.fn();
+    const acquired = await f.admit(() => {
+      interrupted();
+      acquired.release();
+    });
+    f.cancel.mockImplementation(async ({ assertCurrent }) => {
+      if (change !== "worker") {
+        assertCurrent();
+      }
+      entered.resolve();
+      await release.promise;
+      if (change === "worker") {
+        assertCurrent();
+        signalled();
+      }
+    });
+    try {
+      const stop = f.prepare({
+        authorize: () => {
+          if (!authorized) {
+            throw new Error("access revoked");
+          }
+        },
+      });
+      const rejected = expect(stop).rejects.toThrow(
+        change === "authorization"
+          ? "access revoked"
+          : change === "worker"
+            ? "worker changed before cancellation"
+            : "Session",
+      );
+      await entered.promise;
+      if (change === "authorization") {
+        authorized = false;
+      } else if (change === "worker") {
+        // Replacement must not mutate the captured owner snapshot.
+        f.placement.generation++;
+      } else {
+        await f.replaceEntry("replacement-with-same-session-id");
+      }
+      release.resolve();
+      await rejected;
+      expect(interrupted).not.toHaveBeenCalled();
+      expect(f.run).not.toHaveBeenCalled();
+      expect(signalled).not.toHaveBeenCalled();
+      (await f.admit()).release();
+    } finally {
+      release.resolve();
+      acquired.release();
+    }
+  },
+);
+
+it("auto-suspend eligibility rejects before closing admission or signalling cancellation", async () => {
+  const f = await barrierFixture("auto-suspend");
+  await expect(
+    f.prepare({
+      beforeDrain: () => {
+        throw new Error("session is busy");
+      },
+    }),
+  ).rejects.toThrow("session is busy");
+  expect(f.cancel).not.toHaveBeenCalled();
+  expect(f.run).not.toHaveBeenCalled();
+  (await f.admit()).release();
+});
+
+it("keeps admissions closed while serialized teardown is queued, then revalidates the incarnation", async () => {
+  const f = await barrierFixture("queued-teardown");
+  const sql = observeHostDataSql();
+  const entered = createDeferredCore();
+  const release = createDeferredCore();
+  const teardown = vi.fn();
+  const stop = f.prepare({
+    run: async (authorize) => {
+      entered.resolve();
+      await release.promise;
+      authorize?.();
+      teardown();
+      return await f.run();
+    },
+  });
+  const rejected = expect(stop).rejects.toThrow("Session");
+  try {
+    await entered.promise;
+    await expect(f.admit()).rejects.toThrow();
+    await f.replaceEntry("new-incarnation");
+    release.resolve();
+    await rejected;
+    expect(teardown).not.toHaveBeenCalled();
+  } finally {
+    release.resolve();
+    sql.restore();
+  }
+  expect(sql.queries).toEqual([]);
+});

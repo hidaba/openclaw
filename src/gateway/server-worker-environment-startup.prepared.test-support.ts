@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -8,7 +7,6 @@ import { assert, expect, vi } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
 import { GATEWAY_CLIENT_IDS } from "../../packages/gateway-protocol/src/client-info.js";
 import { NodeInvokeResultParamsSchema } from "../../packages/gateway-protocol/src/schema/nodes.js";
-import { requireGit } from "../agents/worktrees/git.js";
 import { NODE_WORKER_WORKSPACE_PREPARE_COMMAND } from "../infra/node-commands.js";
 import {
   NODE_WORKER_SUPERVISOR_PROTOCOL_FEATURE,
@@ -35,12 +33,15 @@ import {
 } from "./server-worker-environment-startup.runtime.test-support.js";
 import { withGatewayWorkerEnvironmentStartupState } from "./server-worker-environment-startup.state.test-support.js";
 import { createWorkerProjectPreparation } from "./worker-environments/project-preparation.js";
+import { createProjectPreparationFixture } from "./worker-environments/project-preparation.test-support.js";
 import * as serviceModule from "./worker-environments/service.js";
 import { workerProjectSeedKey } from "./worker-environments/workspace-git-base.js";
 
 async function createPreparedNodeAcknowledgement(root: string) {
-  const home = path.join(root, "node-home");
-  await fs.mkdir(home);
+  const projectFixture = await createProjectPreparationFixture(root, undefined, false, {
+    "source.txt": "pristine source\n",
+  });
+  const { home, project } = projectFixture;
   const startup = await loadGatewayWorkerEnvironmentStartupState();
   const environmentId = "prepared-wire-environment";
   type Transition = Parameters<typeof startup.store.transition>[0];
@@ -120,44 +121,26 @@ async function createPreparedNodeAcknowledgement(root: string) {
     owned.namespace = namespace;
     const preparationKey = "a".repeat(64);
     const cacheKey = "c".repeat(64);
-    const seedKey = "b".repeat(64);
-    const seed = path.join(home, ".openclaw-worker", "git-seeds", namespace, seedKey);
-    await fs.mkdir(seed, { recursive: true });
-    await requireGit(seed, ["init", "--quiet"]);
-    await fs.writeFile(path.join(seed, "source.txt"), "pristine source\n");
-    await requireGit(seed, ["add", "."]);
-    await requireGit(seed, [
-      "-c",
-      "user.name=Prepared Test",
-      "-c",
-      "user.email=prepared@example.invalid",
-      "commit",
-      "--quiet",
-      "-m",
-      "source",
-    ]);
-    const baseCommit = (await requireGit(seed, ["rev-parse", "HEAD"])).trim();
-    const project = { key: seedKey, root: seed, baseCommit };
-    const admittedSeed = path.join(path.dirname(seed), workerProjectSeedKey(project));
-    await fs.rename(seed, admittedSeed);
-    project.root = admittedSeed;
+    const seed = path.join(
+      home,
+      ".openclaw-worker",
+      "git-seeds",
+      namespace,
+      workerProjectSeedKey(project),
+    );
+    await fs.mkdir(path.dirname(seed), { recursive: true });
+    await fs.rename(project.root, seed);
+    project.root = seed;
     const operation = createWorkerProjectPreparation({
       project,
       namespace,
       preparation: { key: preparationKey, cacheKey, purpose: "session", demandAtMs: 0 },
       requireCurrent: () => {},
     });
-    const runScript = async (script: string) =>
-      execFileSync("sh", ["-c", script], {
-        env: { ...process.env, HOME: home },
-        encoding: "utf8",
-        timeout: 30_000,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
     const { preparedWorkspace } = await operation.project
       .prepare({
-        runScript,
-        runScriptWithBudget: (createScript) => runScript(createScript(30_000)),
+        runScript: projectFixture.runScript,
+        runScriptWithBudget: projectFixture.runScriptWithBudget.bind(projectFixture),
         upload: async () => {
           throw new Error("Fixture seed must already be available");
         },
