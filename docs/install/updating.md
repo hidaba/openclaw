@@ -39,6 +39,13 @@ are reported by the scheduler without restarting the Gateway.
 
 **Updates always work** (`openclaw update` finishes best effort everywhere). Changes to update, Doctor, service lifecycle, migrations, plugin loading: state their update behavior. Installed updater runs first, can't be patched; candidate fixes key on markers shipped drivers set; existing operator state = input. Recoverable hiccups → recorded warnings; back up before mutating, let rollback restore it; refuse only for named data risk with previous Gateway kept running. Timeouts and budgets: generous, derived from measured state, sized for slow hardware. Proof: published-driver × candidate cell.
 
+Supervisor-managed migrations also validate Doctor's repairable projection before
+rejecting retired config fields such as `agents.defaults.heartbeat`. They preserve
+the original config and database backups before Doctor migrates the state and
+converts heartbeats to Automations. Unknown keys and invalid heartbeat settings
+still refuse admission. Repeating the migration preserves the converted jobs and
+does not repeat the heartbeat delivery notice.
+
 Before replacing a Git checkout's build or an installed package, the updater
 retains its running runtime. Late module imports and background workers keep
 using that generation through finalization, rollback, and CLI cleanup, even when
@@ -107,6 +114,16 @@ retrying that rejection. Local HTTP readiness and runtime version/build identity
 can verify activation instead, with an RPC authentication warning recorded in
 the update result. This does not change Gateway authentication or pairing.
 
+Channel outages are warnings once the expected Gateway build is running and its
+core readiness is verified. Detailed `/readyz` responses report `coreReady`
+separately while preserving HTTP 503, `ready: false`, and failing channel names.
+Update history retains those channel and HTTP facts. Startup, state and agent
+database admission, child-runtime, and plugin-replacement failures still prevent
+core readiness; an older HTTP 503 without explicit core proof remains unverified.
+Run `openclaw channels status --probe` to investigate channel warnings. This
+requires the repaired installed updater; a new candidate cannot change the
+checks of an updater already running.
+
 After a Doctor child settles, the updater drains its retained handles for the
 affected shared-state database and revokes their schema admission, even when
 Doctor exits unsuccessfully. The next parent access admits the resulting schema
@@ -126,6 +143,13 @@ placement is unchanged. Installed plugin projects, retained native admissions,
 and recovery or migration backups remain with their existing durable owners;
 `TMPDIR` does not relocate those writes or remove the need for free space on the
 installation and state filesystems.
+
+Plugin source capture repairs stale dependency links without changing real
+dependency directories. POSIX replacements are staged before publication;
+Windows removes only the junction or symlink before recreating and verifying it.
+A failed link leaves that plugin unprepared with a named error. Doctor retains
+its pending migration obligation while other plugins' migrations continue.
+This repair applies when the candidate loads plugin contracts during Doctor.
 
 ### Migration integrity checks
 
@@ -1450,10 +1474,9 @@ openclaw health
 
 ### Background exec notifications after an update
 
-`[OpenClaw exec completion]` identifies an automatic follow-up for a background
-command, rather than a recurring heartbeat poll. These follow-ups can run with
-`agents.defaults.heartbeat.every: "0m"`. To keep background exec without these
-extra model calls, set `tools.exec.notifyOnExit: false` and check per-agent
+Background-command completions can trigger follow-up turns in their originating
+session even when recurring automations are disabled. To keep background exec
+without these extra model calls, set `tools.exec.notifyOnExit: false` and check per-agent
 overrides at `agents.entries.<id>.tools.exec.notifyOnExit`. Use `process poll` to
 collect results. See [Background exec notifications](/gateway/background-process#disable-automatic-completion-turns)
 for when the setting takes effect.
