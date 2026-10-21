@@ -65,6 +65,7 @@ export async function integrateManagedWorkspaceSource(
       commit: string;
       githubHost: string;
       review: { repository: string; commit: string };
+      initial: boolean;
       emptySource: boolean;
       resuming: boolean;
       accept: () => Promise<void>;
@@ -109,13 +110,13 @@ export async function integrateManagedWorkspaceSource(
         identity,
         assertCurrent,
       });
-  const initialImport = params.source !== undefined;
+  const initialImport = params.source?.initial === true;
   let guestHead: string | undefined;
   let guestDirty = false;
-  if (initialImport) {
-    if (params.source?.resuming) {
+  if (params.source) {
+    if (params.source.resuming) {
       // An accepted transfer may retain a paused runtime. Recover it through its
-      // owner before asking that runtime to execute the initial-workspace check.
+      // owner before asking that runtime to execute the workspace check.
       await withLocalWorkspaceProjection({ ...owner, assertCurrent }, (state) => state.settle());
     }
     const observed = await readManagedSandboxGitState({
@@ -125,6 +126,11 @@ export async function integrateManagedWorkspaceSource(
     });
     guestHead = observed.head;
     guestDirty = observed.dirty;
+    if (!initialImport && observed.partiallyStaged) {
+      throw new Error(
+        "Commit the staged changes in files that also have unstaged changes before refreshing this PR; its existing files and index were preserved.",
+      );
+    }
   }
   let previousBase: string | undefined;
   const result = await withLocalWorkspaceProjection<SessionGitHubBaseRefreshResult>(
@@ -194,14 +200,14 @@ export async function integrateManagedWorkspaceSource(
           }
           if (params.conflictsResolved && (!baseCommit || params.baseCommit !== baseCommit)) {
             throw new Error(
-              `The pending base integration changed; call refresh_base again and resolve its returned baseCommit.`,
+              `The pending source integration changed; call ${action} again and resolve its returned conflicts.`,
             );
           }
           const continuingIntegration = Boolean(baseCommit);
           if (!baseCommit) {
             if (params.baseCommit) {
               throw new Error(
-                `baseCommit acknowledges an existing conflict; it cannot select a source.`,
+                `The expected commit acknowledges an existing conflict; it cannot select a source.`,
               );
             }
             baseCommit =
@@ -318,13 +324,6 @@ export async function integrateManagedWorkspaceSource(
               throw new Error(pristineError);
             }
           }
-          // The source owner admits the binding only after protecting the initial workspace.
-          await params.source?.accept();
-          check();
-          if (!continuingIntegration) {
-            await state.synchronize("canonical");
-            await state.synchronize("projection");
-          }
           const mergeBases = async (left: string, right: string) => {
             const bases = await probe(["merge-base", "--all", left, right]);
             if (bases.code === 1) {
@@ -356,7 +355,12 @@ export async function integrateManagedWorkspaceSource(
               }
             }
           }
+          // Do not reserve a source that cannot be integrated or whose ancestry is unavailable.
+          await params.source?.accept();
+          check();
           if (!continuingIntegration) {
+            await state.synchronize("canonical");
+            await state.synchronize("projection");
             const ancestor = await probe(["merge-base", "--is-ancestor", baseCommit, "HEAD"]);
             if (ancestor.code === 0 && (!initialImport || initialHead === baseCommit)) {
               return {
@@ -543,7 +547,7 @@ export async function integrateManagedWorkspaceSource(
           const markers = await probe(["diff", "--check", sourceHead, "--", ...conflictPaths]);
           if (conflictPaths.length && markers.stdout.includes("conflict marker")) {
             throw new Error(
-              `Conflict markers remain. Resolve the reported files, then repeat refresh_base with conflictsResolved and the same baseCommit before tests and Auto Review.`,
+              `Conflict markers remain. Resolve the reported files, then repeat ${action} with conflictsResolved and the same returned commit before tests and Auto Review.`,
             );
           }
           await git(["read-tree", snapshot.workspaceTree]);

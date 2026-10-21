@@ -11,7 +11,7 @@ export async function readManagedSandboxGitState(params: {
   sandbox: SandboxContext;
   signal?: AbortSignal;
   assertCurrent: () => void;
-}): Promise<{ head: string; dirty: boolean }> {
+}): Promise<{ head: string; dirty: boolean; partiallyStaged: boolean }> {
   const { sandbox, signal, assertCurrent } = params;
   assertCurrent();
   const observed = await sandbox.backend!.runShellCommand({
@@ -24,7 +24,12 @@ export async function readManagedSandboxGitState(params: {
   if (observed.code !== 0 || !head || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(head)) {
     throw new Error("The sandbox Git head could not be verified; existing work was preserved.");
   }
-  return { head, dirty: status.length > 0 };
+  return {
+    head,
+    dirty: status.length > 0,
+    // Porcelain quotes unusual paths; its first two columns remain index/worktree status.
+    partiallyStaged: status.some((line) => /^[^ ?][^ ]/u.test(line)),
+  };
 }
 
 export async function prepareManagedWorkspaceReviewBase(params: {
