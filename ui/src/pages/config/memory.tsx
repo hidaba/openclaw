@@ -109,7 +109,6 @@ type MemoryAddonRow = ReturnType<typeof buildMemoryAddonRows>[number];
 function buildMemoryAddonRows(
   catalog: MemoryCatalogState,
   state: {
-    busy: Readonly<Partial<Record<string, true>>>;
     errors: Readonly<Partial<Record<string, string>>>;
     notices: Readonly<Partial<Record<string, { message: string }>>>;
     refreshWarnings: Readonly<Partial<Record<string, string>>>;
@@ -122,7 +121,6 @@ function buildMemoryAddonRows(
       label: t(addon.labelKey),
       description: entry?.description ?? addon.id,
       state: resolveMemoryPluginState(catalog, entry),
-      busy: state.busy[addon.id] === true,
       error: state.errors[addon.id] ?? null,
       notice:
         [state.notices[addon.id]?.message, state.refreshWarnings[addon.id]]
@@ -140,7 +138,11 @@ type MemoryViewProps = {
   catalog: MemoryCatalogState;
   catalogScope?: object | null;
   addonOutcomes: Parameters<typeof buildMemoryAddonRows>[1];
+  /** Read optimistic state at the control, outside held catalog and parent snapshots. */
+  readAddonExpected: (id: string) => boolean | undefined;
+  readAddonBusy: (id: string) => boolean;
   engineSelection: MemoryEngineSelection;
+  enginePending?: boolean;
   engineBusy: boolean;
   /** Distinguishes a rejected write from a committed write with a failed refresh. */
   engineOutcome: MemoryEngineOutcome | null;
@@ -272,7 +274,7 @@ function DisabledEngineRow(props: MemoryViewProps) {
     resolveMemoryPluginState(props.catalog, findMemoryCatalogPlugin(props.catalog, engineId()));
   return (
     <>
-      {engineId() !== null && state() === "disabled" && (
+      {!props.enginePending && engineId() !== null && state() === "disabled" && (
         <SettingsRow
           title={t("memoryPage.engine.disabledTitle")}
           description={t("memoryPage.engine.disabledHint")}
@@ -307,6 +309,7 @@ function AddonStatus(props: { state: MemoryPluginState }) {
 }
 
 function AddonRow(props: { addon: MemoryAddonRow; owner: MemoryViewProps }) {
+  // Read optimistic affordances at the control, outside the held catalog row snapshot.
   return (
     <>
       {props.owner.canToggleAddons &&
@@ -317,8 +320,8 @@ function AddonRow(props: { addon: MemoryAddonRow; owner: MemoryViewProps }) {
           title={props.addon.label}
           ariaLabel={t("memoryPage.addons.toggleAriaLabel", { plugin: props.addon.label })}
           description={props.addon.description}
-          checked={props.addon.state === "enabled"}
-          disabled={props.addon.busy}
+          checked={props.owner.readAddonExpected(props.addon.id) ?? props.addon.state === "enabled"}
+          disabled={props.owner.readAddonBusy(props.addon.id)}
           onChange={(enabled) => props.owner.onAddonChange(props.addon.id, enabled)}
         />
       ) : (
