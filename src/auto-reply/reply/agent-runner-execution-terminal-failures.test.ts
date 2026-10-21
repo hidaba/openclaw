@@ -29,6 +29,7 @@ import { WorkerNodeLostError } from "../../worker/worker-node-loss.js";
 import { getReplyPayloadMetadata } from "../reply-payload.js";
 import { setupExecutionSuite } from "./agent-runner-execution-suite.test-support.js";
 import {
+  createRunResult,
   GENERIC_RUN_FAILURE_TEXT,
   createRunAgentTurnParams,
   createFollowupRun,
@@ -415,10 +416,7 @@ it.for([false, true])(
 );
 
 it("settles a completed result after awaiting restart recovery", async () => {
-  const result = {
-    payloads: [{ text: "completed before the restart marker was observed" }],
-    meta: {},
-  };
+  const result = createRunResult("completed before the restart marker was observed");
   const runId = "armed-restart-settled-result";
   const { replyOperation, failMock } = createMockReplyOperation();
   let operationResult: typeof replyOperation.result = null;
