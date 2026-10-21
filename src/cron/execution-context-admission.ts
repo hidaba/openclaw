@@ -8,6 +8,7 @@ import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/sc
 import type { OperationalRunInstanceRef } from "../agents/operational-run-instance.js";
 import { resolveSandboxConfigForAgent } from "../agents/sandbox/config.js";
 import { resolveScheduledToolPolicyContext } from "../agents/scheduled-tool-policy.js";
+import { resolveIngressWorkspaceOverrideForSessionRun } from "../agents/spawned-context.js";
 import { prepareCommandOwnerAuthority } from "../auto-reply/command-auth.js";
 import { resolveAgentMainSessionKey } from "../config/sessions/main-session.js";
 import { prepareSessionGenerationFacts } from "../config/sessions/session-delivery-generation.js";
@@ -100,7 +101,7 @@ function parentSessionKeyOf(job: CronStoredJob): string | undefined {
   return job.sourceConversation?.sessionKey;
 }
 
-async function readParentRow(params: MintParams): Promise<ScheduledAdmissionFacts["parentRow"]> {
+async function readParent(params: MintParams) {
   const parentSessionKey = parentSessionKeyOf(params.job);
   if (!parentSessionKey) {
     return undefined;
@@ -117,7 +118,11 @@ async function readParentRow(params: MintParams): Promise<ScheduledAdmissionFact
         () => false,
       )
     : false;
-  return parentRowFactsFromEntry(entry, worktreeExists);
+  return { entry, row: parentRowFactsFromEntry(entry, worktreeExists) };
+}
+
+async function readParentRow(params: MintParams): Promise<ScheduledAdmissionFacts["parentRow"]> {
+  return (await readParent(params))?.row;
 }
 
 type ParentEntry = Pick<
@@ -129,6 +134,7 @@ type ParentEntry = Pick<
   | "spawnedCwd"
   | "worktree"
   | "sandbox"
+  | "spawnedBy"
 >;
 
 /** Builder facts for a parent session row; shared with the development replay. */
@@ -140,11 +146,17 @@ export function parentRowFactsFromEntry(
     return { missing: true };
   }
   const worktreePath = entry.worktree ? entry.spawnedCwd : undefined;
+  const workspaceDir = resolveIngressWorkspaceOverrideForSessionRun({
+    spawnedBy: entry.spawnedBy,
+    workspaceDir: entry.spawnedWorkspaceDir,
+    cwd: entry.spawnedCwd,
+  });
   return {
     sessionId: entry.sessionId,
     ...(entry.lifecycleRevision ? { lifecycleRevision: entry.lifecycleRevision } : {}),
     archived: typeof entry.archivedAt === "number",
-    ...(entry.spawnedWorkspaceDir ? { workspaceDir: entry.spawnedWorkspaceDir } : {}),
+    // The same persisted-binding rule run preparation applies to the parent's row.
+    ...(workspaceDir ? { workspaceDir } : {}),
     ...(entry.spawnedCwd ? { cwd: entry.spawnedCwd } : {}),
     ...(worktreePath ? { worktree: { path: worktreePath, exists: worktreeExists } } : {}),
     sandboxRequired: entry.sandbox === "required",
@@ -278,17 +290,34 @@ export function mintCronPromptExecutionContext(
   });
 }
 
+/** What run preparation needs from a linked parent before it creates the run session. */
+export type ScheduledParentPreparation =
+  | Readonly<{
+      kind: "pause";
+      result: { status: "skipped"; error: string; parentUnavailable: CronParentUnavailable };
+    }>
+  | Readonly<{
+      kind: "child";
+      /** The parent row whose persisted workspace binding the child run uses. */
+      binding: Readonly<{ sessionKey: string; entry: SessionEntry }>;
+      /** Set when the parent row requires a sandbox; a child never runs looser than its parent. */
+      sandbox?: "required";
+    }>;
+
 /**
- * Pre-session parent check for jobs linked to an exact parent conversation.
- * Returns the pause reason when the parent is removed or archived, or its bound
- * worktree is gone. A reset parent never pauses, and read failures never pause a job.
+ * Classifies a linked job's parent before its run session exists: a pause when the
+ * parent is removed or archived or its bound worktree is gone, or the parent binding
+ * a child run uses. A reset parent never pauses; that occurrence runs unbound, on the
+ * legacy run-session workspace. Unlinked jobs read nothing. A failed read never pauses;
+ * it returns undefined: the occurrence keeps the legacy run-session workspace rather
+ * than failing, and the minted context fails closed for parent-only grants.
  */
-export async function resolveScheduledParentPause(params: {
+export async function resolveScheduledParentPreparation(params: {
   cfg: OpenClawConfig;
   job: CronStoredJob;
   agentId: string;
   storePath: string;
-}): Promise<CronParentUnavailable | undefined> {
+}): Promise<ScheduledParentPreparation | undefined> {
   if (!params.job.sourceConversation && !params.job.operatorSource) {
     return undefined;
   }
@@ -302,27 +331,44 @@ export async function resolveScheduledParentPause(params: {
     storePath: params.storePath,
     operatorAuthorityRestored: false,
   };
-  let parentRow: ScheduledAdmissionFacts["parentRow"];
+  let parent: Awaited<ReturnType<typeof readParent>>;
   try {
-    parentRow = await readParentRow(base);
+    parent = await readParent(base);
   } catch {
     return undefined;
   }
   const result = buildScheduledExecutionContext(
     params.job,
-    assembleScheduledAdmissionFacts(base, parentRow, false),
+    assembleScheduledAdmissionFacts(base, parent?.row, false),
   );
-  return result.status === "pause"
-    ? {
-        reason: result.reason,
-        parentSessionKey: result.parentSessionKey,
-        ...(result.worktreePath ? { worktreePath: result.worktreePath } : {}),
-      }
-    : undefined;
+  if (result.status === "pause") {
+    const pause: CronParentUnavailable = {
+      reason: result.reason,
+      parentSessionKey: result.parentSessionKey,
+      ...(result.worktreePath ? { worktreePath: result.worktreePath } : {}),
+    };
+    const error = buildScheduledParentPauseNotice({ job: params.job, pause });
+    return { kind: "pause", result: { status: "skipped", error, parentUnavailable: pause } };
+  }
+  if (
+    result.status !== "ready" ||
+    result.facts.placement !== "child" ||
+    result.facts.principal.kind !== "parent" ||
+    !parent?.entry
+  ) {
+    return undefined;
+  }
+  return {
+    kind: "child",
+    binding: { sessionKey: result.facts.principal.parent.sessionKey, entry: parent.entry },
+    ...(result.facts.resources.sandbox.basis.includes("parent-row")
+      ? { sandbox: "required" as const }
+      : {}),
+  };
 }
 
 /** The single notice a paused job sends; names the parent and the repair. */
-export function buildScheduledParentPauseNotice(params: {
+function buildScheduledParentPauseNotice(params: {
   job: { id: string; name?: string };
   pause: CronParentUnavailable;
 }): string {

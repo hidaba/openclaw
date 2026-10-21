@@ -22,10 +22,7 @@ import { withSessionTurn } from "../../sessions/session-controller.admission.js"
 import { resolveCronSkillsSnapshot } from "../../skills/runtime/cron-snapshot.js";
 import { waitForAgentDatabaseWriteAdmission } from "../../state/agent-database-preparation-context.js";
 import { resolveCronJobEffectiveAgentId } from "../agent-id.js";
-import {
-  buildScheduledParentPauseNotice,
-  resolveScheduledParentPause,
-} from "../execution-context-admission.js";
+import { resolveScheduledParentPreparation } from "../execution-context-admission.js";
 import { CronSessionLifecycleClaimError } from "../run-authority.js";
 import { createCronRunDiagnosticsFromError } from "../run-diagnostics.js";
 import { buildCronCommandBody } from "../run-prompt.js";
@@ -177,23 +174,18 @@ async function resolveCronRunPreparation(params: CronRunPreparationParams) {
       : {}),
   });
   const { agentId, agentDir } = modelOwner;
-  const parentPause = await resolveScheduledParentPause({
+  const parent = await resolveScheduledParentPreparation({
     cfg: modelOwner.config,
     job: input.job,
     agentId,
     storePath: resolveSessionStorePathCore(modelOwner.config.session?.store, { agentId }),
   });
-  if (parentPause) {
+  if (parent?.kind === "pause") {
     // No session is created and nothing runs; the cron service pauses the job.
-    return {
-      ok: false as const,
-      result: {
-        status: "skipped" as const,
-        error: buildScheduledParentPauseNotice({ job: input.job, pause: parentPause }),
-        parentUnavailable: parentPause,
-      },
-    };
+    return { ok: false as const, result: parent.result };
   }
+  // A child run uses its parent's workspace binding and never runs looser than its parent.
+  const childOfParent = parent?.kind === "child" ? parent : undefined;
   const agentConfigOverride = requiredAgentId
     ? resolveAgentConfig(modelOwner.config, agentId)
     : undefined;
@@ -252,7 +244,9 @@ async function resolveCronRunPreparation(params: CronRunPreparationParams) {
 
   async function prepareAdmittedSession() {
     const now = Date.now();
-    const sandbox = resolveCreatorSandbox(runtimeCfg, { actor: input.job.createdActor });
+    const sandbox =
+      resolveCreatorSandbox(runtimeCfg, { actor: input.job.createdActor }) ??
+      childOfParent?.sandbox;
     const usesExactRunSession = usesDetachedRunSession || baseSessionKey.startsWith("cron:");
     const cronSession = await prepareCronSession({
       cfg: runtimeCfg,
@@ -313,6 +307,7 @@ async function resolveCronRunPreparation(params: CronRunPreparationParams) {
         defaultWorkspaceDir: modelOwner.workspaceDir,
         sessionPreparationEffect,
         isFastTestEnv: params.isFastTestEnv,
+        parentBinding: childOfParent?.binding,
       });
       workspaceLease = selectedWorkspace.lease;
       const workspaceDir = selectedWorkspace.workspaceDir;

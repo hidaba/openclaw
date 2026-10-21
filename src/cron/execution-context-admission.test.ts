@@ -18,11 +18,8 @@ vi.mock("../config/sessions/session-delivery-generation.js", async (importOrigin
   prepareSessionGenerationFacts: (input: unknown) => prepareSessionGenerationFacts(input),
 }));
 
-const {
-  buildScheduledParentPauseNotice,
-  mintCronPromptExecutionContext,
-  resolveScheduledParentPause,
-} = await import("./execution-context-admission.js");
+const { mintCronPromptExecutionContext, resolveScheduledParentPreparation } =
+  await import("./execution-context-admission.js");
 const { prepareCronRunAdmission } = await import("./run-admission.js");
 const { readScheduledMemoryParent, readScheduledToolTargets } =
   await import("./execution-context-registry.js");
@@ -216,7 +213,7 @@ describe("mintCronPromptExecutionContext", () => {
   });
 });
 
-describe("resolveScheduledParentPause", () => {
+describe("resolveScheduledParentPreparation", () => {
   const linked = job({
     name: "Nightly ingest",
     sourceConversation: {
@@ -226,7 +223,7 @@ describe("resolveScheduledParentPause", () => {
     },
   });
   const check = (stored: CronStoredJob) =>
-    resolveScheduledParentPause({
+    resolveScheduledParentPreparation({
       cfg: {},
       job: stored,
       agentId: "main",
@@ -243,7 +240,10 @@ describe("resolveScheduledParentPause", () => {
     ["archived", { sessionId: "parent-session", lifecycleRevision: "rev-1", archivedAt: 1 }],
   ] as const)("pauses when the parent is %s", async (reason, entry) => {
     readSessionEntryInWorker.mockResolvedValue(entry);
-    await expect(check(linked)).resolves.toEqual({ reason, parentSessionKey: PARENT_KEY });
+    await expect(check(linked)).resolves.toMatchObject({
+      kind: "pause",
+      result: { status: "skipped", parentUnavailable: { reason, parentSessionKey: PARENT_KEY } },
+    });
   });
 
   it("keeps running when the parent was reset", async () => {
@@ -254,12 +254,47 @@ describe("resolveScheduledParentPause", () => {
     await expect(check(linked)).resolves.toBeUndefined();
   });
 
-  it("runs when the parent is current", async () => {
+  it("pauses when the parent's bound worktree is gone, naming the path", async () => {
+    readSessionEntryInWorker.mockResolvedValue({
+      sessionId: "parent-session",
+      lifecycleRevision: "rev-1",
+      spawnedCwd: "/tmp/openclaw-missing-worktree-for-test",
+      worktree: { id: "wt-1", branch: "feature", repoRoot: "/tmp/repo" },
+    });
+    const preparation = await check(linked);
+    expect(preparation).toMatchObject({
+      kind: "pause",
+      result: {
+        parentUnavailable: {
+          reason: "worktree-missing",
+          worktreePath: "/tmp/openclaw-missing-worktree-for-test",
+        },
+      },
+    });
+  });
+
+  it("hands a child run its current parent's row and sandbox requirement", async () => {
+    const parentEntry = {
+      sessionId: "parent-session",
+      lifecycleRevision: "rev-1",
+      sandbox: "required" as const,
+    };
+    readSessionEntryInWorker.mockResolvedValue(parentEntry);
+    await expect(check(linked)).resolves.toEqual({
+      kind: "child",
+      binding: { sessionKey: PARENT_KEY, entry: parentEntry },
+      sandbox: "required",
+    });
+  });
+
+  it("leaves an in-session job's own binding to the session it runs in", async () => {
     readSessionEntryInWorker.mockResolvedValue({
       sessionId: "parent-session",
       lifecycleRevision: "rev-1",
     });
-    await expect(check(linked)).resolves.toBeUndefined();
+    await expect(
+      check({ ...linked, sessionTarget: `session:${PARENT_KEY}` }),
+    ).resolves.toBeUndefined();
   });
 
   it("never pauses on a failed read", async () => {
@@ -267,11 +302,14 @@ describe("resolveScheduledParentPause", () => {
     await expect(check(linked)).resolves.toBeUndefined();
   });
 
-  it("names the parent and the repair in the notice", () => {
-    const text = buildScheduledParentPauseNotice({
-      job: { id: "job-1", name: "Nightly ingest" },
-      pause: { reason: "archived", parentSessionKey: PARENT_KEY },
+  it("names the parent and the repair in the notice", async () => {
+    readSessionEntryInWorker.mockResolvedValue({
+      sessionId: "parent-session",
+      lifecycleRevision: "rev-1",
+      archivedAt: 1,
     });
+    const preparation = await check(linked);
+    const text = preparation?.kind === "pause" ? preparation.result.error : "";
     expect(text).toContain(`\`${PARENT_KEY}\``);
     expect(text).toContain("it was archived");
     expect(text).toContain("openclaw automations enable job-1");
