@@ -573,9 +573,6 @@ try {
   const manifestPath = path.join(output, "prepared-fixture.json");
   const prepared:
     | {
-        port: number;
-        mockPort: number;
-        busPort: number;
         ruleCount?: number;
       }
     | undefined = values["prepared-fixture"]
@@ -584,45 +581,45 @@ try {
   if (prepared && prepared.ruleCount !== ruleCount) {
     throw new Error("Prepared fixture policy size differs from --exec-policy-rules");
   }
-  const port = prepared?.port ?? (await benchmarkPort());
-  const mockPort = prepared?.mockPort ?? (await benchmarkPort());
-  const busPort = prepared?.busPort ?? (await benchmarkPort());
+  const port = await benchmarkPort();
+  const mockPort = await benchmarkPort();
+  const busPort = await benchmarkPort();
   const configPath = path.join(fixture, "openclaw.json");
+  const cfg: OpenClawConfig = structuredClone(BASE_GATEWAY_BENCH_CONFIG);
+  cfg.tools = {
+    codeMode: false,
+    ...(ruleCount ? { exec: { host: "gateway", mode: "allowlist" } } : {}),
+  };
+  applyMockOpenAiModelConfig(cfg, { mockPort, modelRef: "openai/gpt-4.1" });
+  cfg.agents = {
+    ...cfg.agents,
+    defaults: { ...cfg.agents?.defaults, heartbeat: { every: "0m" }, skipBootstrap: true },
+  };
+  cfg.agents.entries = { main: { workspace: path.join(fixture, "workspace") } };
+  cfg.plugins = {
+    ...cfg.plugins,
+    entries: {
+      ...cfg.plugins?.entries,
+      "memory-core": { config: { dreaming: { enabled: false } } },
+      "qa-channel": { enabled: true },
+    },
+  };
+  cfg.channels = {
+    "qa-channel": {
+      enabled: true,
+      baseUrl: `http://127.0.0.1:${busPort}`,
+      allowFrom: ["*"],
+      pollTimeoutMs: 100,
+    },
+  };
+  writeGatewayBenchConfig(fixture, cfg, {});
   if (!prepared) {
-    const cfg: OpenClawConfig = structuredClone(BASE_GATEWAY_BENCH_CONFIG);
-    cfg.tools = {
-      codeMode: false,
-      ...(ruleCount ? { exec: { host: "gateway", mode: "allowlist" } } : {}),
-    };
-    applyMockOpenAiModelConfig(cfg, { mockPort, modelRef: "openai/gpt-4.1" });
-    cfg.agents = {
-      ...cfg.agents,
-      defaults: { ...cfg.agents?.defaults, heartbeat: { every: "0m" }, skipBootstrap: true },
-    };
-    cfg.agents.entries = { main: { workspace: path.join(fixture, "workspace") } };
     mkdirSync(path.join(fixture, "workspace"));
-    cfg.plugins = {
-      ...cfg.plugins,
-      entries: {
-        ...cfg.plugins?.entries,
-        "memory-core": { config: { dreaming: { enabled: false } } },
-        "qa-channel": { enabled: true },
-      },
-    };
-    cfg.channels = {
-      "qa-channel": {
-        enabled: true,
-        baseUrl: `http://127.0.0.1:${busPort}`,
-        allowFrom: ["*"],
-        pollTimeoutMs: 100,
-      },
-    };
-    writeGatewayBenchConfig(fixture, cfg, {});
     if (ruleCount) {
       const owner = await openExecPolicyFixture(path.join(fixture, "state"), ruleCount);
       await owner.close();
     }
-    writeFileSync(manifestPath, JSON.stringify({ port, mockPort, busPort, ruleCount }));
+    writeFileSync(manifestPath, JSON.stringify({ ruleCount }));
   }
   if (values["prepare-only"]) {
     console.log("PREPARED", output);

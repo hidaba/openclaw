@@ -403,8 +403,10 @@ preparation cores, interleaving baseline/candidate at least five times per rule
 count. For Gateway pairs, first run `--prepare-only --exec-policy-rules 1000` on
 each revision outside the lock. It prints a prepared output directory and starts
 no servers. Pass that directory to the corresponding measured invocation with
-`--prepared-fixture <output-dir>` and the same rule count. Each fixture is used
-once. Use a common future `--start-at <epoch-ms>` that leaves time for both
+`--prepared-fixture <output-dir>` and the same rule count. Listener ports are
+allocated when consuming the fixture and written into its runtime config; the
+manifest does not reserve ports. Each fixture is used once. Use a common future
+`--start-at <epoch-ms>` that leaves time for both
 Gateways to start and warm up; a missed start fails the run. Run exactly two
 concurrent pairs under the sandbox measurement lock, swap the assigned 16-core
 halves for pair two, and compare paired differences. Builds and fixture creation
