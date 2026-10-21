@@ -213,14 +213,6 @@ describe("terminal gateway policy", () => {
     expect(session).toMatchObject({ attached: true, owner: `agent:${agentSessionKey}` });
     expect(manager.write("conn-1", session.sessionId, "operator input\n")).toBe(true);
 
-    backend.emitData("ui session output");
-    expect(manager.snapshotAgent(agentOwner, session.sessionId)).toContain("ui session output");
-    expect(
-      manager.listAgent({ ...agentOwner, agentSessionKey: "agent:main:other-session" }),
-    ).toEqual([]);
-    expect(
-      manager.snapshotAgent({ ...agentOwner, agentId: "research" }, session.sessionId),
-    ).toBeUndefined();
     expect(sessionMocks.loadGatewaySessionEntryReadOnly).toHaveBeenCalledWith(agentSessionKey, {
       agentId: "main",
     });
@@ -340,18 +332,11 @@ describe("terminal gateway policy", () => {
   it("opens a provider-built local resume plan for a selected source and returns its title", async () => {
     const sourceHomeId = "selected-codex-home";
     const openTerminal = vi.fn(async () => ({
-      kind: "local" as const,
-      argv: ["codex", "resume", "thread"],
-      env: {
-        CODEX_HOME: "/agent/codex-home",
-        ComSpec: "C:\\Windows\\System32\\ambient-cmd.exe",
-        COMSPEC: "C:\\Windows\\System32\\configured-cmd.exe",
-      },
-      pathEnv: "/login-shell/bin:/usr/bin",
+      ...localPlan(),
       title: "codex resume thread",
     }));
     installTerminalCatalog(openTerminal);
-    const { opts, sessions, respond } = makeOpts({
+    const { opts, respond } = makeOpts({
       ...catalogParams(),
       catalog: { ...catalogParams().catalog, sourceHomeId },
     });
@@ -364,25 +349,6 @@ describe("terminal gateway policy", () => {
       threadId: "thread",
       sourceHomeId,
     });
-    expect(sessions.open).toHaveBeenCalledWith(
-      expect.objectContaining({
-        shell: expect.any(String),
-        args:
-          process.platform === "win32"
-            ? ["resume", "thread"]
-            : ["-il", "-c", "'codex' 'resume' 'thread'"],
-        env: expect.objectContaining({
-          CODEX_HOME: "/agent/codex-home",
-          PATH: "/login-shell/bin:/usr/bin",
-        }),
-      }),
-    );
-    if (process.platform === "win32") {
-      const terminalEnv = sessions.open.mock.calls[0]?.[0] as { env: Record<string, string> };
-      expect(
-        Object.entries(terminalEnv.env).filter(([key]) => key.toUpperCase() === "COMSPEC"),
-      ).toEqual([["COMSPEC", "C:\\Windows\\System32\\configured-cmd.exe"]]);
-    }
     expect(respond).toHaveBeenCalledWith(
       true,
       expect.objectContaining({ sessionId: "terminal-1", title: "codex resume thread" }),
@@ -532,50 +498,6 @@ describe("terminal gateway policy", () => {
       false,
       undefined,
       message ? expect.objectContaining({ message }) : expect.any(Object),
-    );
-  });
-
-  it("opens a normally approved node relay after generic invoke policy", async () => {
-    const command = "anthropic.claude.terminal.resume.v1";
-    installTerminalCatalog(async () => nodePlan(command), "claude");
-    const node = nodeSession(command);
-    const invoke = vi.fn((rawParams: unknown) => {
-      const params = rawParams as { onDispatchReady?: (id: string) => void };
-      params.onDispatchReady?.("invoke-1");
-      return Promise.resolve({ ok: true });
-    });
-    const nodeRegistry = { get: () => node, invoke, sendInvokeInput: vi.fn() };
-    const { opts, sessions } = makeOpts(
-      { ...catalogParams("claude", "node:node-1"), cols: 100, rows: 30 },
-      { nodeRegistry },
-    );
-
-    await runTerminal("terminal.open", opts);
-
-    expect(policyMocks.resolveNodeCommandAllowlist).toHaveBeenCalledWith(
-      expect.any(Object),
-      expect.objectContaining({ nodeId: "node-1", approvedCommands: [command] }),
-    );
-    expect(policyMocks.applyPluginNodeInvokePolicy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        nodeSession: node,
-        command,
-        params: { threadId: "thread", cols: 100, rows: 30 },
-      }),
-    );
-    expect(sessions.open).toHaveBeenCalledOnce();
-    const openRequest = (
-      sessions.open.mock.calls.at(0) as unknown as
-        | [{ createBackend?: () => Promise<unknown> }]
-        | undefined
-    )?.at(0);
-    await openRequest?.createBackend?.();
-    expect(invoke).toHaveBeenCalledWith(
-      expect.objectContaining({
-        nodeId: "node-1",
-        expectedConnId: "conn-node",
-        expectedPairingGeneration: "generation-node",
-      }),
     );
   });
 

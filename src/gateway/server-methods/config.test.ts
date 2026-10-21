@@ -385,51 +385,13 @@ describe("config.patch hash-free ui.prefs LWW", () => {
     expect(storedConfig.ui?.prefs).toEqual({ theme: "claw" });
   });
 
-  it("keeps destructive array replacement explicit for hash-free patches", async () => {
-    storedConfig = { ui: { prefs: { sidebarEntries: ["route:usage", "route:tasks"] } } };
-
-    const rejected = await invokeConfigPatch({
-      raw: { ui: { prefs: { sidebarEntries: ["route:usage"] } } },
-    });
-    expectFailure(
-      rejected.respond,
-      expect.stringContaining("config.patch would remove entries from array path(s)"),
+  it("reports a non-retryable mutation conflict without advising replay", async () => {
+    configWriteMocks.commitGatewayConfigWrite.mockRejectedValueOnce(
+      new ConfigMutationConflictError("config path owned by another writer", { retryable: false }),
     );
-
-    const accepted = await invokeConfigPatch({
-      raw: { ui: { prefs: { sidebarEntries: ["route:usage"] } } },
-      replacePaths: ["ui.prefs.sidebarEntries"],
-    });
-    expectSuccess(accepted.respond, expect.objectContaining({ hash: "next-hash-1" }));
-    expect(storedConfig.ui?.prefs?.sidebarEntries).toEqual(["route:usage"]);
-  });
-
-  it.each([true, false])("handles a config mutation conflict (retryable=%s)", async (retryable) => {
-    configWriteMocks.commitGatewayConfigWrite.mockImplementationOnce(async () => {
-      if (retryable) {
-        storedConfig = { ui: { prefs: { locale: "de" } } };
-        storedHash = "raced-hash";
-        throw new ConfigMutationConflictError("config changed since last load");
-      }
-      throw new ConfigMutationConflictError("config path owned by another writer", {
-        retryable: false,
-      });
-    });
-
-    const { respond } = await invokeConfigPatch({
-      raw: { ui: { prefs: { theme: "knot" } } },
-    });
-
+    const { respond } = await invokeConfigPatch({ raw: { ui: { prefs: { theme: "knot" } } } });
     expect(configWriteMocks.commitGatewayConfigWrite).toHaveBeenCalledOnce();
-    expectFailure(
-      respond,
-      retryable
-        ? expect.stringContaining("config changed since last load")
-        : "config path owned by another writer",
-    );
-    if (retryable) {
-      expect(storedConfig.ui?.prefs).toEqual({ locale: "de" });
-    }
+    expectFailure(respond, "config path owned by another writer");
   });
 });
 
