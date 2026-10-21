@@ -3282,9 +3282,10 @@ try {
   }
   const measurementStartedAt = Date.now();
   const measuredGateway = gateway;
-  const finishWholeSoakDiagnostics =
-    soakScenario && (values.diagnostics || values.allocations || values["trace-gc"])
-      ? await startGatewayDiagnostics(gateway, "whole-soak")
+  const finishWholeWorkloadDiagnostics =
+    (soakScenario || scenario === "plugins.reload") &&
+    (values.diagnostics || values.allocations || values["trace-gc"])
+      ? await startGatewayDiagnostics(gateway, soakScenario ? "whole-soak" : "whole-reload")
       : undefined;
   const samples = [];
   const memorySamples: Array<{
@@ -3916,17 +3917,17 @@ try {
         // Verify the retained prefix after reopening; reading it now warms idle workers.
       }
     }
-    if (soakScenario) {
-      if (Date.now() - (memorySamples.at(-1)?.atEpochMs ?? 0) >= memoryIntervalMs) {
+    if (soakScenario || scenario === "plugins.reload") {
+      if (soakScenario && Date.now() - (memorySamples.at(-1)?.atEpochMs ?? 0) >= memoryIntervalMs) {
         await sampleMemory();
       }
+      const remainingMs = roundIntervalMs - (Date.now() - roundStartedAt);
       await delay(
         Math.max(
           0,
-          Math.min(
-            roundIntervalMs - (Date.now() - roundStartedAt),
-            durationMs - (Date.now() - measurementStartedAt),
-          ),
+          soakScenario
+            ? Math.min(remainingMs, durationMs - (Date.now() - measurementStartedAt))
+            : remainingMs,
         ),
       );
     }
@@ -3976,7 +3977,7 @@ try {
     };
     console.log(`FINGERPRINT_RETENTION ${JSON.stringify(fingerprintRetention)}`);
   }
-  const wholeSoakDiagnostics = await finishWholeSoakDiagnostics?.();
+  const wholeWorkloadDiagnostics = await finishWholeWorkloadDiagnostics?.();
   if (values["dashboard-rpc"] && dashboardFixtureRequests === 0) {
     throw new Error("Dashboard GitHub preview never reached the synthetic transport");
   }
@@ -4074,22 +4075,23 @@ try {
   // Process exit plus drained log streams makes promotion accounting independent of pipe buffering.
   await cleanup();
   let wholeSoakGc;
-  if (wholeSoakDiagnostics && (values.allocations || values["trace-gc"])) {
+  if (soakScenario && wholeWorkloadDiagnostics && (values.allocations || values["trace-gc"])) {
     const trace = readGatewayGcTrace(
       path.join(output, "gateway.stdout.log"),
       "whole-soak",
       "diagnostics",
     );
     const completedTurns = samples.length * runCount;
-    const wallMs = wholeSoakDiagnostics.durationMs;
+    const wallMs = wholeWorkloadDiagnostics.durationMs;
     wholeSoakGc = {
       ...trace,
       completedTurns,
       wallMs,
       promotedMbPerTurn: trace.promotedBytes / 1_000_000 / completedTurns,
       scavengeSecondsPerMinute:
-        ((wholeSoakDiagnostics.gc.minorDurationMs?.total ?? 0) * 60) / wallMs,
-      majorSecondsPerMinute: ((wholeSoakDiagnostics.gc.majorDurationMs?.total ?? 0) * 60) / wallMs,
+        ((wholeWorkloadDiagnostics.gc.minorDurationMs?.total ?? 0) * 60) / wallMs,
+      majorSecondsPerMinute:
+        ((wholeWorkloadDiagnostics.gc.majorDurationMs?.total ?? 0) * 60) / wallMs,
     };
   }
   const result = {
@@ -4187,6 +4189,7 @@ try {
     streamStartAllocations: values["stream-start-allocations"],
     activeWorkDiagnostics: values["active-work-diagnostics"],
     measurementStartedAt,
+    ...(scenario === "plugins.reload" ? { wholeReloadDiagnostics: wholeWorkloadDiagnostics } : {}),
     initialFullFrame,
     clientCount,
     exactClients,
@@ -4246,7 +4249,7 @@ try {
           memorySamples,
           retainedProfile,
           wholeSoakAllocation,
-          wholeSoakDiagnostics,
+          wholeSoakDiagnostics: wholeWorkloadDiagnostics,
           wholeSoakGc,
         }
       : {}),
