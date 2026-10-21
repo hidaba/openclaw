@@ -13,7 +13,6 @@ import {
   createDeferredConfiguredPluginRepairDoctorResult,
   UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE,
   UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV,
-  writeUpdatePostInstallDoctorResult,
 } from "../../infra/update-doctor-result.js";
 import {
   adoptUpdateRun,
@@ -41,7 +40,10 @@ import {
   createConfigValidationFailure,
 } from "./update-cli-config.test-support.js";
 import { registerFreshDoctorDiagnosticTests } from "./update-command-fresh-doctor-diagnostics.test-support.js";
-import { registerFreshDoctorOutcomeTests } from "./update-command-fresh-doctor-outcomes.test-support.js";
+import {
+  registerFreshDoctorOutcomeTests,
+  writeFreshDoctorResult,
+} from "./update-command-fresh-doctor-outcomes.test-support.js";
 
 const mocks = vi.hoisted(() => ({
   readConfig: vi.fn(),
@@ -340,12 +342,9 @@ describe("post-plugin update readiness", () => {
           options.onOutputChunk?.(bytes.subarray(offset, offset + 11), "stderr");
         }
         if (outcome === "advisory") {
-          await writeUpdatePostInstallDoctorResult({
-            resultPath: options.env![UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV]!,
-            result: {
-              ...createDeferredConfiguredPluginRepairDoctorResult(["Plugin repair deferred"]),
-              deferredInspectionCheckIds: ["core/doctor/new-target-inspection"],
-            },
+          await writeFreshDoctorResult(options, {
+            ...createDeferredConfiguredPluginRepairDoctorResult(["Plugin repair deferred"]),
+            deferredInspectionCheckIds: ["core/doctor/new-target-inspection"],
           });
         }
         if (outcome !== "success") {
@@ -678,11 +677,10 @@ describe("post-plugin update readiness", () => {
         if (!args.includes("--repair")) {
           return await runNormally(command, args, options);
         }
-        resultPath = options.env[UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV];
-        await writeUpdatePostInstallDoctorResult({
-          resultPath,
-          result: status === "ok" ? { status, warnings } : { status, failureFacts },
-        });
+        resultPath = await writeFreshDoctorResult(
+          options,
+          status === "ok" ? { status, warnings } : { status, failureFacts },
+        );
         if (status === "error") {
           throw Object.assign(new Error("Doctor exited"), {
             exitCode: 23,
@@ -715,10 +713,10 @@ describe("post-plugin update readiness", () => {
     "preserves deferred repair advisory semantics (timed out: $timedOut, capture failed: $captureFailed)",
     async ({ timedOut, captureFailed }) => {
       mocks.command.mockImplementation(async (_command, _args, options) => {
-        await writeUpdatePostInstallDoctorResult({
-          resultPath: options.env[UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV],
-          result: createDeferredConfiguredPluginRepairDoctorResult(["plugin repair deferred"]),
-        });
+        await writeFreshDoctorResult(
+          options,
+          createDeferredConfiguredPluginRepairDoctorResult(["plugin repair deferred"]),
+        );
         throw Object.assign(
           new Error("Doctor advisory", {
             cause: captureFailed ? new Error("output capture failed") : undefined,
