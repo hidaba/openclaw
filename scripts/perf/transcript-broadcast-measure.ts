@@ -216,12 +216,15 @@ if (
   !values["stream-start-allocations"] &&
   !values["workload-cpu-profile"] &&
   !values["operator-access-policy"] &&
+  !(scenario === "sessions.list" && values["capture-responses"]) &&
   scenario !== "transcript-broadcast" &&
   !retentionScenario &&
   !idleScenario &&
   !soakScenario
 ) {
-  throw new Error("--scenario requires --allocations or --workload-cpu-profile");
+  throw new Error(
+    "--scenario requires --allocations, --workload-cpu-profile, or --capture-responses for sessions.list",
+  );
 }
 const operations = integer(
   values.operations ??
