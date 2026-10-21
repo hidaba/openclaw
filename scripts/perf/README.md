@@ -1940,6 +1940,13 @@ Turn scenarios use `--runs` (forced
 to one for `chat.send`); `--chunks` controls streamed answer size. `plugins.reload`
 defaults to one operation per round; other RPC scenarios default to 100. Count
 the warmup when choosing reload batches: the admin RPC allows 30 calls per minute.
+The reload scenario retains the synthetic fixture's `plugins.allow` and
+`plugins.entries` configuration, then adds its no-op plugin. Configure bundled
+plugins there to include their metadata and runtime participation in the workload;
+the default team-shape fixture disables plugins. `plugin-inventory.json` records
+the actual runtime states before capture, including enabled plugins that remain
+unloaded under their lazy activation policy. The harness replaces `plugins.load`
+with its own synthetic plugin directory.
 Setup, startup
 recovery, subscription establishment, and one warmup round are outside capture.
 Each measured window includes completion and event drain, including the one-second

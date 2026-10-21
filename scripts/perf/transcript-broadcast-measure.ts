@@ -449,7 +449,7 @@ if (stressWorktree) {
 cfg.plugins = {
   ...cfg.plugins,
   entries: {
-    ...(soakScenario ? cfg.plugins?.entries : {}),
+    ...(soakScenario || scenario === "plugins.reload" ? cfg.plugins?.entries : {}),
     "memory-core": { config: { dreaming: { enabled: false } } },
   },
 };
@@ -578,7 +578,12 @@ let reloadPluginId: string | undefined;
 if (scenario === "plugins.reload") {
   const plugin = writePluginFixtures(output, { count: 1, activationOnStartup: true });
   reloadPluginId = plugin.pluginIds[0];
-  cfg.plugins = { enabled: true, allow: plugin.pluginIds, load: { paths: [plugin.pluginsDir] } };
+  cfg.plugins = {
+    ...cfg.plugins,
+    enabled: true,
+    allow: [...new Set([...(cfg.plugins?.allow ?? []), ...plugin.pluginIds])],
+    load: { paths: [plugin.pluginsDir] },
+  };
 }
 const authorityChannel = "openclaw-operator-authority-bench";
 const authorityEmail = "operator@authority.example.test";
@@ -3038,6 +3043,12 @@ try {
       }
       validateDashboardRpc(method, await rpc(sender, method, params));
     }
+  }
+  if (reloadPluginId) {
+    writeFileSync(
+      path.join(output, "plugin-inventory.json"),
+      JSON.stringify(await rpc(sender, "plugins.list", {}), null, 2),
+    );
   }
   const expectedSidebar =
     scenario === "reconnect"
