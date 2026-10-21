@@ -284,7 +284,9 @@ describe("memory source index native kernel", () => {
       ).toEqual([
         {
           text: retainedLast ? "earlier text" : "latest text",
-          embedding: embeddingHex(retainedLast ? [0, 1, 0] : [1, 0, 0]),
+          embedding: retainedLast
+            ? "0000000000000000000000000000F03F0000000000000000"
+            : "000000000000F03F00000000000000000000000000000000",
           updated_at: 200,
           importance: 9,
           triggers: "latest",

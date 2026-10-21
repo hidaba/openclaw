@@ -180,7 +180,9 @@ it.skipIf(!connection).each([
         prepareAnchor: () => {},
         inspectSqlite: () => ({ hasExistingData: false, hasEngineAnchor: false }),
       });
-      if (!isPostgresSqlConnection(db)) throw new Error("Expected PostgreSQL");
+      if (!isPostgresSqlConnection(db)) {
+        throw new Error("Expected PostgreSQL");
+      }
       const namespace = String(db.prepare("SELECT current_schema() AS namespace").get()!.namespace);
       try {
         admitStoreSearch(db, memoryVectorSearchSchema(3), { extension: "memory.vector" });
