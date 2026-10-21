@@ -208,13 +208,13 @@ it(
         const message = responseMessage("fallback", recovered ? continuation : marker);
         response.end(
           [
-            encodeEvent({
+            {
               type: "response.output_item.added",
               output_index: 0,
               item: { ...message, status: "in_progress", content: [] },
-            }),
-            encodeEvent({ type: "response.output_item.done", output_index: 0, item: message }),
-            encodeEvent({
+            },
+            { type: "response.output_item.done", output_index: 0, item: message },
+            {
               type: "response.completed",
               response: {
                 id: "fallback-response",
@@ -222,8 +222,10 @@ it(
                 output: [message],
                 usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
               },
-            }),
-          ].join(""),
+            },
+          ]
+            .map(encodeEvent)
+            .join(""),
         );
       })().catch((error: unknown) => response.destroy(error instanceof Error ? error : undefined));
     });
@@ -366,24 +368,7 @@ it(
         }>("chat.history", { sessionKey, limit: 20 });
         const assistant = history.messages.findLast((message) => message.role === "assistant");
         const runEvents = events.filter((event) => event.runId === started.runId);
-        expect
-          .soft(
-            requests[0],
-            requests[0] === primaryModel
-              ? scenario
-              : JSON.stringify({
-                  scenario,
-                  completedError: completed.error?.slice(0, 1000),
-                  chatErrors: runEvents
-                    .filter((event) => event.state === "error")
-                    .slice(-3)
-                    .map((event) => ({
-                      errorKind: event.errorKind,
-                      errorMessage: event.errorMessage?.slice(0, 1000),
-                    })),
-                }),
-          )
-          .toBe(primaryModel);
+        check(requests[0]).toBe(primaryModel);
         check(requests.filter((requested) => requested === primaryModel)).toHaveLength(
           rejection && rejection.reason !== "rate_limit" ? 1 : 2,
         );

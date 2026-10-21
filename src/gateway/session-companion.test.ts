@@ -135,6 +135,22 @@ function sourceAuthority(isCurrent: () => boolean) {
     }
   };
 }
+const cancellations = ["reset", "backing-session reset", "disposal", "request-abort"] as const;
+function cancelAsk(
+  service: Companion,
+  cause: (typeof cancellations)[number],
+  controller: AbortController,
+) {
+  if (cause === "reset") {
+    service.reset(target);
+  } else if (cause === "backing-session reset") {
+    notifyGatewaySessionReset(target.sessionKey, target.agentId);
+  } else if (cause === "disposal") {
+    service.dispose();
+  } else {
+    controller.abort();
+  }
+}
 async function pendingRun(question: string, warm = false) {
   const pending = createDeferredCore<string>();
   const started = createDeferredCore();
@@ -507,20 +523,45 @@ it("times out a pending context read and fences it from a replacement ask", asyn
   }
 });
 
+it.each([false, true].flatMap((warm) => cancellations.map((cause) => ({ warm, cause }))))(
+  "$cause cancels preparation before dispatch (warm=$warm)",
+  async ({ warm, cause }) => {
+    const { service, run } = createHarness();
+    const request = askRequest("Why?");
+    if (warm) {
+      await service.ask(request);
+    }
+    const controller = new AbortController();
+    // Cancellation is synchronous: prepareThread is still awaiting its observer snapshot.
+    const pending = service
+      .ask({ ...request, signal: controller.signal })
+      .catch((error: unknown) => error);
+    cancelAsk(service, cause, controller);
+    await expect(pending).resolves.toMatchObject({
+      reason: cause === "backing-session reset" ? "context-unavailable" : "unavailable",
+      message:
+        cause === "backing-session reset"
+          ? "The selected session changed before Side chat could answer."
+          : cause === "reset"
+            ? "The Side chat request was cancelled."
+            : "Side chat could not answer right now.",
+    });
+    expect(run).toHaveBeenCalledTimes(warm ? 1 : 0);
+    expect(service.state(request).exchanges).toEqual(
+      warm && cause === "request-abort" ? [savedExchange("Why?")] : [],
+    );
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+  },
+);
+
 it.each(["reset", "backing-session reset", "disposal", "request-abort"] as const)(
   "%s cancels an active ask without committing its late result",
   async (cause) => {
     const warm = cause === "request-abort";
     const { service, pending, active, controller } = await pendingRun("Still there?", warm);
-    if (cause === "reset") {
-      service.reset(target);
-    } else if (cause === "backing-session reset") {
-      notifyGatewaySessionReset(target.sessionKey, target.agentId);
-    } else if (cause === "disposal") {
-      service.dispose();
-    } else {
-      controller.abort();
-    }
+    cancelAsk(service, cause, controller);
     pending.resolve("late answer");
     await expect(active).rejects.toMatchObject({
       reason: cause === "backing-session reset" ? "context-unavailable" : "unavailable",
