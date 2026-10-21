@@ -1,6 +1,5 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-// Maturity docs renderer tests cover evidence-backed generated-doc checks.
 import fs from "node:fs";
 import path from "node:path";
 import { Parser } from "htmlparser2";
@@ -55,6 +54,48 @@ function runCli(...args: string[]) {
       cwd: repoRoot,
       encoding: "utf8",
     },
+  );
+}
+
+function evidenceFixture(options: Partial<Parameters<typeof writeQaEvidence>[0]> = {}) {
+  const outputDir = tempDirs.make("openclaw-maturity-output-");
+  const evidenceDir = tempDirs.make("openclaw-maturity-evidence-");
+  writeQaEvidence({
+    dir: evidenceDir,
+    entries: [{ id: "same-label", status: "pass" }],
+    scorecard: allProfileScorecardFixture(),
+    ...options,
+  });
+  const evidencePath = path.join(evidenceDir, "qa-evidence.json");
+  return {
+    outputDir,
+    evidenceDir,
+    evidencePath,
+    get evidence() {
+      return validateQaEvidenceSummaryJson(JSON.parse(fs.readFileSync(evidencePath, "utf8")));
+    },
+  };
+}
+
+function readScorecard(outputDir: string) {
+  return fs.readFileSync(path.join(outputDir, "maturity/scorecard.md"), "utf8");
+}
+
+function expectHistoricalScorecard(scorecard: string, identity: string) {
+  for (const text of [
+    "Coverage Unscored",
+    `Historical evidence: taxonomy identity ${identity}`,
+    "1 passed",
+    "Historical category evidence",
+  ]) {
+    expect(scorecard).toContain(text);
+  }
+  expect(scorecard).not.toContain("Readiness by area");
+  const category = allProfileScorecardFixture().categoryReports[0]!;
+  expect(scorecard).toContain(category.name);
+  expect(scorecard).toContain(category.id);
+  expect(scorecard.replace(/ +\|/gu, " |")).toContain(
+    `| ${category.name} | ${category.id} | 0 of ${category.features.total} (0%) | 0 of ${category.coverageIds.total} (0%) |`,
   );
 }
 
@@ -235,15 +276,7 @@ function expectedMaturityScorePercent(): number {
 
 describe("maturity docs renderer CLI", () => {
   it("accounts for unresolved root instances separately from slim evidence rows", () => {
-    const evidenceDir = tempDirs.make("openclaw-maturity-unresolved-");
-    const outputDir = tempDirs.make("openclaw-maturity-unresolved-docs-");
-    writeQaEvidence({
-      dir: evidenceDir,
-      entries: [{ id: "same-label", status: "pass" }],
-      scorecard: allProfileScorecardFixture(),
-    });
-    const evidencePath = path.join(evidenceDir, "qa-evidence.json");
-    const legacy = validateQaEvidenceSummaryJson(JSON.parse(fs.readFileSync(evidencePath, "utf8")));
+    const { outputDir, evidenceDir, evidencePath, evidence: legacy } = evidenceFixture();
     const invocation = createMaturityInvocation(6);
     const passing = invocation.begin(0);
     invocation.complete(passing, { status: "pass", entries: legacy.entries });
@@ -288,7 +321,7 @@ describe("maturity docs renderer CLI", () => {
 
     const allowed = runCli(...args, "--allow-failures");
     expect(allowed.status, allowed.stderr).toBe(0);
-    const scorecard = fs.readFileSync(path.join(outputDir, "maturity/scorecard.md"), "utf8");
+    const scorecard = readScorecard(outputDir);
     expect(scorecard).toContain("<span>1 checks - 1 passed</span>");
     expect(scorecard).toContain("<span>5 unresolved scheduled instances</span>");
     expect(fs.readFileSync(evidencePath, "utf8")).toBe(raw);
@@ -297,17 +330,7 @@ describe("maturity docs renderer CLI", () => {
   it.each(["pass", "ownerless"] as const)(
     "excludes contained unresolved instances while preserving %s row accounting",
     (status) => {
-      const evidenceDir = tempDirs.make("openclaw-maturity-contained-");
-      const outputDir = tempDirs.make("openclaw-maturity-contained-docs-");
-      writeQaEvidence({
-        dir: evidenceDir,
-        entries: [{ id: "same-label", status: "pass" }],
-        scorecard: allProfileScorecardFixture(),
-      });
-      const evidencePath = path.join(evidenceDir, "qa-evidence.json");
-      const legacy = validateQaEvidenceSummaryJson(
-        JSON.parse(fs.readFileSync(evidencePath, "utf8")),
-      );
+      const { outputDir, evidenceDir, evidencePath, evidence: legacy } = evidenceFixture();
       const child = createMaturityInvocation(2);
       const childStatus = status === "ownerless" ? "pass" : status;
       const childObservation = child.begin(0);
@@ -376,7 +399,7 @@ describe("maturity docs renderer CLI", () => {
       expect(result.status, result.stderr).toBe(status === "pass" ? 0 : 1);
       expect(result.stderr).not.toContain("(unresolved)");
       if (status === "pass") {
-        const scorecard = fs.readFileSync(path.join(outputDir, "maturity/scorecard.md"), "utf8");
+        const scorecard = readScorecard(outputDir);
         expect(scorecard).toContain("<span>2 checks - 2 passed</span>");
         expect(scorecard).not.toContain("unresolved scheduled");
       } else {
@@ -387,15 +410,7 @@ describe("maturity docs renderer CLI", () => {
   );
 
   it("renders the effective retry while retaining the original failed observation", () => {
-    const evidenceDir = tempDirs.make("openclaw-maturity-occurrences-");
-    const outputDir = tempDirs.make("openclaw-maturity-occurrence-docs-");
-    writeQaEvidence({
-      dir: evidenceDir,
-      entries: [{ id: "same-label", status: "pass" }],
-      scorecard: allProfileScorecardFixture(),
-    });
-    const evidencePath = path.join(evidenceDir, "qa-evidence.json");
-    const legacy = validateQaEvidenceSummaryJson(JSON.parse(fs.readFileSync(evidencePath, "utf8")));
+    const { outputDir, evidenceDir, evidencePath, evidence: legacy } = evidenceFixture();
     const anchor: QaEvidenceOccurrence = {
       id: "scheduled-instance",
       parentCell: { scenarioId: "same-label", executionKind: "script", channel: null },
@@ -450,7 +465,7 @@ describe("maturity docs renderer CLI", () => {
     fs.writeFileSync(evidencePath, raw);
     const rendered = runCli("--output-dir", outputDir, "--evidence-dir", evidenceDir);
     expect(rendered.status, rendered.stderr).toBe(0);
-    const scorecard = fs.readFileSync(path.join(outputDir, "maturity/scorecard.md"), "utf8");
+    const scorecard = readScorecard(outputDir);
     const evidenceCard = scorecard.match(
       /<div className="maturity-evidence-card">[\s\S]*?<\/div>/,
     )?.[0];
@@ -631,18 +646,16 @@ describe("maturity docs renderer CLI", () => {
   });
 
   it("rejects mismatched historical identity before mutating strict output", () => {
-    const outputDir = tempDirs.make("openclaw-maturity-identity-output-");
-    const evidenceDir = tempDirs.make("openclaw-maturity-identity-evidence-");
+    const {
+      outputDir,
+      evidenceDir,
+      evidencePath: file,
+    } = evidenceFixture({
+      entries: [{ id: "historical-pass", status: "pass" }],
+    });
     const staticAssetsDir = path.join(outputDir, "assets");
     fs.mkdirSync(staticAssetsDir);
     fs.writeFileSync(path.join(staticAssetsDir, "taxonomy.yaml"), "preserved\n");
-    writeQaEvidence({
-      dir: evidenceDir,
-      entries: [{ id: "historical-pass", status: "pass" }],
-      scorecard: allProfileScorecardFixture(),
-    });
-
-    const file = path.join(evidenceDir, "qa-evidence.json");
     const evidence = JSON.parse(fs.readFileSync(file, "utf8"));
     evidence.profilePlan.taxonomyIdentity.sha256 = "0".repeat(64);
     fs.writeFileSync(file, JSON.stringify(evidence));
@@ -667,13 +680,9 @@ describe("maturity docs renderer CLI", () => {
   });
 
   it("keeps historical category counts but leaves current coverage unscored", async () => {
-    const outputDir = tempDirs.make("openclaw-maturity-identity-output-");
-    const evidenceDir = tempDirs.make("openclaw-maturity-identity-evidence-");
-    writeQaEvidence({
-      dir: evidenceDir,
+    const { outputDir, evidenceDir } = evidenceFixture({
       entries: [{ id: "historical-pass", status: "pass" }],
       historical: true,
-      scorecard: allProfileScorecardFixture(),
     });
 
     const scoresPath = path.join(outputDir, "scores.yaml");
@@ -701,33 +710,19 @@ describe("maturity docs renderer CLI", () => {
 
     expect(result.status).toBe(0);
     expect(result.stderr).toContain("semantic taxonomy identity is missing");
-    const scorecard = fs.readFileSync(path.join(outputDir, "maturity", "scorecard.md"), "utf8");
-    expect(scorecard).toContain("Coverage Unscored");
-    expect(scorecard).toContain("Historical evidence: taxonomy identity unknown");
+    const scorecard = readScorecard(outputDir);
+    expectHistoricalScorecard(scorecard, "unknown");
     const formatted = await format("scorecard.md", scorecard, { proseWrap: "preserve" });
     expect(formatted.errors).toEqual([]);
     expect(scorecard).toBe(formatted.code);
-    expect(scorecard).toContain("1 passed");
     expect(scorecard).toContain(
       `<span className="maturity-summary-value">${expectedMaturityScorePercent()}%</span>`,
-    );
-    expect(scorecard).not.toContain("Readiness by area");
-    expect(scorecard).toContain("Historical category evidence");
-    const historicalCategory = allProfileScorecardFixture().categoryReports[0]!;
-    expect(scorecard).toContain(historicalCategory.name);
-    expect(scorecard).toContain(historicalCategory.id);
-    expect(scorecard.replace(/ +\|/gu, " |")).toContain(
-      `| ${historicalCategory.name} | ${historicalCategory.id} | 0 of ${historicalCategory.features.total} (0%) | 0 of ${historicalCategory.coverageIds.total} (0%) |`,
     );
   });
 
   it("marks same-category historical evidence mismatched after capability meaning changes", () => {
-    const outputDir = tempDirs.make("openclaw-maturity-identity-output-");
-    const evidenceDir = tempDirs.make("openclaw-maturity-identity-evidence-");
-    writeQaEvidence({
-      dir: evidenceDir,
+    const { outputDir, evidenceDir } = evidenceFixture({
       entries: [{ id: "previous-pass", status: "pass" }],
-      scorecard: allProfileScorecardFixture(),
     });
     const taxonomy = readQaMaturityTaxonomySource(path.join(repoRoot, "taxonomy.yaml"));
     taxonomy.surfaces
@@ -746,18 +741,7 @@ describe("maturity docs renderer CLI", () => {
     );
     expect(result.status).toBe(0);
     expect(result.stderr).toContain("semantic taxonomy identity is mismatched");
-    const scorecard = fs.readFileSync(path.join(outputDir, "maturity", "scorecard.md"), "utf8");
-    expect(scorecard).toContain("Coverage Unscored");
-    expect(scorecard).toContain("Historical evidence: taxonomy identity mismatch");
-    expect(scorecard).toContain("1 passed");
-    expect(scorecard).not.toContain("Readiness by area");
-    expect(scorecard).toContain("Historical category evidence");
-    const historicalCategory = allProfileScorecardFixture().categoryReports[0]!;
-    expect(scorecard).toContain(historicalCategory.name);
-    expect(scorecard).toContain(historicalCategory.id);
-    expect(scorecard.replace(/ +\|/gu, " |")).toContain(
-      `| ${historicalCategory.name} | ${historicalCategory.id} | 0 of ${historicalCategory.features.total} (0%) | 0 of ${historicalCategory.coverageIds.total} (0%) |`,
-    );
+    expectHistoricalScorecard(readScorecard(outputDir), "mismatch");
   });
 
   it("selects matching release coverage before newer mismatched all evidence", () => {
@@ -784,7 +768,7 @@ describe("maturity docs renderer CLI", () => {
     fs.writeFileSync(file, JSON.stringify(stale));
     const result = runCli("--output-dir", outputDir, "--evidence-dir", evidenceDir);
     expect(result.status).toBe(0);
-    const scorecard = fs.readFileSync(path.join(outputDir, "maturity", "scorecard.md"), "utf8");
+    const scorecard = readScorecard(outputDir);
     expect(scorecard).toContain("Coverage Experimental - 0%");
     expect(scorecard).toContain("Historical evidence: taxonomy identity mismatch");
     expect(scorecard).toContain("Readiness by area");
@@ -808,7 +792,7 @@ describe("maturity docs renderer CLI", () => {
     }
     const result = runCli("--output-dir", outputDir, "--evidence-dir", evidenceDir);
     expect(result.status).toBe(0);
-    const scorecard = fs.readFileSync(path.join(outputDir, "maturity/scorecard.md"), "utf8");
+    const scorecard = readScorecard(outputDir);
     expect(scorecard).toContain("Profile: all. Taxonomy: current.");
     expect(scorecard).not.toContain("Profile: release. Taxonomy: current.");
     expect(scorecard).toContain("UNKNOWN");
@@ -833,7 +817,7 @@ describe("maturity docs renderer CLI", () => {
     const result = runCli("--output-dir", outputDir, "--evidence-dir", evidenceDir);
 
     expect(result.status).toBe(0);
-    const scorecard = fs.readFileSync(path.join(outputDir, "maturity", "scorecard.md"), "utf8");
+    const scorecard = readScorecard(outputDir);
     const taxonomy = fs.readFileSync(path.join(outputDir, "maturity", "taxonomy.md"), "utf8");
     expect(scorecard).toContain("1 passed, 1 skipped");
     expect(scorecard).not.toContain("0 failed");
