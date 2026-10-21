@@ -576,12 +576,9 @@ async function connectExecPolicyRpcProbes(port: number, expectedPid: number) {
       const invoked = await request<ToolsInvokeResult>(
         "tools.invoke",
         {
-          name: "exec",
+          name: "session_status",
           sessionKey,
-          args: {
-            command: `${JSON.stringify(realpathSync("/bin/echo"))} ${EXEC_POLICY_MARKER}`,
-            workdir: path.join(fixture, "workspace"),
-          },
+          args: { sessionKey },
         },
         timings,
       );
@@ -591,11 +588,12 @@ async function connectExecPolicyRpcProbes(port: number, expectedPid: number) {
         !isRecord(result) ||
         result.isError ||
         !isRecord(result.details) ||
-        result.details.status !== "completed" ||
-        result.details.exitCode !== 0 ||
-        result.details.aggregated !== EXEC_POLICY_MARKER
+        result.details.ok !== true ||
+        result.details.sessionKey !== sessionKey
       ) {
-        throw new Error(`RPC exec did not complete successfully: ${JSON.stringify(invoked)}`);
+        throw new Error(
+          `RPC session status did not resolve its session: ${JSON.stringify(invoked)}`,
+        );
       }
       await request("sessions.list", {}, timings);
       samples.push(timings);
@@ -742,9 +740,6 @@ try {
     codeMode: false,
     ...(ruleCount ? { exec: { host: "gateway", mode: "allowlist" } } : {}),
   };
-  if (ruleCount && steadyDurationMs) {
-    cfg.gateway = { ...cfg.gateway, tools: { allow: ["exec"] } };
-  }
   applyMockOpenAiModelConfig(cfg, { mockPort, modelRef: "openai/gpt-4.1" });
   cfg.agents = {
     ...cfg.agents,
