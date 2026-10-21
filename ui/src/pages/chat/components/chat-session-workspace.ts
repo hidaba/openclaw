@@ -88,6 +88,8 @@ function openFile(
     ? parseAgentSessionKey(opts.sessionKey)?.agentId
     : workspace.agentId;
   const viewingSession = sessionKey === workspace.sessionKey;
+  // A message-qualified read selects that message's original files, read-only.
+  const messageFile = opts.messageEntryId ? { messageEntryId: opts.messageEntryId } : {};
   const draftScope = state.sessionWorkspaceDraftScope;
   const draftContext = state.sessionWorkspaceDraftContext;
   const gatewayUrl = state.settings?.gatewayUrl ?? "";
@@ -99,10 +101,7 @@ function openFile(
       : JSON.stringify(["file", sessionKey, requestPath, opts.messageEntryId]),
     async () => {
       try {
-        return await state.sessions.getFile(sessionKey, requestPath, {
-          agentId,
-          ...(opts.messageEntryId ? { messageEntryId: opts.messageEntryId } : {}),
-        });
+        return await state.sessions.getFile(sessionKey, requestPath, { agentId, ...messageFile });
       } catch (error) {
         const details = error instanceof GatewayRequestError ? error.details : null;
         if (
@@ -140,12 +139,7 @@ function openFile(
       const download = (signal: AbortSignal) =>
         downloadSessionFile(
           state,
-          {
-            sessionKey: result.sessionKey,
-            agentId,
-            path: requestPath,
-            ...(opts.messageEntryId ? { messageEntryId: opts.messageEntryId } : {}),
-          },
+          { sessionKey: result.sessionKey, agentId, path: requestPath, ...messageFile },
           signal,
         );
       if (file.previewKind === "image") {
@@ -252,7 +246,7 @@ function openFile(
             fetchLatest: async () => {
               const latest = await state.sessions.getFile(result.sessionKey, requestPath, {
                 agentId,
-                ...(opts.messageEntryId ? { messageEntryId: opts.messageEntryId } : {}),
+                ...messageFile,
               });
               // A hash-conflict recovery still belongs to the file source that was opened.
               if (
@@ -292,7 +286,7 @@ function openFile(
           sessionKey: result.sessionKey,
           agentId,
           path: filePath,
-          ...(opts.messageEntryId ? { messageEntryId: opts.messageEntryId } : {}),
+          ...messageFile,
         },
         draftKey: [
           gatewayUrl,

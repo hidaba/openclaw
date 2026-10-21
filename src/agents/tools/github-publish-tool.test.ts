@@ -211,7 +211,8 @@ it.each([
   expect(callGateway).not.toHaveBeenCalled();
 });
 
-it.each(["managed-worktree", undefined] as const)(
+// Unbound sandboxed conversations yield first; github-publish-tool.handoff.test.ts owns that path.
+it.each(["managed-worktree"] as const)(
   "dispatches preparation with its current %s sandbox before owner qualification",
   async (workspaceSource) => {
     const sandbox = publicationSandbox({ workspaceSource });
