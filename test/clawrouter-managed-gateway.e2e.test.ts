@@ -4,13 +4,6 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  closeHttpServer,
-  listenLoopback,
-  readRequestText,
-  respondJson,
-} from "./helpers/gateway-integration-fixtures.js";
-import { writeOpenAiResponsesText } from "./helpers/openai-responses-sse.js";
-import {
   createOpenClawTestInstance,
   type OpenClawTestInstance,
 } from "./helpers/openclaw-test-instance.js";
@@ -203,10 +196,24 @@ async function startFakeClawRouter() {
       res.end(JSON.stringify({ error: { message: String(error) } }));
     });
   });
+  const close = async () => {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+  };
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    await close();
+    throw new Error("fake ClawRouter did not bind a TCP port");
+  }
   return {
-    baseUrl: await listenLoopback(server),
+    baseUrl: `http://127.0.0.1:${address.port}`,
     requests,
-    close: () => closeHttpServer(server),
+    close,
   };
 }
 
@@ -217,7 +224,11 @@ async function handleClawRouterRequest(
 ): Promise<void> {
   const method = req.method ?? "GET";
   const requestPath = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
-  const bodyText = await readRequestText(req);
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+  }
+  const bodyText = Buffer.concat(chunks).toString("utf8");
   const body = bodyText ? (JSON.parse(bodyText) as Record<string, unknown>) : undefined;
   const authorization = req.headers.authorization;
   requests.push({ method, path: requestPath, authorization, headers: { ...req.headers }, body });
@@ -267,20 +278,52 @@ async function handleClawRouterRequest(
 }
 
 function writeJson(res: ServerResponse, status: number, body: unknown): void {
-  respondJson(res, body, status);
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify(body));
 }
 
 function writeResponsesStream(res: ServerResponse, text: string): void {
-  for (const [name, value] of Object.entries({
+  const itemId = "msg_clawrouter_e2e";
+  const position = { item_id: itemId, output_index: 0, content_index: 0 };
+  const message = { type: "message", id: itemId, role: "assistant" };
+  const completed = {
+    ...message,
+    status: "completed",
+    content: [{ type: "output_text", text, annotations: [] }],
+  };
+  const events = [
+    {
+      type: "response.output_item.added",
+      item: { ...message, content: [], status: "in_progress" },
+    },
+    { type: "response.output_text.delta", ...position, delta: text },
+    { type: "response.output_text.done", ...position, text },
+    { type: "response.output_item.done", item: completed },
+    {
+      type: "response.completed",
+      response: {
+        id: "resp_clawrouter_e2e",
+        status: "completed",
+        output: [completed],
+        usage: {
+          input_tokens: 11,
+          output_tokens: 7,
+          total_tokens: 18,
+          input_tokens_details: { cached_tokens: 0 },
+        },
+      },
+    },
+  ];
+  res.writeHead(200, {
+    "cache-control": "no-store",
+    connection: "keep-alive",
+    "content-type": "text/event-stream",
     "x-clawrouter-content-retention": "off",
     "x-clawrouter-upstream-provider": "openai",
     "x-request-id": "clawrouter-e2e-request",
-  })) {
-    res.setHeader(name, value);
-  }
-  writeOpenAiResponsesText(res, {
-    text,
-    messageId: "msg_clawrouter_e2e",
-    responseId: "resp_clawrouter_e2e",
   });
+  for (const event of events) {
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+  }
+  res.end("data: [DONE]\n\n");
 }
