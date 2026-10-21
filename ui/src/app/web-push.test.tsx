@@ -194,7 +194,7 @@ describe("web push Gateway reconciliation", () => {
     try {
       autoPromptNotificationsOnSend({ nativeNotifications: null, webPush: capability });
       expect(requestPermission).not.toHaveBeenCalled();
-      await capability.run({ kind: "enable" });
+      await expect(capability.run({ kind: "enable" })).rejects.toThrow("Gateway access");
       expect(requestPermission).not.toHaveBeenCalled();
       expect(request).not.toHaveBeenCalled();
       const { container } = mountSolid(() => (
@@ -245,7 +245,7 @@ describe("web push Gateway reconciliation", () => {
     });
     try {
       await withinTest(localReady.promise, signal);
-      expect(capability.snapshot.error).toContain("not owned");
+      await expect(capability.snapshot.read).rejects.toThrow("not owned");
       expect(capability.snapshot.preferences).toBeNull();
       rejectPreferences = false;
       harness.emit({
@@ -274,7 +274,9 @@ describe("web push Gateway reconciliation", () => {
         />
       ));
       expect(container.textContent).toContain("Browser subscription only");
-      expect(container.querySelector(".settings-stack")?.hasAttribute("inert")).toBe(false);
+      await vi.waitFor(() =>
+        expect(container.querySelector(".settings-stack")?.hasAttribute("inert")).toBe(false),
+      );
       const controls = Array.from(
         container.querySelectorAll(".settings-stack input, .settings-stack select"),
       );
@@ -320,12 +322,14 @@ describe("web push Gateway reconciliation", () => {
         canReadPreferences: false,
         preferences: null,
       });
-      await capability.run({
-        kind: "set",
-        scope: "device",
-        preferences: { enabled: false, label: "" },
-      });
-      await capability.run({ kind: "test" });
+      await expect(
+        capability.run({
+          kind: "set",
+          scope: "device",
+          preferences: { enabled: false, label: "" },
+        }),
+      ).rejects.toThrow("Gateway access");
+      await expect(capability.run({ kind: "test" })).rejects.toThrow("Gateway access");
       expect(request).not.toHaveBeenCalled();
       harness.disconnect();
       expect(capability.snapshot).toMatchObject({
@@ -372,7 +376,7 @@ describe("web push Gateway reconciliation", () => {
       permission.resolve("granted");
       await enable;
       expect(request).not.toHaveBeenCalled();
-      expect(capability.snapshot.error).toContain("Gateway access");
+      expect(capability.snapshot.command).toBeUndefined();
     } finally {
       permission.resolve("granted");
       capability.dispose();
@@ -401,7 +405,7 @@ describe("web push Gateway reconciliation", () => {
       await withinTest(settled.promise, signal);
       expect(request).not.toHaveBeenCalled();
     } finally {
-      stop();
+      stop.dispose();
       coordinator.reset();
     }
   });
@@ -414,31 +418,29 @@ describe("web push Gateway reconciliation", () => {
   });
 
   it("makes actions unavailable when the lazy runtime fails to load", async () => {
-    vi.resetModules();
     // mock-isolation: Reject the lazy import before any real Web Push runtime can execute.
     vi.doMock("./web-push.runtime.ts", () => {
       throw new Error("Web Push runtime unavailable");
     });
-    const { createWebPushCapability: createCapabilityWithFailedRuntime } =
-      await import("./web-push.ts");
 
-    const capability = createCapabilityWithFailedRuntime(gatewayHarness().gateway);
+    const capability = createWebPushCapability(gatewayHarness().gateway);
     try {
       await vi.waitFor(() =>
         expect(capability.snapshot).toMatchObject({
           supported: false,
           permission: "unsupported",
           subscription: "unknown",
-          error: expect.stringContaining("Web Push runtime unavailable"),
         }),
       );
+      await expect(capability.snapshot.read).rejects.toMatchObject({
+        cause: { message: "Web Push runtime unavailable" },
+      });
       await capability.run({ kind: "enable" });
 
       expect(capability.snapshot.loading).toBe(false);
     } finally {
       capability.dispose();
       vi.doUnmock("./web-push.runtime.ts");
-      vi.resetModules();
     }
   });
 
@@ -553,11 +555,14 @@ describe("web push Gateway reconciliation", () => {
     const nextPreferencesPublication = () => {
       const published = createDeferred<WebPushNotificationPreferences>();
       const stop = capability.subscribe(() => {
-        const { error, preferences } = capability.snapshot;
-        if (error != null) {
-          published.reject(new Error(error));
-        } else if (preferences) {
-          published.resolve(preferences.user);
+        const read = capability.snapshot.read;
+        if (read) {
+          void read.then(() => {
+            const preferences = capability.snapshot.preferences;
+            if (preferences && capability.snapshot.read === read) {
+              published.resolve(preferences.user);
+            }
+          }, published.reject);
         }
       });
       return withinTest(published.promise, signal).finally(stop);
@@ -598,6 +603,37 @@ describe("web push Gateway reconciliation", () => {
       expect(capability.snapshot.preferences?.user).toEqual(latest);
     } finally {
       firstRefresh.resolve(preferenceResult(stale));
+      capability.dispose();
+    }
+  });
+
+  it("retires pending reconciliation when the profile changes on the same client", async () => {
+    const firstKey = createDeferred<string>();
+    let keyReads = 0;
+    const request = vi.fn(async (method: string) => {
+      if (method === "push.web.vapidPublicKey") {
+        keyReads += 1;
+        return {
+          vapidPublicKey: keyReads === 1 ? await firstKey.promise : encodedVapidKey([4, 1, 2, 3]),
+        };
+      }
+      return preferenceResult(notificationPreferences(false));
+    });
+    const harness = gatewayHarness();
+    const client = { request } as unknown as GatewayBrowserClient;
+    const capability = createWebPushCapability(harness.gateway);
+    try {
+      harness.connect(client, "first-profile");
+      await vi.waitFor(() => expect(keyReads).toBe(1));
+      harness.connect(client, "second-profile");
+      await vi.waitFor(() =>
+        expect(capability.snapshot.preferences?.user).toEqual(notificationPreferences(false)),
+      );
+      firstKey.resolve(encodedVapidKey([4, 9, 8, 7]));
+      await Promise.resolve();
+      expect(capability.snapshot.subscription).toBe("registered");
+    } finally {
+      firstKey.resolve(encodedVapidKey([4, 1, 2, 3]));
       capability.dispose();
     }
   });
@@ -808,8 +844,8 @@ describe("web push Gateway reconciliation", () => {
       expect(capability.snapshot.preferences?.user).toEqual(currentPreferences),
     );
 
-    firstSave.resolve();
     await action;
+    firstSave.resolve();
 
     expect(capability.snapshot.preferences?.user).toEqual(currentPreferences);
     expect(capability.snapshot.error).toBeNull();
@@ -910,8 +946,8 @@ describe("web push Gateway reconciliation", () => {
           <NotificationsSection
             connected={true}
             webPush={snapshot()}
-            onWebPushSubscribe={() => void capability.run({ kind: "enable" })}
-            onWebPushUnsubscribe={() => void capability.run({ kind: "disable" })}
+            onWebPushSubscribe={() => capability.run({ kind: "enable" })}
+            onWebPushUnsubscribe={() => capability.run({ kind: "disable" })}
           />
         ),
         { container },

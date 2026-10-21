@@ -3,9 +3,10 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { createSignal } from "solid-js";
 import { describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../../test/helpers/promise.ts";
 import type { WebPushSnapshot } from "../../app/web-push.ts";
 import { mountSolid } from "../../test-helpers/mount-solid.ts";
-import { flush } from "../../test-helpers/solid-settle.ts";
+import { flush, waitForSolid } from "../../test-helpers/solid-settle.ts";
 import { NotificationsSection } from "./notifications-section.tsx";
 
 const userPreferences = {
@@ -119,8 +120,17 @@ describe("Web Push preference saves", () => {
     });
   });
 
-  it("disables every preference control while a save is in flight", () => {
-    const { container } = renderSection({ webPush: webPush(true) });
+  it("disables every preference control while the admitted save is in flight", async () => {
+    const completion = createDeferred();
+    const view = renderSection({
+      webPush: webPush(),
+      onWebPushSetUserPreferences: () => completion.promise,
+    });
+    const { container } = view;
+    view.getByRole("switch", { name: "Someone mentions me" }).click();
+    await waitForSolid(() =>
+      expect(container.querySelector(".settings-stack")?.hasAttribute("inert")).toBe(true),
+    );
 
     expect(container.querySelector(".settings-page .settings-page")).toBeNull();
     const group = expectDefined(
@@ -129,6 +139,33 @@ describe("Web Push preference saves", () => {
     );
     expect(group.querySelector("input, select")).not.toBeNull();
     expect(group.hasAttribute("inert")).toBe(true);
+    completion.resolve();
+    await waitForSolid(() =>
+      expect(container.querySelector(".settings-stack")?.hasAttribute("inert")).toBe(false),
+    );
+  });
+});
+
+describe("Web Push native read boundaries", () => {
+  it("retires a rejected read when a replacement finishes", async () => {
+    const failed = createDeferred();
+    const replacement = createDeferred();
+    const [current, setCurrent] = createSignal({ ...webPush(), read: failed.promise });
+    const { container } = renderSection({
+      get webPush() {
+        return current();
+      },
+    });
+    expect(container.querySelector(".settings-stack")).toBeNull();
+    failed.reject(new Error("Example preferences unavailable"));
+    await waitForSolid(() =>
+      expect(container.textContent).toContain("Example preferences unavailable"),
+    );
+    setCurrent({ ...webPush(), read: replacement.promise });
+    flush();
+    replacement.resolve();
+    await waitForSolid(() => expect(container.querySelector(".settings-stack")).not.toBeNull());
+    expect(container.textContent).not.toContain("Example preferences unavailable");
   });
 });
 
