@@ -106,6 +106,11 @@ describe("imported PR source refresh", () => {
         f.invoke({ conflictsResolved: true, expectedHeadCommit: acceptedHead }),
       ).rejects.toThrow("Commit the staged changes");
       expect(await f.guestGit("show", ":pr.txt")).toBe("staged-only guest work");
+      // A staged mode change on the same bytes is guest work too.
+      await f.guestGit("update-index", "--cacheinfo", `100755,${refreshEntry},pr.txt`);
+      await expect(
+        f.invoke({ conflictsResolved: true, expectedHeadCommit: acceptedHead }),
+      ).rejects.toThrow("Commit the staged changes");
       await f.guestGit("update-index", "--cacheinfo", `100644,${refreshEntry},pr.txt`);
       expect(
         await f.invoke({ conflictsResolved: true, expectedHeadCommit: acceptedHead }),
@@ -223,6 +228,28 @@ describe("imported PR source refresh", () => {
     expect(await f.guestGit("write-tree")).toBe(guestIndex);
     expect(await f.guestGit("rev-parse", "HEAD")).toBe(guestHead);
     expect(f.writes).toEqual([]);
+  });
+
+  it("finishes a merged refresh after its review base failed to prepare", async () => {
+    const f = await fixture();
+    await f.invoke();
+    const acceptedHead = await f.advanceHead({ "pr.txt": "advanced PR\n" });
+    const backend = f.sandbox.backend!;
+    const run = backend.runShellCommand.bind(backend);
+    let failed = false;
+    vi.spyOn(backend, "runShellCommand").mockImplementation(async (params) => {
+      if (!failed && params.script.includes("for candidate do")) {
+        failed = true;
+        return { code: 1, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
+      }
+      return await run(params);
+    });
+    await expect(f.invoke()).rejects.toThrow("review-base preparation failed");
+    expect(failed).toBe(true);
+    // The host merge completed, so the imported file stays staged at its pre-refresh entry.
+    expect(await f.guestGit("status", "--porcelain", "pr.txt")).toBe("AM pr.txt");
+    expect(await f.invoke()).toMatchObject({ status: "prepared", headCommit: acceptedHead });
+    expect(await f.guestGit("show", ":pr.txt")).toBe("advanced PR");
   });
 
   it("refuses unrelated remote history without pinning it as a pending refresh", async () => {

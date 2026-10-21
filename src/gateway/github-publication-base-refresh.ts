@@ -113,7 +113,7 @@ export async function integrateManagedWorkspaceSource(
   const initialImport = params.source?.initial === true;
   let guestHead: string | undefined;
   let guestDirty = false;
-  let pendingStaged: { path: string; indexObject?: string }[] = [];
+  let pendingStaged: { path: string; indexEntry?: string }[] = [];
   const stagedError =
     "Commit the staged changes in files that also have unstaged changes before refreshing this PR; its existing files and index were preserved.";
   if (params.source) {
@@ -209,14 +209,20 @@ export async function integrateManagedWorkspaceSource(
             );
           }
           const continuingIntegration = Boolean(baseCommit);
-          // A pending integration rewrote working files but not the guest index, so a refreshed file
-          // stays staged at its pre-refresh bytes, which HEAD records until the merge completes.
-          // Any other staged-only version is guest work that completion would replace.
+          // A refresh rewrites working files before the guest index is restaged, so a refreshed file
+          // stays staged at its pre-refresh entry, which ORIG_HEAD records until the next source is
+          // admitted. Any other staged-only entry is guest work that completion would replace.
+          const stagedSnapshot = pendingStaged.length
+            ? (await probe(["rev-parse", "--verify", "--quiet", "ORIG_HEAD"])).stdout.trim()
+            : "";
           for (const entry of pendingStaged) {
-            const recorded = continuingIntegration
-              ? await probe(["rev-parse", "--verify", "--quiet", `HEAD:${entry.path}`])
+            const listed = stagedSnapshot
+              ? await probe(["ls-tree", "-z", "--full-tree", stagedSnapshot, "--", entry.path])
               : undefined;
-            if (!entry.indexObject || recorded?.stdout.trim() !== entry.indexObject) {
+            const recorded = listed?.stdout
+              .split("\0")
+              .find((line) => line.slice(line.indexOf("\t") + 1) === entry.path);
+            if (!entry.indexEntry || recorded?.split("\t")[0] !== entry.indexEntry) {
               throw new Error(stagedError);
             }
           }
@@ -530,7 +536,7 @@ export async function integrateManagedWorkspaceSource(
             }
             // MERGE_HEAD is a native pseudoref; Git rejects updating it through update-ref.
             const mergeHead = await resolveGitMetadataPath(cwd, "MERGE_HEAD", { beforeRun: check });
-            if (initialImport && !continuingIntegration) {
+            if (params.source && !continuingIntegration) {
               await git(["update-ref", "ORIG_HEAD", sourceHead]);
             }
             check();

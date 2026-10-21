@@ -14,8 +14,9 @@ export async function readManagedSandboxGitState(params: {
 }): Promise<{
   head: string;
   dirty: boolean;
-  // Paths whose index differs from both HEAD and the working file; unmerged paths have no index object.
-  partiallyStaged: { path: string; indexObject?: string }[];
+  // Paths whose index differs from both HEAD and the working file, with the index entry in
+  // ls-tree form ("<mode> blob <object>"); unmerged paths have none.
+  partiallyStaged: { path: string; indexEntry?: string }[];
 }> {
   const { sandbox, signal, assertCurrent } = params;
   assertCurrent();
@@ -31,7 +32,7 @@ export async function readManagedSandboxGitState(params: {
     throw new Error("The sandbox Git head could not be verified; existing work was preserved.");
   }
   const records = output.slice(head.length + 1).split("\0");
-  const partiallyStaged: { path: string; indexObject?: string }[] = [];
+  const partiallyStaged: { path: string; indexEntry?: string }[] = [];
   let dirty = false;
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index]!;
@@ -50,7 +51,7 @@ export async function readManagedSandboxGitState(params: {
     } else if ((kind === "1" || kind === "2") && xy?.[0] !== "." && xy?.[1] !== ".") {
       partiallyStaged.push({
         path: fields.slice(kind === "1" ? 8 : 9).join(" "),
-        indexObject: fields[7],
+        indexEntry: `${fields[4]} blob ${fields[7]}`,
       });
     }
   }
