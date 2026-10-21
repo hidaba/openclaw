@@ -48,6 +48,7 @@ import { isUpdateAttentionForced } from "./sidebar-attention-dismissals.ts";
 import { isReleaseUpdateAvailable } from "./sidebar-attention-update.ts";
 import type { SidebarMenusOwner } from "./sidebar-menus-types.ts";
 import type { SidebarMenus } from "./sidebar-menus.tsx";
+import type { MenuEntry } from "./solid/menu.tsx";
 export { CatalogSessionMenu } from "./catalog-session-menu-solid.tsx";
 
 export function SidebarMenusRenderer(props: {
@@ -108,6 +109,15 @@ export function renderSidebarRailPinMenuForMenus(
   const before = index >= 0 ? entries[index - 1] : undefined;
   const after = index >= 0 ? entries[index + 1] : undefined;
   const trigger = menus.triggers.get("railPin");
+  const items = createMemo<MenuEntry[]>(() => [
+    renderSidebarMenuAction("before", t("chat.sidebar.moveUp"), "arrowUp", {
+      disabled: !before,
+    }),
+    renderSidebarMenuAction("after", t("chat.sidebar.moveDown"), "arrowDown", {
+      disabled: !after,
+    }),
+    renderSidebarMenuAction("remove", t("nav.unpin"), "pin"),
+  ]);
   return (
     <Show when={host.sidebarEntries.includes(position.entry)}>
       <SidebarDropdown
@@ -129,15 +139,7 @@ export function renderSidebarRailPinMenuForMenus(
             }
           }
         }}
-        items={[
-          renderSidebarMenuAction("before", t("chat.sidebar.moveUp"), "arrowUp", {
-            disabled: !before,
-          }),
-          renderSidebarMenuAction("after", t("chat.sidebar.moveDown"), "arrowDown", {
-            disabled: !after,
-          }),
-          renderSidebarMenuAction("remove", t("nav.unpin"), "pin"),
-        ]}
+        items={items()}
       />
     </Show>
   );
