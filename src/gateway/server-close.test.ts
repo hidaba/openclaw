@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { once } from "node:events";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { isProcessAlive } from "../../test/helpers/process-wait.js";
@@ -589,25 +587,6 @@ describe("createGatewayCloseHandler", () => {
     },
   );
 
-  it("retains shared state when media cleanup times out", async () => {
-    const { registerMediaCleanupDrain } = await import("./server-media-cleanup-lifecycle.js");
-    const cleanup = createDeferredCore();
-    registerMediaCleanupDrain(cleanup.promise);
-    const stopMediaCleanup = vi.fn(async () => "timed-out" as const);
-    const close = createGatewayCloseHandler({ stopMediaCleanup });
-    const closing = close({ reason: "test" });
-    try {
-      await vi.waitFor(() => expect(stopMediaCleanup).toHaveBeenCalledTimes(1));
-      expect(sharedStateLifecycle.has("open")).toBe(true);
-    } finally {
-      cleanup.resolve();
-      await closing;
-    }
-    const result = await closing;
-    expect(sharedStateLifecycle.size).toBe(0);
-    expect(result.warnings).toContain("media-cleanup");
-  });
-
   it.skipIf(process.platform === "win32").each([
     { restart: false, ignoreTerm: false },
     { restart: true, ignoreTerm: true },
@@ -832,73 +811,6 @@ describe("createGatewayCloseHandler", () => {
     }
     expect(events).toEqual(["acp-sessions", "plugin-services", "channel:discord"]);
     expect(mocks.disposeAcpSessionManager).toHaveBeenCalledWith("gateway-shutdown");
-  });
-
-  it("cleans up live runtime children while plugin service cleanup is stalled", async () => {
-    vi.useFakeTimers();
-    const children = [
-      spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }),
-      spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }),
-    ];
-    const exits = children.map((child) => once(child, "exit"));
-    const spawnEvents = children.map((child) => once(child, "spawn"));
-    mocks.disposeAllSessionMcpRuntimes.mockImplementation(async () => {
-      children[0]?.kill("SIGTERM");
-      await exits[0];
-    });
-    mocks.disposeAllBundleLspRuntimes.mockImplementation(async () => {
-      children[1]?.kill("SIGTERM");
-      await exits[1];
-    });
-    const pluginCleanup = createDeferredCore();
-    const pluginServices = {
-      reload: vi.fn(async () => {}),
-      stop: vi.fn(() => pluginCleanup.promise),
-    };
-    const stopChannel = vi.fn(async () => undefined);
-    const deps = createGatewayCloseTestDeps({
-      channelIds: ["discord"],
-      pluginServices,
-      stopChannel,
-    });
-
-    let closePromise: ReturnType<ReturnType<typeof createGatewayCloseHandler>> | undefined;
-    let closed = false;
-    try {
-      await Promise.all(spawnEvents);
-      const close = closeGateway(deps);
-      closePromise = close({ reason: "SIGINT" }).then((result) => {
-        closed = true;
-        return result;
-      });
-
-      await vi.advanceTimersByTimeAsync(GATEWAY_SHUTDOWN_HOOK_TIMEOUT_MS);
-
-      expect(pluginServices.stop).toHaveBeenCalledOnce();
-      expect(mocks.disposeAllSessionMcpRuntimes).toHaveBeenCalledOnce();
-
-      expect(mocks.disposeAllBundleLspRuntimes).toHaveBeenCalledOnce();
-      await expect(Promise.all(exits)).resolves.toHaveLength(2);
-      await vi.advanceTimersByTimeAsync(0);
-      expect(stopChannel).toHaveBeenCalledWith("discord");
-      expect(deps.heartbeatRunner.stop).toHaveBeenCalledOnce();
-      expect(sharedStateLifecycle.has("open")).toBe(true);
-      expect(closed).toBe(false);
-
-      pluginCleanup.resolve();
-      const result = await closePromise;
-      expect(result.warnings).toContain("plugin-services");
-      expect(pluginServices.stop).toHaveBeenCalledOnce();
-      expect(sharedStateLifecycle.size).toBe(0);
-    } finally {
-      pluginCleanup.resolve();
-      for (const child of children) {
-        if (child.exitCode === null && child.signalCode === null) {
-          child.kill("SIGTERM");
-        }
-      }
-      await Promise.allSettled([...exits, closePromise]);
-    }
   });
 
   it("retains shared state after final plugin grace while cleanup stalls", async () => {

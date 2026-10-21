@@ -21,6 +21,7 @@ import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { prepareGatewayRecipientProfile } from "./expected-profile.js";
+import { makeClient as makeBroadcastClient } from "./server-broadcast.test-helpers.js";
 import { createGatewayConnectionState } from "./server-connection-state.js";
 import { systemHandlers } from "./server-methods/system.js";
 import { createGatewayRequestContext } from "./server-request-context.js";
@@ -118,27 +119,18 @@ function withoutSql(run: () => void) {
 }
 
 function makeClient(connId: string, reads: ConnectionIdReads = { count: 0 }, sendOrder?: string[]) {
+  const peer = makeBroadcastClient(connId, "operator", ["operator.read"]);
   const send: ReturnType<typeof vi.fn> = vi.fn(() => sendOrder?.push(connId));
-  const readyState: number = WebSocket.OPEN;
-  const socket = {
-    readyState,
-    bufferedAmount: 0,
-    close: vi.fn(),
-    send,
-  };
-  const client = {
-    socket: socket as unknown as GatewayWsClient["socket"],
-    connect: {
-      role: "operator",
-      scopes: ["operator.read"],
-    } as GatewayWsClient["connect"],
-    usesSharedGatewayAuth: false,
-    get connId() {
+  peer.socket.send = send;
+  Object.defineProperty(peer.client, "connId", {
+    configurable: true,
+    enumerable: true,
+    get() {
       reads.count += 1;
       return connId;
     },
-  } as GatewayWsClient;
-  return { client, socket, send };
+  });
+  return { ...peer, send };
 }
 
 describe("gateway connection state", () => {
