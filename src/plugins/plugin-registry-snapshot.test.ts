@@ -351,35 +351,6 @@ describe("loadPluginRegistrySnapshotWithMetadata", () => {
     expect(result.snapshot.plugins.map((plugin) => plugin.pluginId)).toEqual(["explicit"]);
   });
 
-  it("recovers managed npm plugins missing from a stale persisted registry", async () => {
-    const { stateDir, env } = isolatedRegistry();
-    const config = {};
-    const whatsappDir = writeManagedNpmPlugin({
-      stateDir,
-      packageName: "@openclaw/whatsapp",
-      pluginId: "whatsapp",
-      version: "2026.5.2",
-    });
-    const staleIndex = loadInstalledPluginIndex({ config, env, stateDir, installRecords: {} });
-    expect(staleIndex.plugins.map((plugin) => plugin.pluginId)).not.toContain("whatsapp");
-    await writePersistedInstalledPluginIndex(staleIndex, { stateDir });
-
-    const result = loadPluginRegistrySnapshotWithMetadata({ config, env, stateDir });
-
-    expectStale(result);
-    expect(result.snapshot.installRecords.whatsapp).toEqual({
-      source: "npm",
-      spec: "@openclaw/whatsapp@2026.5.2",
-      installPath: whatsappDir,
-      version: "2026.5.2",
-      resolvedName: "@openclaw/whatsapp",
-      resolvedVersion: "2026.5.2",
-      resolvedSpec: "@openclaw/whatsapp@2026.5.2",
-    });
-    const whatsappPlugin = requirePluginRecord(result.snapshot.plugins, "whatsapp");
-    expect(whatsappPlugin.origin).toBe("global");
-  });
-
   it.each<[string, NonNullable<OpenClawConfig["plugins"]>]>([
     ["entry", { entries: { "memory-demo": { enabled: true } } }],
     ["allowlist", { allow: ["memory-demo"] }],

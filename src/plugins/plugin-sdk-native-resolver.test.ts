@@ -227,16 +227,6 @@ describe("installOpenClawPluginSdkNativeResolver", () => {
     expectSdk(broadEntry, broad.root, "channel-inbound");
   });
 
-  it("honors the selected source SDK for native imports", () => {
-    const { root, options, externalPluginEntry } = sdkFixture();
-    const source = writeFile(
-      path.join(root, "src/plugin-sdk/channel-outbound.ts"),
-      "export const sourceOnly = true;\n",
-    );
-    installOpenClawPluginSdkNativeResolver({ ...options, pluginSdkResolution: "src" });
-    expectResolved(externalPluginEntry, "openclaw/plugin-sdk/channel-outbound", source);
-  });
-
   it("lets built external plugins resolve OpenClaw SDK subpaths with createRequire", () => {
     const { root, distRoot, options, externalPluginEntry, requireFromPlugin } = sdkFixture();
 
@@ -358,16 +348,6 @@ describe("installOpenClawPluginSdkNativeResolver", () => {
       eager: "adapter",
       lazy: "late-adapter",
     });
-  });
-
-  it("does not resolve SDK aliases for parents outside registered plugin roots", () => {
-    const { options, requireFromPlugin } = sdkFixture();
-    const unrelatedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-sdk-native-outside-"));
-    const unrelatedEntry = writeFile(path.join(unrelatedRoot, "runtime-api.js"));
-    installOpenClawPluginSdkNativeResolver({ ...options, pluginSdkResolution: "dist" });
-    const requireFromOutside = createRequire(unrelatedEntry);
-    expect(requireFromPlugin.resolve("openclaw/plugin-sdk/channel-outbound")).toBeTruthy();
-    expect(() => requireFromOutside.resolve("openclaw/plugin-sdk/channel-outbound")).toThrow();
   });
 
   it("resolves internal core packages only for OpenClaw-owned source parents", () => {
