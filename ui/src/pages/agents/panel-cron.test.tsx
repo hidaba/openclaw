@@ -1,4 +1,5 @@
 /* @vitest-environment jsdom */
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { flush } from "solid-js";
 import { describe, expect, it } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
@@ -107,7 +108,7 @@ describe("Agent Cron native reads and actions", () => {
       if (method === "cron.status") {
         return first ? status.promise : { enabled: true, jobs: 1, nextWakeAtMs: null };
       }
-      if (params?.limit === 50 && failJobs) {
+      if (isRecord(params) && params.limit === 50 && failJobs) {
         throw new Error("Synthetic jobs unavailable");
       }
       return pageOf([job("ready")]);
@@ -147,7 +148,7 @@ describe("Agent Cron native reads and actions", () => {
       if (method === "cron.status") {
         return status.promise;
       }
-      if (params?.limit === 50) {
+      if (isRecord(params) && params.limit === 50) {
         return jobs.promise;
       }
       return pageOf([]);
@@ -168,7 +169,7 @@ describe("Agent Cron native reads and actions", () => {
       if (method === "cron.status") {
         return { enabled: true, jobs: 2, nextWakeAtMs: null };
       }
-      if (params?.offset === 1) {
+      if (isRecord(params) && params.offset === 1) {
         return more.promise;
       }
       return pageOf([job("first")], 2);
@@ -198,7 +199,9 @@ describe("Agent Cron native reads and actions", () => {
       if (method === "cron.runs") {
         return { entries: [], total: 0, offset: 0, limit: 50, hasMore: false };
       }
-      return pageOf([job(String(params?.agentId ?? "main"), String(params?.agentId ?? "main"))]);
+      const agentId =
+        isRecord(params) && typeof params.agentId === "string" ? params.agentId : "main";
+      return pageOf([job(agentId, agentId)]);
     });
     await waitForSolid(() => expect(container.textContent).toContain("Job main"));
     button(container, "Run Now").click();
