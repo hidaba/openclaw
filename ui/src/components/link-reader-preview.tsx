@@ -13,7 +13,7 @@ import { takeGraphemes } from "../lib/graphemes.ts";
 import { formatRelativeTimestamp } from "../lib/reactive/format.ts";
 import { t } from "../lib/reactive/i18n.ts";
 import { formatGitHubItemReference, parseGitHubLinkTarget } from "./github-link-target.ts";
-import { createPreviewRenderer } from "./link-reader-preview-root.ts";
+import { createPreviewRenderer } from "./link-reader-preview-root.tsx";
 import { linkReaderAuthorHref, linkReaderResponseMatchesTarget } from "./link-reader-response.ts";
 import { linkReaderTargetKey, type LinkReaderTarget } from "./link-reader-target.ts";
 import { createHovercardControlRef } from "./portaled-hovercard-focus.ts";
@@ -283,7 +283,7 @@ const renderLoadingContent = createPreviewRenderer(
       <div class="link-reader-hovercard__skeleton" aria-hidden="true">
         <For each={rows}>
           {(row) => (
-            <div class={"link-reader-hovercard__" + row[0]}>
+            <div class={["link-reader-hovercard__" + row[0]]}>
               <For each={row[1]}>
                 {(part) => (
                   <span class={["skeleton", `link-reader-hovercard__placeholder--${part}`]} />

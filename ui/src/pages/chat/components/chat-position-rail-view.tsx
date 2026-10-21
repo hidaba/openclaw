@@ -70,6 +70,7 @@ export type PositionRailAssistant = {
 export type PositionRailViewParams = {
   assistant?: PositionRailAssistant;
   markers: Readonly<ChatPositionIndex["markers"]>;
+  liveMarkers?: ChatPositionIndex["liveMarkers"];
   renderedIndexes: readonly number[];
   activeId: string | undefined;
   visibleIds: ReadonlySet<string>;
@@ -102,11 +103,11 @@ export function ChatPositionRailView(props: PositionRailViewParams) {
       separated: renderedIndex > 0 && index > props.renderedIndexes[renderedIndex - 1]! + 1,
     })),
   );
-  const previewMarker = createMemo(() =>
-    props.previewId == null
-      ? undefined
-      : props.markers.find((marker) => marker.id === props.previewId),
-  );
+  const previewMarker = createMemo(() => {
+    const marker = props.markers.find((candidate) => candidate.id === props.previewId);
+    const live = props.liveMarkers?.find((candidate) => candidate.id === props.previewId);
+    return marker && live ? { ...marker, message: live.message } : marker;
+  });
   const previewMessage = createMemo(() => {
     const marker = previewMarker();
     return marker ? normalizeMessage(marker.message) : undefined;
