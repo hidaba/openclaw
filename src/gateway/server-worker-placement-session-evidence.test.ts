@@ -196,27 +196,23 @@ describe("worker placement session evidence", () => {
         },
       }));
       const prepareRegistry = registryListing.prepareOpenClawAgentDatabaseRegistrySnapshotRead;
-      const registry = vi
+      using _ = vi
         .spyOn(registryListing, "prepareOpenClawAgentDatabaseRegistrySnapshotRead")
         .mockImplementation((...args) => ({
           ...prepareRegistry(...args),
           read,
           assertCurrent() {},
         }));
-      try {
-        const resolve = await createResolver(requested);
-        expect(await Promise.all(requested.map(resolve))).toEqual(["unknown", "current", "absent"]);
-        expect(read).toHaveBeenCalledOnce();
-      } finally {
-        registry.mockRestore();
-      }
+      const resolve = await createResolver(requested);
+      expect(await Promise.all(requested.map(resolve))).toEqual(["unknown", "current", "absent"]);
+      expect(read).toHaveBeenCalledOnce();
     }));
 
   it("warns instead of silently swallowing resolver pipeline failures", () =>
     withEvidenceState(async (stateDir) => {
       configureStore(path.join(stateDir, "fixed", "shared.json"));
       const prepareRegistry = registryListing.prepareOpenClawAgentDatabaseRegistrySnapshotRead;
-      const registry = vi
+      using _ = vi
         .spyOn(registryListing, "prepareOpenClawAgentDatabaseRegistrySnapshotRead")
         .mockImplementationOnce((...args) => ({
           ...prepareRegistry(...args),
@@ -237,7 +233,6 @@ describe("worker placement session evidence", () => {
         expect.stringContaining("session evidence resolution failed"),
         { error: expect.objectContaining({ message: "evidence pipeline exploded" }) },
       );
-      registry.mockRestore();
     }));
 
   it.each(["cold", "warm"] as const)(
