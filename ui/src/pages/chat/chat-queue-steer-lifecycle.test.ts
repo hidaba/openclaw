@@ -52,6 +52,14 @@ it.each(["custody", "receipt", "retry", "remount", "deferred", "deferred-remount
       sessionKey,
       agentId: "main",
     };
+    const output = (id: string, seq: number, content: string, timestamp: number) => ({
+      role: "assistant",
+      content,
+      timestamp,
+      __openclaw: { id, seq, runId: "active-run" },
+    });
+    const prefix = output("pre-steer", 2, "Already visible output.", 5_000);
+    const suffix = output("post-steer", 4, "Later output.", 11_000);
     const history: ChatHistoryResult = {
       messages: [original],
       sessionId: "queue-steer-session",
@@ -283,15 +291,7 @@ it.each(["custody", "receipt", "retry", "remount", "deferred", "deferred-remount
       if (ackMode === "remount" || ackMode === "deferred-remount") {
         // The producer has persisted the prefix; an older page still omits the
         // submitted steer when the pane is recreated from its actual cache.
-        history.messages = [
-          original,
-          {
-            role: "assistant",
-            content: "Already visible output.",
-            timestamp: 5_000,
-            __openclaw: { id: "pre-steer", seq: 2, runId: "active-run" },
-          },
-        ];
+        history.messages = [original, prefix];
         prefixPersisted = true;
         history.inFlightRun!.text = "";
         await loadChatHistory(host);
@@ -350,22 +350,7 @@ it.each(["custody", "receipt", "retry", "remount", "deferred", "deferred-remount
         : "Already visible output. Later output.";
       await loadChatHistory(host);
       expect.soft(snapshot(), "persisted copy replaces optimistic").toEqual(expected());
-      history.messages = [
-        original,
-        {
-          role: "assistant",
-          content: "Already visible output.",
-          timestamp: 5_000,
-          __openclaw: { id: "pre-steer", seq: 2, runId: "active-run" },
-        },
-        steer,
-        {
-          role: "assistant",
-          content: "Later output.",
-          timestamp: 11_000,
-          __openclaw: { id: "post-steer", seq: 4, runId: "active-run" },
-        },
-      ];
+      history.messages = [original, prefix, steer, suffix];
       history.inFlightRun = undefined;
       history.sessionInfo = {
         ...history.sessionInfo!,

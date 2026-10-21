@@ -22,6 +22,34 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+function setGlobalSession(
+  state: ReturnType<typeof createTestChatPane>["state"],
+  sessionId: string,
+) {
+  state.sessionKey = "agent:work:main";
+  state.assistantAgentId = "work";
+  state.agentsList = { defaultId: "main", mainKey: "main", scope: "global", agents: [] };
+  state.sessionsResultAgentId = "work";
+  const row: GatewaySessionRow = { key: "global", kind: "global", sessionId, updatedAt: 1 };
+  state.sessionsResult = { count: 1, path: "", sessions: [row] } as never;
+  return row;
+}
+
+function typingDom() {
+  const container = document.createElement("div");
+  return {
+    container,
+    query: (selector: string) => container.querySelector(selector),
+    all: (selector: string) => container.querySelectorAll(selector),
+    text: (selector: string) => container.querySelector(selector)?.textContent,
+    render: (
+      actors: Parameters<typeof renderTypingIndicator>[0],
+      placement?: Parameters<typeof renderTypingIndicator>[2],
+      overflow?: Parameters<typeof renderTypingIndicator>[3],
+    ) => renderTypingIndicator(actors, container, placement, overflow),
+  };
+}
+
 function createTypingPane() {
   const request = vi.fn().mockResolvedValue({ ok: true, broadcast: true });
   const fixture = createTestChatPane({
@@ -35,18 +63,8 @@ function createTypingPane() {
       { ts: 1, user: { id: "alice" } },
     ],
   });
-  state.sessionKey = "agent:work:main";
-  state.assistantAgentId = "work";
-  state.agentsList = { defaultId: "main", mainKey: "main", scope: "global", agents: [] };
-  state.sessionsResultAgentId = "work";
-  const row: GatewaySessionRow = {
-    key: "global",
-    kind: "global",
-    sessionId: "session-a",
-    updatedAt: 1,
-    visibility: "shared",
-    sharingRole: "owner",
-  };
+  const row = setGlobalSession(state, "session-a");
+  Object.assign(row, { visibility: "shared", sharingRole: "owner" });
   state.sessionsResult = {
     ts: 1,
     count: 1,
@@ -88,7 +106,7 @@ describe("chat pane typing presence", () => {
     pane.clearTypingActors();
   });
 
-  it.each(["manual"] as const)("remote typing preserves a pending %s follow command", (source) => {
+  it("remote typing preserves a pending manual follow command", () => {
     vi.useFakeTimers();
     const { pane, state } = createTestChatPane({
       client: { request: vi.fn() } as unknown as GatewayBrowserClient,
@@ -122,7 +140,7 @@ describe("chat pane typing presence", () => {
     };
     state.chatHasAutoScrolled = true;
     state.chatUserNearBottom = true;
-    scheduleCommittedChatScroll(state, false, true, { source });
+    scheduleCommittedChatScroll(state, false, true, { source: "manual" });
     const typing = {
       sessionKey: state.sessionKey,
       sessionId: "typing-scroll",
@@ -136,7 +154,7 @@ describe("chat pane typing presence", () => {
     expect(pane.collaboration.typingViews).toHaveLength(1);
     extent += 83;
     vi.advanceTimersToNextFrame();
-    expect(scrollport.scrollTop).toBe(source === "manual" ? 1500 : 1583);
+    expect(scrollport.scrollTop).toBe(1500);
     // Smooth sends wait through layout measurement; a peer update during
     // that frame must not cancel the reader’s pending manual command.
     pane.handleSessionTypingEvent({
@@ -163,10 +181,7 @@ describe("chat pane typing presence", () => {
       client: { request: vi.fn() } as unknown as GatewayBrowserClient,
       sessions: {} as SessionCapability,
     });
-    state.sessionKey = "agent:work:main";
-    state.assistantAgentId = "work";
-    state.agentsList = { defaultId: "main", mainKey: "main", scope: "global", agents: [] };
-    state.sessionsResultAgentId = "work";
+    setGlobalSession(state, "session-a");
     const aliceId = "0d9f4c35-d221-49da-9a3f-b8c73921066b";
     pane.presence.update({
       presence: [
@@ -175,18 +190,6 @@ describe("chat pane typing presence", () => {
         { ts: 1, user: { id: "bob" } },
       ],
     });
-    state.sessionsResult = {
-      count: 1,
-      path: "",
-      sessions: [
-        {
-          key: "global",
-          kind: "global",
-          sessionId: "session-a",
-          updatedAt: 1,
-        } as GatewaySessionRow,
-      ],
-    } as never;
     for (const actor of [
       { id: aliceId, label: "Alice", preview: "Alice's ephemeral draft" },
       { id: "bob", label: "Bob" },
@@ -306,127 +309,101 @@ describe("chat pane typing presence", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it.each(["unqualified"] as const)(
-    "retires a paused draft on %s without removing another viewer's draft",
-    () => {
-      vi.useFakeTimers();
-      const { pane, state } = createTestChatPane({
-        client: { request: vi.fn() } as unknown as GatewayBrowserClient,
-        sessions: {} as SessionCapability,
-      });
-      state.sessionKey = "agent:work:main";
-      state.assistantAgentId = "work";
-      state.agentsList = { defaultId: "main", mainKey: "main", scope: "global", agents: [] };
-      state.sessionsResultAgentId = "work";
-      state.sessionsResult = {
-        count: 1,
-        path: "",
-        sessions: [{ key: "global", kind: "global", sessionId: "pause", updatedAt: 1 }],
-      } as never;
-      const viewer = (id: string): PresencePayload["presence"][number] => ({
-        ts: 1,
-        user: { id, identity: { type: "profile", id } },
-        watchedSessions: ["agent:work:global"],
-      });
-      pane.presence.update({ presence: [viewer("alice"), viewer("bob")] });
-      for (const id of ["alice", "bob"]) {
-        pane.handleSessionTypingEvent({
-          sessionKey: state.sessionKey,
-          sessionId: "pause",
-          agentId: "work",
-          actor: { type: "human", id, label: id },
-          typing: true,
-          preview: id + " draft",
-          ts: 1,
-        });
-      }
-      vi.advanceTimersByTime(10_000);
-      pane.pruneTypingActors();
-      expect(pane.typingActors.size).toBe(2);
-      pane.presence.update({
-        presence: [
-          viewer("bob"),
-          {
-            ...viewer("alice"),
-            user: { id: "alice" },
-          },
-        ],
-      });
-      pane.pruneTypingActors();
-      expect([...pane.typingActors.keys()]).toEqual(["bob"]);
-      pane.clearTypingActorForSessionMessage({
+  it("retires a paused draft on unqualified presence without removing another viewer's draft", () => {
+    vi.useFakeTimers();
+    const { pane, state } = createTestChatPane({
+      client: { request: vi.fn() } as unknown as GatewayBrowserClient,
+      sessions: {} as SessionCapability,
+    });
+    setGlobalSession(state, "pause");
+    const viewer = (id: string): PresencePayload["presence"][number] => ({
+      ts: 1,
+      user: { id, identity: { type: "profile", id } },
+      watchedSessions: ["agent:work:global"],
+    });
+    pane.presence.update({ presence: [viewer("alice"), viewer("bob")] });
+    for (const id of ["alice", "bob"]) {
+      pane.handleSessionTypingEvent({
         sessionKey: state.sessionKey,
+        sessionId: "pause",
         agentId: "work",
-        message: { role: "user", __openclaw: { senderIdentity: { type: "profile", id: "bob" } } },
+        actor: { type: "human", id, label: id },
+        typing: true,
+        preview: id + " draft",
+        ts: 1,
       });
-      expect(pane.typingActors.size).toBe(0);
-      expect(vi.getTimerCount()).toBe(0);
-    },
-  );
+    }
+    vi.advanceTimersByTime(10_000);
+    pane.pruneTypingActors();
+    expect(pane.typingActors.size).toBe(2);
+    pane.presence.update({
+      presence: [
+        viewer("bob"),
+        {
+          ...viewer("alice"),
+          user: { id: "alice" },
+        },
+      ],
+    });
+    pane.pruneTypingActors();
+    expect([...pane.typingActors.keys()]).toEqual(["bob"]);
+    pane.clearTypingActorForSessionMessage({
+      sessionKey: state.sessionKey,
+      agentId: "work",
+      message: { role: "user", __openclaw: { senderIdentity: { type: "profile", id: "bob" } } },
+    });
+    expect(pane.typingActors.size).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
 
   it("keeps each actor’s bubble stable across draft, dots, and peer updates without interpreting markup", () => {
-    const container = document.createElement("div");
+    const { render, query, all, text } = typingDom();
     const alice = {
       id: "alice",
       label: "Alice",
       preview: "<img src=x onerror=alert(1)> **draft**",
     };
     const bob = { id: "bob", label: "Bob" };
-    renderTypingIndicator([alice, bob], container);
-    expect(container.querySelector(".agent-chat__typing-preview-bubble")?.textContent).toContain(
-      alice.preview,
-    );
-    expect(container.querySelector(".agent-chat__typing-preview-label")?.textContent?.trim()).toBe(
-      "Alice",
-    );
+    render([alice, bob]);
+    expect(text(".agent-chat__typing-preview-bubble")).toContain(alice.preview);
+    expect(text(".agent-chat__typing-preview-label")?.trim()).toBe("Alice");
+    expect(text(".chat-group--typing .chat-group-footer")).toContain("is typing...");
+    expect(all(".chat-group.user.chat-group--peer")).toHaveLength(2);
+    expect(query(".agent-chat__typing-group")).toBeNull();
+    expect(text(".chat-group--typing .chat-bubble .chat-text")).toContain(alice.preview);
     expect(
-      container.querySelector(".chat-group--typing .chat-group-footer")?.textContent,
-    ).toContain("is typing...");
-    expect(container.querySelectorAll(".chat-group.user.chat-group--peer")).toHaveLength(2);
-    expect(container.querySelector(".agent-chat__typing-group")).toBeNull();
-    expect(
-      container.querySelector(".chat-group--typing .chat-bubble .chat-text")?.textContent,
-    ).toContain(alice.preview);
-    expect(
-      container
-        .querySelector(".agent-chat__typing-preview-bubble")
+      query(".agent-chat__typing-preview-bubble")
         ?.closest("[aria-live]")
         ?.getAttribute("aria-live"),
     ).toBe("off");
-    expect(container.querySelectorAll(".agent-chat__typing-bubble > span")).toHaveLength(3);
-    expect(container.querySelector(".sr-only")?.textContent).toBe("Alice, Bob are typing…");
+    expect(all(".agent-chat__typing-bubble > span")).toHaveLength(3);
+    expect(text(".sr-only")).toBe("Alice, Bob are typing…");
 
-    const aliceGroup = container.querySelector(".chat-group--typing");
+    const aliceGroup = query(".chat-group--typing");
     const aliceBubble = aliceGroup?.querySelector(".chat-bubble");
     expect(aliceGroup?.querySelector(".chat-text")?.textContent).toBe(alice.preview);
     expect(aliceGroup?.querySelectorAll(".chat-text img, .chat-text strong")).toHaveLength(0);
-    renderTypingIndicator([bob, { ...alice, preview: "   " }], container);
-    expect(container.querySelectorAll(".chat-group--typing")[1]).toBe(aliceGroup);
+    render([bob, { ...alice, preview: "   " }]);
+    expect(all(".chat-group--typing")[1]).toBe(aliceGroup);
     expect(aliceGroup?.querySelector(".chat-bubble")).toBe(aliceBubble);
     expect(aliceGroup?.querySelectorAll(".agent-chat__typing-bubble > span")).toHaveLength(3);
-    renderTypingIndicator([{ ...alice, preview: "Edited draft" }], container);
-    expect(container.querySelector(".chat-group--typing")).toBe(aliceGroup);
+    render([{ ...alice, preview: "Edited draft" }]);
+    expect(query(".chat-group--typing")).toBe(aliceGroup);
     expect(aliceGroup?.querySelector(".chat-bubble")).toBe(aliceBubble);
     expect(aliceGroup?.querySelector(".chat-text")?.textContent).toBe("Edited draft");
-    expect(container.querySelector("[role=status]")?.textContent).toBe("Alice is typing…");
-    renderTypingIndicator([], container);
-    expect(container.querySelector(".agent-chat__typing-indicator")).toBeNull();
+    expect(text("[role=status]")).toBe("Alice is typing…");
+    render([]);
+    expect(query(".agent-chat__typing-indicator")).toBeNull();
   });
 
-  it.each(["footer"] as const)("uses the transcript’s %s avatar placement", (placement) => {
-    const container = document.createElement("div");
-    renderTypingIndicator(
-      [{ id: "alice", label: "Alice", preview: "A draft" }],
-      container,
-      placement,
+  it("uses the transcript’s footer avatar placement", () => {
+    const { render, all, text } = typingDom();
+    render([{ id: "alice", label: "Alice", preview: "A draft" }], "footer");
+    expect(all(".chat-message-avatar-anchor > :is(.chat-avatar, .chat-avatar-slot)")).toHaveLength(
+      0,
     );
-    expect(
-      container.querySelectorAll(
-        ".chat-message-avatar-anchor > :is(.chat-avatar, .chat-avatar-slot)",
-      ),
-    ).toHaveLength(0);
-    expect(container.querySelectorAll(".chat-group-footer .chat-author-avatar")).toHaveLength(1);
-    expect(container.querySelector(".chat-sender-name")?.textContent).toBe("Alice");
+    expect(all(".chat-group-footer .chat-author-avatar")).toHaveLength(1);
+    expect(text(".chat-sender-name")).toBe("Alice");
   });
 
   it("keeps two preview drafts while only active overflow people own the shared row", () => {
@@ -441,29 +418,18 @@ describe("chat pane typing presence", () => {
       preview: "Draft " + index,
       ts: 1,
     });
-    const container = document.createElement("div");
+    const { render, query, all, text } = typingDom();
     for (let count = 1; count <= 8; count += 1) {
       pane.handleSessionTypingEvent(event(count));
-      renderTypingIndicator(
-        pane.collaboration.typingViews,
-        container,
-        "gutter",
-        pane.collaboration.typingOverflow,
-      );
-      expect(container.querySelectorAll(".chat-bubble")).toHaveLength(Math.min(2, count));
-      expect(container.querySelectorAll(".agent-chat__typing-person")).toHaveLength(
-        Math.min(5, Math.max(0, count - 2)),
-      );
+      render(pane.collaboration.typingViews, "gutter", pane.collaboration.typingOverflow);
+      expect(all(".chat-bubble")).toHaveLength(Math.min(2, count));
+      expect(all(".agent-chat__typing-person")).toHaveLength(Math.min(5, Math.max(0, count - 2)));
       expect(pane.collaboration.typingViews.filter((actor) => actor.preview)).toHaveLength(
         Math.min(2, count),
       );
     }
-    expect(container.querySelector(".agent-chat__typing-summary")?.textContent).toBe(
-      "Several people are typing…",
-    );
-    expect(container.querySelector("[role=status]")?.textContent).toBe(
-      "Several people are typing…",
-    );
+    expect(text(".agent-chat__typing-summary")).toBe("Several people are typing…");
+    expect(text("[role=status]")).toBe("Several people are typing…");
     expect(pane.collaboration.typingOverflow).toEqual({ several: true });
     const stable = pane.collaboration.typingViews;
     for (let index = 0; index < 100; index += 1) {
@@ -473,40 +439,31 @@ describe("chat pane typing presence", () => {
     pane.handleSessionTypingEvent(event(9, false));
     pane.handleSessionTypingEvent(event(8, false));
     expect(pane.collaboration.typingOverflow).toBeUndefined();
-    renderTypingIndicator(pane.collaboration.typingViews, container);
-    expect(container.querySelector(".agent-chat__typing-summary")?.textContent).toBe(
-      "Peer 3, Peer 4, and 3 others are typing…",
-    );
+    render(pane.collaboration.typingViews);
+    expect(text(".agent-chat__typing-summary")).toBe("Peer 3, Peer 4, and 3 others are typing…");
     vi.advanceTimersByTime(10_000);
-    renderTypingIndicator(pane.collaboration.typingViews, container);
+    render(pane.collaboration.typingViews);
     expect(pane.collaboration.typingViews).toEqual([
       { id: "peer-1", label: "Peer 1", preview: "Draft 1", paused: true },
       { id: "peer-2", label: "Peer 2", preview: "Draft 2", paused: true },
     ]);
     expect(pane.collaboration.typingOverflow).toBeUndefined();
-    expect(container.querySelectorAll(".chat-bubble")).toHaveLength(2);
-    expect(container.querySelector(".agent-chat__typing-group")).toBeNull();
-    expect(container.querySelectorAll(".agent-chat__typing-state")[0]?.textContent).toBe("Draft");
+    expect(all(".chat-bubble")).toHaveLength(2);
+    expect(query(".agent-chat__typing-group")).toBeNull();
+    expect(all(".agent-chat__typing-state")[0]?.textContent).toBe("Draft");
     pane.handleSessionTypingEvent(event(7));
-    renderTypingIndicator(pane.collaboration.typingViews, container);
-    expect(container.querySelector(".agent-chat__typing-summary")?.textContent).toBe(
-      "Peer 7 is typing…",
-    );
-    expect(container.querySelectorAll(".agent-chat__typing-person")).toHaveLength(1);
-    renderTypingIndicator(
-      pane.collaboration.typingViews,
-      container,
-      "none",
-      pane.collaboration.typingOverflow,
-    );
-    expect(container.querySelector(".agent-chat__typing-overflow")?.getAttribute("title")).toBe(
+    render(pane.collaboration.typingViews);
+    expect(text(".agent-chat__typing-summary")).toBe("Peer 7 is typing…");
+    expect(all(".agent-chat__typing-person")).toHaveLength(1);
+    render(pane.collaboration.typingViews, "none", pane.collaboration.typingOverflow);
+    expect(query(".agent-chat__typing-overflow")?.getAttribute("title")).toBe(
       "Peer 7 — is typing...",
     );
-    expect(container.querySelectorAll("[role=img]")).toHaveLength(0);
+    expect(all("[role=img]")).toHaveLength(0);
     pane.handleSessionTypingEvent(event(7, false));
-    renderTypingIndicator(pane.collaboration.typingViews, container);
-    expect(container.querySelector(".agent-chat__typing-group")).toBeNull();
-    expect(container.querySelectorAll(".chat-bubble")).toHaveLength(2);
+    render(pane.collaboration.typingViews);
+    expect(query(".agent-chat__typing-group")).toBeNull();
+    expect(all(".chat-bubble")).toHaveLength(2);
     pane.clearTypingActors();
     expect(pane.collaboration.typingViews).toEqual([]);
     expect(vi.getTimerCount()).toBe(0);
@@ -567,7 +524,7 @@ describe("chat pane typing presence", () => {
   });
 
   it("names one to five active overflow people, bounds avatars, and shimmers only live text", () => {
-    const container = document.createElement("div");
+    const { render, query, all, text } = typingDom();
     const actors = ["Alice", "Ben", "Camila", "Dev", "Emilia", "Farid", "Grace"].map(
       (label, index) => ({ id: "peer-" + index, label, preview: "Draft" }),
     );
@@ -579,45 +536,36 @@ describe("chat pane typing presence", () => {
       "Camila, Dev, and 3 others are typing…",
     ];
     for (let count = 3; count <= 7; count += 1) {
-      renderTypingIndicator(actors.slice(0, count), container);
-      expect(container.querySelector(".agent-chat__typing-summary")?.textContent).toBe(
-        expected[count - 3],
-      );
-      expect(container.querySelectorAll(".agent-chat__typing-person")).toHaveLength(count - 2);
+      render(actors.slice(0, count));
+      expect(text(".agent-chat__typing-summary")).toBe(expected[count - 3]);
+      expect(all(".agent-chat__typing-person")).toHaveLength(count - 2);
     }
-    const group = container.querySelector(".agent-chat__typing-group");
-    const summary = container.querySelector(".agent-chat__typing-summary");
-    const stack = container.querySelector(".agent-chat__typing-identities");
-    const avatars = [...container.querySelectorAll(".agent-chat__typing-person")];
-    renderTypingIndicator(actors, container, "gutter", { several: true });
+    const group = query(".agent-chat__typing-group");
+    const summary = query(".agent-chat__typing-summary");
+    const stack = query(".agent-chat__typing-identities");
+    const avatars = [...all(".agent-chat__typing-person")];
+    render(actors, "gutter", { several: true });
     expect(summary?.textContent).toBe("Several people are typing…");
-    expect(container.querySelector(".agent-chat__typing-group")).toBe(group);
-    expect(container.querySelector(".agent-chat__typing-identities")).toBe(stack);
+    expect(query(".agent-chat__typing-group")).toBe(group);
+    expect(query(".agent-chat__typing-identities")).toBe(stack);
     expect(
-      [...container.querySelectorAll(".agent-chat__typing-person")].every(
-        (node, index) => node === avatars[index],
-      ),
+      [...all(".agent-chat__typing-person")].every((node, index) => node === avatars[index]),
     ).toBe(true);
     expect(summary?.querySelector(".agent-chat__typing-text")?.hasAttribute("data-typing")).toBe(
       true,
     );
     const longName = "<script>not markup</script> " + "LongName".repeat(30);
-    renderTypingIndicator([actors[0]!, actors[1]!, { id: "new", label: longName }], container);
+    render([actors[0]!, actors[1]!, { id: "new", label: longName }]);
     expect(summary?.textContent).toBe(longName + " is typing…");
-    expect(container.querySelector(".agent-chat__typing-name")?.getAttribute("title")).toBe(
-      longName,
-    );
-    expect(container.querySelectorAll("script")).toHaveLength(0);
-    renderTypingIndicator(
-      [
-        { ...actors[0]!, paused: true },
-        { ...actors[1]!, paused: true },
-      ],
-      container,
-    );
-    expect(container.querySelector(".agent-chat__typing-group")).toBeNull();
-    expect(container.querySelectorAll(".agent-chat__typing-state")[0]?.textContent).toBe("Draft");
-    expect(container.querySelector("[role=status]")?.textContent).toBe("");
+    expect(query(".agent-chat__typing-name")?.getAttribute("title")).toBe(longName);
+    expect(all("script")).toHaveLength(0);
+    render([
+      { ...actors[0]!, paused: true },
+      { ...actors[1]!, paused: true },
+    ]);
+    expect(query(".agent-chat__typing-group")).toBeNull();
+    expect(all(".agent-chat__typing-state")[0]?.textContent).toBe("Draft");
+    expect(text("[role=status]")).toBe("");
   });
 
   it("sends the last 300 draft code points including whitespace and omits previews when typing stops", () => {

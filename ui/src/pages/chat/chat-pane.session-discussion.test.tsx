@@ -118,9 +118,7 @@ describe("chat pane session discussion", () => {
     expect(pane.resolveSessionDiscussionAction()).toBeNull();
   });
   it("does not auto-show an open discussion", async () => {
-    const { pane, updateSidebarLayout } = createDiscussionPane({
-      info: { state: "open", embedUrl: "https://clack.example/embed/c1" },
-    });
+    const { pane, updateSidebarLayout } = createDiscussionPane();
 
     await pane.probeSessionDiscussion(SESSION_KEY);
 
@@ -192,31 +190,20 @@ describe("chat pane session discussion", () => {
     expect(updateSidebarLayout).toHaveBeenCalledTimes(2);
   });
 
-  it("opens beside an existing detail slot without stealing it", async () => {
-    const { pane, state } = createDiscussionPane({
-      info: { state: "open", embedUrl: "https://clack.example/embed/c1" },
-      detailOpen: true,
-    });
-    await pane.probeSessionDiscussion(SESSION_KEY);
-    pane.resolveSessionDiscussionAction()?.onToggle();
-
-    expect(
-      state.sidebarLayout.columns.flatMap((column) => column.panels.map((panel) => panel.slot)),
-    ).toEqual(["detail", "discussion"]);
-  });
-
-  it("opens as a collapsed tab when two columns cannot fit side by side", async () => {
-    const { pane, state } = createDiscussionPane({
-      detailOpen: true,
-    });
-    pane.paneWidth = 700;
-    await pane.probeSessionDiscussion(SESSION_KEY);
-    pane.resolveSessionDiscussionAction()?.onToggle();
-
-    expect(
-      state.sidebarLayout.columns.flatMap((column) => column.panels.map((panel) => panel.slot)),
-    ).toEqual(["detail", "discussion"]);
-  });
+  it.each([undefined, 700])(
+    "preserves the detail slot when opening discussion at width %s",
+    async (width) => {
+      const { pane, state } = createDiscussionPane({ detailOpen: true });
+      if (width !== undefined) {
+        pane.paneWidth = width;
+      }
+      await pane.probeSessionDiscussion(SESSION_KEY);
+      pane.resolveSessionDiscussionAction()?.onToggle();
+      expect(
+        state.sidebarLayout.columns.flatMap((column) => column.panels.map((panel) => panel.slot)),
+      ).toEqual(["detail", "discussion"]);
+    },
+  );
 
   it("ignores a stale none callback after switching sessions", async () => {
     const { pane, state } = createDiscussionPane();

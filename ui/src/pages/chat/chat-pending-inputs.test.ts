@@ -73,6 +73,30 @@ function threadItems(options: Partial<Parameters<typeof buildChatItems>[0]>) {
 }
 const requestOptions = () => ({ signal: expect.any(AbortSignal), timeoutMs: 30_000 });
 const activeSession = { key: sessionKey, sessionId, hasActiveRun: true, status: "running" };
+function cacheHistory(
+  cache: ChatMessageCache,
+  host: ReturnType<typeof makeChatHost>,
+  delivery: string,
+) {
+  cacheChatSessionSnapshot(
+    cache,
+    host,
+    { sessionKey },
+    {
+      messages: host.chatMessages,
+      sessionId,
+      pagination: host.chatHistoryPagination,
+      ...(delivery === "delta" ? { deltaCursor: "previous" } : {}),
+    },
+  );
+}
+function expectReceiptQuery(host: ReturnType<typeof makeChatHost>, inputRunIds: string[]) {
+  expect(host.request.mock.calls.findLast(([method]) => method === "chat.history")).toEqual([
+    "chat.history",
+    expect.objectContaining({ inputRunIds }),
+    requestOptions(),
+  ]);
+}
 
 async function retainDeliveredUserTurn(
   host: Parameters<typeof retireDeliveredQueuedUserTurn>[0],
@@ -156,13 +180,11 @@ describe("server-owned pending input display", () => {
 
     const items = buildPendingInputItems([queued], ["run-queued"]);
 
-    expect(items).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          kind: "notice",
-          text: "Received · waiting for workspace sync",
-        }),
-      ]),
+    expect(items).toContainEqual(
+      expect.objectContaining({
+        kind: "notice",
+        text: "Received · waiting for workspace sync",
+      }),
     );
   });
 
@@ -321,23 +343,13 @@ describe("server-owned pending input display", () => {
     }
     await loadChatHistory(host);
     expect(host.chatMessages).toHaveLength(1);
-    expect(host.request.mock.calls.findLast(([method]) => method === "chat.history")).toEqual([
-      "chat.history",
-      expect.objectContaining({
-        inputRunIds: Array.from(
-          { length: 50 },
-          (_, index) => `source-${String(index).padStart(2, "0")}`,
-        ),
-      }),
-      requestOptions(),
-    ]);
+    expectReceiptQuery(
+      host,
+      Array.from({ length: 50 }, (_, index) => `source-${String(index).padStart(2, "0")}`),
+    );
     await loadChatHistory(host);
     expect(host.chatMessages).toEqual([]);
-    expect(host.request.mock.calls.findLast(([method]) => method === "chat.history")).toEqual([
-      "chat.history",
-      expect.objectContaining({ inputRunIds: ["source-50"] }),
-      requestOptions(),
-    ]);
+    expectReceiptQuery(host, ["source-50"]);
   });
 
   it("keeps an off-page live queue in a full receipt request", async () => {
@@ -365,15 +377,9 @@ describe("server-owned pending input display", () => {
       total: 1,
     });
     await loadChatHistory(host);
-    expect(host.request.mock.calls.findLast(([method]) => method === "chat.history")).toEqual([
-      "chat.history",
-      expect.objectContaining({
-        inputRunIds: [
-          ...Array.from({ length: 49 }, (_, index) => `a-${String(index).padStart(2, "0")}`),
-          "z-live-queue",
-        ],
-      }),
-      requestOptions(),
+    expectReceiptQuery(host, [
+      ...Array.from({ length: 49 }, (_, index) => `a-${String(index).padStart(2, "0")}`),
+      "z-live-queue",
     ]);
     expect(getChatPendingInputs(host)?.queuedInputs).toEqual([]);
   });
@@ -406,17 +412,7 @@ describe("server-owned pending input display", () => {
           },
         },
       });
-      cacheChatSessionSnapshot(
-        cache,
-        host,
-        { sessionKey },
-        {
-          messages: [aggregate],
-          sessionId,
-          pagination: host.chatHistoryPagination,
-          ...(delivery === "delta" ? { deltaCursor: "previous" } : {}),
-        },
-      );
+      cacheHistory(cache, host, delivery);
       for (const sendRunId of ["consumed-source", "unrelated-source"]) {
         await retainDeliveredUserTurn(
           host,
@@ -521,17 +517,7 @@ describe("server-owned pending input display", () => {
           },
         },
       });
-      cacheChatSessionSnapshot(
-        cache,
-        host,
-        { sessionKey },
-        {
-          messages: history,
-          sessionId,
-          pagination: { hasMore: false, completeSnapshot: true },
-          ...(delivery === "delta" ? { deltaCursor: "previous" } : {}),
-        },
-      );
+      cacheHistory(cache, host, delivery);
       for (const sendRunId of [input.runId, "other-source"]) {
         const item = {
           id: `local-${sendRunId}`,
@@ -932,9 +918,9 @@ describe("server-owned pending input display", () => {
     ]);
   });
 
-  it.each(["assistant"])("preserves a canonical %s sharing the pending run correlation", (role) => {
+  it("preserves a canonical assistant sharing the pending run correlation", () => {
     const canonical = {
-      role,
+      role: "assistant",
       content: "Earlier result",
       __openclaw: { id: "another-entry", runId: input.runId },
     };
