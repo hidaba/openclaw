@@ -420,7 +420,7 @@ it("keeps skill navigation live through failure, retry and a retired connection 
   row.dispatchEvent(
     new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
   );
-  expect(catalog.rows("main", overrides)?.[0]?.enabled).toBe(true);
+  await waitForSolid(() => expect(catalog.rows("main", overrides)?.[0]?.enabled).toBe(true));
   await waitForSolid(() => expect(row.getAttribute("aria-checked")).toBe("true"));
   expect(panel.matches(":popover-open")).toBe(true);
 });
