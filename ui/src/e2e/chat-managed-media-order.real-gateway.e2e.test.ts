@@ -375,7 +375,7 @@ async function runManagedMediaScenario() {
           'openclaw-chat-pane[aria-hidden="false"]',
         );
         const state = pane?.state;
-        if (state?.sessionKey !== expectedSessionKey || !state.chatRunId) {
+        if (!pane || state?.sessionKey !== expectedSessionKey || !state.chatRunId) {
           return false;
         }
         // An existing indicator can precede projection of the acknowledged run.
