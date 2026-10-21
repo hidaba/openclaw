@@ -73,44 +73,28 @@ function makePluginDir(id: string, metadata: Record<string, unknown> = {}) {
   return dir;
 }
 
-function createMsteamsClawHubInstallRecord(
-  installPath: string,
-  overrides: Partial<PluginInstallRecord> = {},
-): PluginInstallRecord {
-  return {
-    source: "clawhub",
-    spec: "clawhub:@openclaw/msteams",
-    installPath,
-    clawhubUrl: "https://clawhub.ai",
-    clawhubPackage: "@openclaw/msteams",
-    clawhubChannel: "official",
-    ...overrides,
-  };
-}
-
-function officialCandidate(id: string, dir: string, origin: PluginCandidate["origin"] = "global") {
-  return createPluginCandidate(id, dir, origin, {
-    packageName: `@openclaw/${id}`,
-    installOwner: id,
-  });
-}
-
-function loadOfficialRegistry(
-  id: string,
-  dir: string,
-  record: PluginInstallRecord,
-  origins: PluginCandidate["origin"][] = ["global"],
-) {
-  return loadPluginManifestRegistryCore({
-    installRecords: { [id]: record },
-    candidates: origins.map((origin) => officialCandidate(id, dir, origin)),
-  });
-}
-
-function resolveOfficialTrust(overrides: Partial<PluginInstallRecord>) {
+function officialPlugin(overrides: Partial<PluginInstallRecord> = {}, staleSource = false) {
   const dir = makePluginDir("msteams");
-  return loadOfficialRegistry("msteams", dir, createMsteamsClawHubInstallRecord(dir, overrides))
-    .plugins[0]?.trustedOfficialInstall;
+  return loadPluginManifestRegistryCore({
+    installRecords: {
+      msteams: {
+        source: "clawhub",
+        spec: "clawhub:@openclaw/msteams",
+        installPath: staleSource ? makeTempDir() : dir,
+        ...(staleSource ? { sourcePath: dir } : {}),
+        clawhubUrl: "https://clawhub.ai",
+        clawhubPackage: "@openclaw/msteams",
+        clawhubChannel: "official",
+        ...overrides,
+      },
+    },
+    candidates: [
+      createPluginCandidate("msteams", dir, staleSource ? "config" : "global", {
+        packageName: "@openclaw/msteams",
+        installOwner: "msteams",
+      }),
+    ],
+  }).plugins[0];
 }
 
 function loadRegistry(candidates: PluginCandidate[]) {
@@ -537,20 +521,16 @@ describe("loadPluginManifestRegistry", () => {
   ] satisfies [string, Partial<PluginInstallRecord>, boolean?][])(
     "checks ClawHub install trust for %s",
     (_name, overrides, expected) => {
-      expect(resolveOfficialTrust(overrides)).toBe(expected);
+      expect(officialPlugin(overrides)?.trustedOfficialInstall).toBe(expected);
     },
   );
 
   it("binds official trust to installPath even when a stale sourcePath still matches", () => {
-    const dir = makePluginDir("msteams");
-    const registry = loadOfficialRegistry(
-      "msteams",
-      dir,
-      createMsteamsClawHubInstallRecord(makeTempDir(), { sourcePath: dir }),
-      ["config"],
-    );
-    expect(registry.plugins[0]?.trustedOfficialInstall).toBeUndefined();
-    expect(registry.plugins[0]?.trust?.reason).toBe("install-path-mismatch");
+    const plugin = officialPlugin({}, true);
+    expect([plugin?.trustedOfficialInstall, plugin?.trust?.reason]).toEqual([
+      undefined,
+      "install-path-mismatch",
+    ]);
   });
 
   it("hydrates bundled channel config metadata from plugin-local config surfaces", () => {

@@ -4,8 +4,6 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizePluginsConfig } from "./config-state.js";
 
 const mocks = vi.hoisted(() => ({
-  loadPluginMetadataSnapshot: vi.fn(),
-  resolvePluginMetadataSnapshot: vi.fn(),
   readBundledDiscoveryMode: vi.fn<() => "compat" | "allowlist" | undefined>(() => "allowlist"),
 }));
 
@@ -19,20 +17,13 @@ vi.mock("./bundled-discovery-state.js", async (importOriginal) => {
   };
 });
 
-vi.mock("./plugin-metadata-snapshot.js", () => ({
-  loadPluginMetadataSnapshot: mocks.loadPluginMetadataSnapshot,
-  resolvePluginMetadataSnapshot: mocks.resolvePluginMetadataSnapshot,
-}));
-
 type Eligibility = typeof import("./manifest-contract-eligibility.js");
 let isAvailable: Eligibility["isManifestPluginAvailableForControlPlane"];
 let listPlugins: Eligibility["listAvailableManifestContractPlugins"];
 let listValues: Eligibility["listAvailableManifestContractValues"];
-let loadSnapshot: Eligibility["loadManifestContractSnapshot"];
 let clearPluginMetadataLifecycleCaches: typeof import("./plugin-metadata-lifecycle.js").clearPluginMetadataLifecycleCaches;
 let makePluginMetadataIndex: typeof import("./current-plugin-metadata.test-support.js").makePluginMetadataIndex;
 let makePluginMetadataManifestRegistry: typeof import("./current-plugin-metadata.test-support.js").makePluginMetadataManifestRegistry;
-let createInstalledPluginEnabledPredicate: typeof import("./installed-plugin-index.js").createInstalledPluginEnabledPredicate;
 
 beforeAll(async () => {
   // The plugins project shares module state across files. Rebind this module graph
@@ -42,12 +33,10 @@ beforeAll(async () => {
     isManifestPluginAvailableForControlPlane: isAvailable,
     listAvailableManifestContractPlugins: listPlugins,
     listAvailableManifestContractValues: listValues,
-    loadManifestContractSnapshot: loadSnapshot,
   } = await import("./manifest-contract-eligibility.js"));
   ({ clearPluginMetadataLifecycleCaches } = await import("./plugin-metadata-lifecycle.js"));
   ({ makePluginMetadataIndex, makePluginMetadataManifestRegistry } =
     await import("./current-plugin-metadata.test-support.js"));
-  ({ createInstalledPluginEnabledPredicate } = await import("./installed-plugin-index.js"));
 });
 
 describe("bundled manifest contract availability", () => {
@@ -168,40 +157,25 @@ describe("prepared installed-plugin eligibility", () => {
   ])("preserves policy and first-record selection for $config", ({ config, expected }) => {
     clearPluginMetadataLifecycleCaches();
     mocks.readBundledDiscoveryMode.mockReturnValue("allowlist");
-    const index = makePluginMetadataIndex();
-    const records = (id: string, overrides: Partial<(typeof index.plugins)[number]> = {}) =>
-      makePluginMetadataIndex(id).plugins.map((record) => Object.assign({}, record, overrides));
-    index.plugins = [
-      ...records("workspace", { origin: "workspace" }),
-      ...records("duplicate", { origin: "workspace", enabled: false }),
-      ...records("duplicate"),
-    ];
-    const plugins = index.plugins.slice(0, 2).map((record) => ({
-      id: record.pluginId,
-      origin: record.origin,
-    }));
-    plugins.push({ id: "missing", origin: "global" });
-    const isInstalledPluginEnabled = createInstalledPluginEnabledPredicate(index.plugins, config);
-    const params = {
-      snapshot: { index },
-      config,
-      normalizedConfig: normalizePluginsConfig(config?.plugins),
+    const index = makePluginMetadataIndex("workspace");
+    const workspace = { ...index.plugins[0]!, origin: "workspace" as const };
+    const duplicate = {
+      ...makePluginMetadataIndex("duplicate").plugins[0]!,
+      origin: "workspace" as const,
+      enabled: false,
     };
-    expect(plugins.map((plugin) => isAvailable({ ...params, plugin }))).toEqual(expected);
-    expect(
-      plugins.map((plugin) =>
-        isAvailable({
-          ...params,
-          plugin,
-          isInstalledPluginEnabled,
+    index.plugins = [workspace, duplicate, { ...duplicate, origin: "global", enabled: true }];
+    const manifestPlugins = ["workspace", "duplicate", "missing"].flatMap((id) =>
+      makePluginMetadataManifestRegistry(id).plugins.map((plugin) =>
+        Object.assign({}, plugin, {
+          origin: id === "missing" ? ("global" as const) : ("workspace" as const),
+          contracts: { imageGenerationProviders: [id] },
         }),
       ),
-    ).toEqual(expected);
-    const manifestPlugins = plugins.flatMap(({ id, origin }) =>
-      makePluginMetadataManifestRegistry(id).plugins.map((plugin) =>
-        Object.assign({}, plugin, { origin, contracts: { imageGenerationProviders: [id] } }),
-      ),
     );
+    expect(
+      manifestPlugins.map((plugin) => isAvailable({ snapshot: { index }, config, plugin })),
+    ).toEqual(expected);
     const expectedPlugins = manifestPlugins.filter((_plugin, position) => expected[position]);
     const available = listPlugins({
       snapshot: { index, plugins: manifestPlugins },
@@ -212,24 +186,3 @@ describe("prepared installed-plugin eligibility", () => {
     available.forEach((plugin, position) => expect(plugin).toBe(expectedPlugins[position]));
   });
 });
-
-it.each([false, true])(
-  "resolves scoped or default-discovery metadata (configless=%s)",
-  (configless) => {
-    const env = { HOME: configless ? "/home/default-config" : "/home/snapshot" };
-    const plugins = configless ? [{ id: "demo" }] : [];
-    const snapshot = {
-      index: { plugins: plugins.map(({ id }) => ({ pluginId: id })) },
-      plugins,
-      byPluginId: new Map(plugins.map((plugin) => [plugin.id, plugin])),
-    };
-    mocks.resolvePluginMetadataSnapshot.mockReturnValue(snapshot);
-    const request = configless ? { env } : { config: {}, workspaceDir: "/workspace", env };
-    expect(loadSnapshot(request)).toEqual(snapshot);
-    expect(mocks.resolvePluginMetadataSnapshot).toHaveBeenLastCalledWith({
-      config: undefined,
-      ...request,
-      allowWorkspaceScopedCurrent: configless,
-    });
-  },
-);

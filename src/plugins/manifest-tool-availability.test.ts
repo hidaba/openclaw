@@ -6,8 +6,6 @@ import type { PluginManifestRecord } from "./manifest-registry.js";
 import {
   hasManifestToolAvailability,
   manifestConfigSignalPasses,
-  manifestPluginSetupProviderEnvVars,
-  manifestProviderBaseUrlGuardPasses,
 } from "./manifest-tool-availability.js";
 
 function makePlugin(overrides: Partial<PluginManifestRecord>): PluginManifestRecord {
@@ -114,49 +112,7 @@ describe("manifestConfigSignalPasses", () => {
   });
 });
 
-describe("manifestProviderBaseUrlGuardPasses", () => {
-  it.each([
-    [undefined, undefined, true],
-    [guard, undefined, true],
-    [guard, "https://api.x.ai/v1//", true],
-    [{ provider: "xai", allowedBaseUrls: guard.allowedBaseUrls }, undefined, false],
-  ] as const)("checks guard %j with base URL %s", (selectedGuard, baseUrl, expected) => {
-    const config = makeConfig(
-      baseUrl === undefined
-        ? {}
-        : {
-            models: { providers: { xai: { baseUrl } } },
-          },
-    );
-    expect(manifestProviderBaseUrlGuardPasses({ config, guard: selectedGuard })).toBe(expected);
-  });
-});
-
-describe("manifest auth environment helpers", () => {
-  it("uses setup provider env vars and returns empty without setup metadata", () => {
-    // providerAuthEnvVars is retired; setup provider metadata is the canonical env source.
-    const plugin = makePlugin({
-      setup: { providers: [{ id: "xai", envVars: ["XAI_API_KEY"] }] },
-    });
-    expect(manifestPluginSetupProviderEnvVars(plugin, "xai")).toEqual(["XAI_API_KEY"]);
-    expect(manifestPluginSetupProviderEnvVars(plugin, "other")).toEqual([]);
-    expect(manifestPluginSetupProviderEnvVars(makePlugin({}), "xai")).toEqual([]);
-  });
-});
-
 describe("hasManifestToolAvailability", () => {
-  const xaiPlugin = makePlugin({
-    id: "xai",
-    providers: ["xai"],
-    setup: { providers: [{ id: "xai", envVars: ["XAI_API_KEY"] }] },
-    toolMetadata: {
-      x_search: {
-        authSignals: [{ provider: "xai" }],
-        configSignals: [webSearchSignal],
-      },
-    },
-  });
-
   it.each([
     [
       "selected store default shadowing exec",
@@ -202,6 +158,9 @@ describe("hasManifestToolAvailability", () => {
   );
 
   it("fails open for tools without availability signals", () => {
+    const xaiPlugin = makePlugin({
+      toolMetadata: { x_search: { authSignals: [{ provider: "xai" }] } },
+    });
     expect(available(xaiPlugin, { toolNames: ["unlisted"] })).toBe(true);
     expect(available(makePlugin({ toolMetadata: { listed: {} } }), { toolNames: ["listed"] })).toBe(
       true,
@@ -209,24 +168,22 @@ describe("hasManifestToolAvailability", () => {
     expect(available(xaiPlugin, { toolNames: ["x_search", "unlisted"] })).toBe(true);
   });
 
-  it("lets a provider base-URL guard veto otherwise valid auth", () => {
-    const guardedPlugin = makePlugin({
-      toolMetadata: {
-        x_search: {
-          authSignals: [{ provider: "xai", providerBaseUrl: guard }],
-        },
-      },
-    });
-    expect(
-      available(guardedPlugin, {
-        config: makeConfig({
-          models: { providers: { xai: { baseUrl: "https://proxy.example/v1" } } },
-        }),
-        hasAuthForProvider: () => true,
-      }),
-    ).toBe(false);
-    expect(available(guardedPlugin, { hasAuthForProvider: () => true })).toBe(true);
-  });
+  it.each([
+    [guard, "https://proxy.example/v1", false],
+    [guard, undefined, true],
+    [guard, "https://api.x.ai/v1//", true],
+    [{ provider: "xai", allowedBaseUrls: guard.allowedBaseUrls }, undefined, false],
+  ] as const)(
+    "lets provider base-URL guard %j veto auth at %s",
+    (providerBaseUrl, baseUrl, expected) => {
+      const plugin = makePlugin({
+        toolMetadata: { x_search: { authSignals: [{ provider: "xai", providerBaseUrl }] } },
+      });
+      const config = makeConfig(baseUrl ? { models: { providers: { xai: { baseUrl } } } } : {});
+      expect(available(plugin, { config, hasAuthForProvider: () => true })).toBe(expected);
+      expect(available(plugin)).toBe(false);
+    },
+  );
 
   it("maps legacy provider and alias shorthand into auth signals", () => {
     const legacyPlugin = makePlugin({

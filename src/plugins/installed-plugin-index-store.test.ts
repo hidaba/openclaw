@@ -20,6 +20,7 @@ import {
   getCurrentPluginMetadataSnapshot,
   setGatewayPluginMetadataSnapshot,
 } from "./current-plugin-metadata-snapshot.js";
+import { indexStoreFixture, readIndexRow } from "./installed-plugin-index-family.test-support.js";
 import { inspectPersistedInstalledPluginIndexInstallRecordsSync as inspectRecords } from "./installed-plugin-index-record-state.js";
 import {
   loadInstalledPluginIndexInstallRecordsSync as loadRecordsSync,
@@ -61,15 +62,11 @@ afterEach(async () => {
   cleanupTrackedTempDirs(tempDirs);
 });
 const makeTempDir = () => makeTrackedTempDir("openclaw-installed-plugin-index-store", tempDirs);
+const makeStore = () => indexStoreFixture(makeTempDir());
 
 function requirePersisted(index: InstalledPluginIndex | null): InstalledPluginIndex {
   assert(index, "Expected persisted installed plugin index");
   return index;
-}
-
-function requirePersistedRevision(revision: number | null): number {
-  assert(revision !== null, "Expected persisted installed plugin index revision");
-  return revision;
 }
 
 function expectPluginIds(index: InstalledPluginIndex, expected: string[]) {
@@ -89,15 +86,6 @@ function dropStartupConfigPaths(
   };
 }
 
-function readPersistedIndexRevision(stateDir: string): number | null {
-  const row = readInstallRecordRow(stateDir);
-  if (!row) {
-    return null;
-  }
-  const revision = (JSON.parse(row.value_json) as { revision?: unknown }).revision;
-  return typeof revision === "number" ? revision : null;
-}
-
 function makePluginFixture(configPaths?: readonly string[]) {
   const stateDir = makeTempDir();
   const pluginDir = path.join(stateDir, "plugins", "demo");
@@ -108,7 +96,11 @@ function makePluginFixture(configPaths?: readonly string[]) {
     OPENCLAW_VERSION: "2026.4.25",
     VITEST: "true",
   };
-  return { stateDir, pluginDir, params: { stateDir, candidates: [candidate], env } };
+  return {
+    ...indexStoreFixture(stateDir, env),
+    pluginDir,
+    params: { stateDir, candidates: [candidate], env },
+  };
 }
 
 describe("installed plugin index persistence", () => {
@@ -133,7 +125,7 @@ describe("installed plugin index persistence", () => {
       const next = { ...index, plugins: [] };
 
       if (operation === "rollback") {
-        const revision = requirePersistedRevision(readPersistedIndexRevision(stateDir));
+        const revision = indexStoreFixture(stateDir).revision();
         await expect(
           withLease({ env }, (lease) => restoreIndex(next, revision, { stateDir, lease })),
         ).resolves.toBe(true);
@@ -148,43 +140,31 @@ describe("installed plugin index persistence", () => {
   );
 
   it("keeps a successor index when conditional rollback sees a newer revision", async () => {
-    const stateDir = makeTempDir();
-    const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
-    await withLease({ env }, async (lease) => {
-      await writeIndex(createIndex({ policyHash: "previous" }), {
-        stateDir,
-      });
-      const previous = requirePersisted(await readIndex({ stateDir }));
+    const f = makeStore();
+    await withLease({ env: f.env }, async (lease) => {
+      await f.write(createIndex({ policyHash: "previous" }));
+      const previous = requirePersisted(await f.read());
       // A future persisted revision exercises collision fencing across worker clocks.
       const futureRevision = Date.now() + 60_000;
-      runOpenClawStateWriteTransaction(
-        ({ db }) => {
-          db.prepare(
-            `UPDATE config_machine_state
+      f.sql(
+        `UPDATE config_machine_state
                 SET value_json = json_set(value_json, '$.revision', ?), updated_at_ms = ?
               WHERE state_key = 'plugins.installedIndex'`,
-          ).run(futureRevision, futureRevision);
-        },
-        { env },
+        futureRevision,
+        futureRevision,
       );
-      await writeIndex(createIndex({ policyHash: "tentative" }), {
-        stateDir,
-      });
-      const tentativeRevision = requirePersistedRevision(readPersistedIndexRevision(stateDir));
-      await writeIndex(createIndex({ policyHash: "successor" }), {
-        stateDir,
-      });
-      const successorRevision = requirePersistedRevision(readPersistedIndexRevision(stateDir));
-
-      expect(tentativeRevision).toBe(futureRevision + 1);
-      expect(successorRevision).toBe(tentativeRevision + 1);
+      await f.write(createIndex({ policyHash: "tentative" }));
+      const tentativeRevision = f.revision();
+      await f.write(createIndex({ policyHash: "successor" }));
+      const successorRevision = f.revision();
+      expect([tentativeRevision, successorRevision]).toEqual([
+        futureRevision + 1,
+        futureRevision + 2,
+      ]);
       await expect(
-        restoreIndex(previous, tentativeRevision, {
-          stateDir,
-          lease,
-        }),
+        restoreIndex(previous, tentativeRevision, { stateDir: f.stateDir, lease }),
       ).resolves.toBe(false);
-      expect(requirePersisted(await readIndex({ stateDir })).policyHash).toBe("successor");
+      expect((await f.read())?.policyHash).toBe("successor");
     });
   });
 
@@ -532,28 +512,17 @@ async function expectRecordState(stateDir: string, status: string, records: obje
 }
 
 function insertPersistedIndexRow(stateDir: string, valueJson: string): void {
-  runOpenClawStateWriteTransaction(
-    ({ db }) => {
-      db.prepare(
-        "INSERT INTO config_machine_state (state_key, value_json, updated_at_ms) VALUES ('plugins.installedIndex', ?, 123)",
-      ).run(valueJson);
-    },
-    { env: { OPENCLAW_STATE_DIR: stateDir } },
+  indexStoreFixture(stateDir, {}).sql(
+    "INSERT INTO config_machine_state (state_key, value_json, updated_at_ms) VALUES ('plugins.installedIndex', ?, 123)",
+    valueJson,
   );
 }
 
 function readStateRow(filePath: string) {
-  const { DatabaseSync } = requireNodeSqlite();
-  const db = new DatabaseSync(filePath, { readOnly: true });
-  try {
-    return db
-      .prepare(
-        "SELECT value_json, updated_at_ms FROM config_machine_state WHERE state_key = 'plugins.installedIndex'",
-      )
-      .get() as { value_json: string; updated_at_ms: number };
-  } finally {
-    db.close();
-  }
+  const row = readIndexRow(filePath);
+  assert(row);
+  const { value_json, updated_at_ms } = row;
+  return { value_json, updated_at_ms };
 }
 
 describe("installed plugin index read state", () => {

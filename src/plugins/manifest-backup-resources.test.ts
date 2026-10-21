@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { writeDoctorFiles as writeFiles } from "./doctor-contract.test-support.js";
 import { resolveActivatedPluginBackupInventory } from "./manifest-backup-resources.js";
 import { loadPluginManifest } from "./manifest.js";
 import { clearPluginMetadataLifecycleCaches } from "./plugin-metadata-lifecycle.js";
@@ -35,20 +36,15 @@ function createPluginFixture(
     ? path.join(workspaceDir, ".openclaw", "extensions", id)
     : path.join(root, id);
   const stateDir = path.join(root, "state");
-  fs.mkdirSync(pluginRoot, { recursive: true });
   fs.mkdirSync(stateDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(pluginRoot, "openclaw.plugin.json"),
-    JSON.stringify({
+  writeFiles(pluginRoot, {
+    "openclaw.plugin.json": {
       id,
       configSchema: { type: "object", additionalProperties: false },
       backupResources,
-    }),
-  );
-  fs.writeFileSync(
-    path.join(pluginRoot, "index.ts"),
-    'throw new Error("plugin runtime activated")',
-  );
+    },
+    "index.ts": 'throw new Error("plugin runtime activated")',
+  });
   const env = {
     HOME: root,
     OPENCLAW_HOME: root,
