@@ -155,16 +155,25 @@ it("retires durable delivery receipts from the run owner without bridge prop ref
   expect(readChatOutboxRecovery(host).entries).toEqual([]);
 });
 
-it("admits one review before Solid flushes and restores through the storage owner", async () => {
+it("clears a failed restore on retry and admits one review before Solid flushes", async () => {
   const confirmation = createDeferred<boolean>();
   recoveryIo.confirm.mockReturnValue(confirmation.promise);
   const fixture = await mountRecovery();
+  recoveryIo.readDraft.mockResolvedValueOnce({ status: "storage-failed" });
+  fixture.button("restore").click();
+  await waitForSolid(() => {
+    expect(fixture.element.querySelector(".chat-outbox-recovery__error")?.textContent).toBe(
+      t("chat.outboxRecoveryStorageFailed"),
+    );
+    expect(fixture.button("restore").disabled).toBe(false);
+  });
   fixture.button("restore").click();
   fixture.button("restore").click();
   await waitForSolid(() => {
     expect(recoveryIo.confirm).toHaveBeenCalledOnce();
     expect(fixture.button("restore").disabled).toBe(true);
     expect(fixture.button("discard").disabled).toBe(true);
+    expect(fixture.element.querySelector(".chat-outbox-recovery__error")).toBeNull();
   });
   expect(readChatOutboxRecovery(fixture.host).entries).toHaveLength(1);
 
