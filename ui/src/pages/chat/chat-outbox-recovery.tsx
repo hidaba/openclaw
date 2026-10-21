@@ -176,13 +176,18 @@ function createChatOutboxRecovery(props: RecoveryProps, element: () => HTMLEleme
     setError("");
     try {
       if (!restoring) {
-        const confirmed: boolean = yield showConfirmDialog({
-          title: t("chat.outboxRecoveryDeleteTitle"),
-          message: t("chat.outboxRecoveryDeleteConfirm"),
-          details: details(entry),
-          confirmLabel: t("chat.outboxRecoveryDelete"),
-          danger: true,
-        });
+        // A dialog must render outside the transaction waiting for its answer.
+        const confirmed: boolean = yield Promise.resolve().then(() =>
+          isCurrent()
+            ? showConfirmDialog({
+                title: t("chat.outboxRecoveryDeleteTitle"),
+                message: t("chat.outboxRecoveryDeleteConfirm"),
+                details: details(entry),
+                confirmLabel: t("chat.outboxRecoveryDelete"),
+                danger: true,
+              })
+            : false,
+        );
         if (!confirmed || !isCurrent()) {
           return;
         }
@@ -229,12 +234,16 @@ function createChatOutboxRecovery(props: RecoveryProps, element: () => HTMLEleme
         setError(t("chat.outboxRecoveryConflict"));
         return;
       }
-      const confirmed: boolean = yield showConfirmDialog({
-        title: t("chat.outboxRecoveryReviewTitle"),
-        message: t("chat.outboxRecoveryConfirm", { chat: chatName(scope.sessionKey) }),
-        details: details(entry),
-        confirmLabel: t("chat.outboxRecoveryRestore"),
-      });
+      const confirmed: boolean = yield Promise.resolve().then(() =>
+        isCurrent()
+          ? showConfirmDialog({
+              title: t("chat.outboxRecoveryReviewTitle"),
+              message: t("chat.outboxRecoveryConfirm", { chat: chatName(scope.sessionKey) }),
+              details: details(entry),
+              confirmLabel: t("chat.outboxRecoveryRestore"),
+            })
+          : false,
+      );
       if (!confirmed || !isCurrent()) {
         return;
       }
@@ -265,10 +274,13 @@ function createChatOutboxRecovery(props: RecoveryProps, element: () => HTMLEleme
         result = restored.status;
       }
       if (result === "restored" || result === "persisted") {
-        if (active && props.host === host && props.identity === identity) {
-          props.onRestored?.();
-        }
-        yield refresh();
+        // Publish the restored composer before waiting for recovery preparation.
+        yield Promise.resolve().then(() => {
+          if (active && props.host === host && props.identity === identity) {
+            props.onRestored?.();
+          }
+          return refresh();
+        });
       } else {
         setError(
           t(
