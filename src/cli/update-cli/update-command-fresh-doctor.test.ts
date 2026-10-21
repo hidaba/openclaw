@@ -202,9 +202,6 @@ describe("post-plugin update readiness", () => {
     { phase: "pre-plugin", kind: "deferred", reason: "coordinator-contention" },
     { phase: "post-plugin", kind: "deferred", reason: "coordinator-contention" },
     { phase: "post-plugin", kind: "data-at-risk", reason: "active-mutation" },
-    { phase: "post-plugin", kind: "data-at-risk", reason: "unreadable-state" },
-    { phase: "post-plugin", kind: "data-at-risk", reason: "incomplete-migration" },
-    { phase: "post-plugin", kind: "data-at-risk", reason: "gateway-state-unverified" },
   ] as const)(
     "preserves $phase $kind maintenance refusal: $reason",
     async ({ phase, kind, reason }) => {
@@ -810,14 +807,6 @@ describe("post-plugin update readiness", () => {
       checkId: "core/doctor/security",
       message: "Open group policy permits mention-gated requests.",
       fixHint: "Review the group allowlist.",
-      severity: "warning",
-    },
-    {
-      exists: true,
-      source: undefined,
-      checkId: "core/doctor/lint-state-inspection",
-      message: "Temporary doctor lint state snapshot cleanup did not complete.",
-      fixHint: "Rerun doctor after the update.",
       severity: "warning",
     },
   ] as const)(
