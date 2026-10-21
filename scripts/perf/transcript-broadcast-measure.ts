@@ -2348,7 +2348,9 @@ async function runRound(
 ) {
   if (
     retentionScenario ||
-    (soakScenario && resetEveryRounds > 0 && completedSoakRounds % resetEveryRounds === 0)
+    (soakScenario &&
+      resetEveryRounds > 0 &&
+      (measuredRound ?? completedSoakRounds) % resetEveryRounds === 0)
   ) {
     // Retire each previous session generation so retained history is not the measurement.
     for (const key of keys) {
@@ -3327,7 +3329,9 @@ try {
     return undefined;
   };
   const warmupStartedAt = performance.now();
-  do {
+  // Equal warmup work keeps paired runs at the same retained-history boundary.
+  const warmupRoundCount = soakScenario ? Math.max(1, Math.ceil(warmupMs / roundIntervalMs)) : 1;
+  for (let round = 0; round < warmupRoundCount; round++) {
     // Warm runtime imports on the parent, leaving all measured sessions untouched.
     if (idleScenario) {
       await runRound(sender, undefined, [parentKey]);
@@ -3349,7 +3353,7 @@ try {
         ),
       ),
     );
-  } while (performance.now() - warmupStartedAt < warmupMs);
+  }
   console.log("PHASE warmed");
   if (startAt !== undefined) {
     if (Date.now() >= startAt) {
