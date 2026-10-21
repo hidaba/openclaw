@@ -184,25 +184,6 @@ it("clears a failed restore on retry and admits one review before Solid flushes"
     dialogs.track(showConfirmDialog({ ...options, signal: cancellation.signal })),
   );
   const fixture = await mountRecovery();
-  recoveryIo.readDraft.mockResolvedValueOnce({ status: "storage-failed" });
-  fixture.button("restore").click();
-  await waitForSolid(() => {
-    expect(fixture.element.querySelector(".chat-outbox-recovery__error")?.textContent).toBe(
-      t("chat.outboxRecoveryStorageFailed"),
-    );
-    expect(fixture.button("restore").disabled).toBe(false);
-  });
-  fixture.button("restore").click();
-  fixture.button("restore").click();
-  await waitForSolid(() => {
-    expect(recoveryIo.confirm).toHaveBeenCalledOnce();
-    expect(fixture.button("restore").disabled).toBe(true);
-    expect(fixture.button("discard").disabled).toBe(true);
-    expect(fixture.element.querySelector(".chat-outbox-recovery__error")).toBeNull();
-  });
-  expect(readChatOutboxRecovery(fixture.host).entries).toHaveLength(1);
-  const confirmation = await waitForConfirmDialogActions();
-
   const host = Object.assign(fixture.host, { selectedChatSessionIncognito: false });
   const draftSource = createComposerDraftSource(() => ({
     draft: host.chatMessage,
@@ -225,14 +206,36 @@ it("clears a failed restore on retry and admits one review before Solid flushes"
       draftSource,
     }),
   );
+  await waitForSolid(() => expect(composer.querySelector("textarea")?.value).toBe(""));
+  recoveryIo.readDraft.mockResolvedValueOnce({ status: "storage-failed" });
+  fixture.button("restore").click();
+  await waitForSolid(() => {
+    expect(fixture.element.querySelector(".chat-outbox-recovery__error")?.textContent).toBe(
+      t("chat.outboxRecoveryStorageFailed"),
+    );
+    expect(fixture.button("restore").disabled).toBe(false);
+  });
+  fixture.button("restore").click();
+  fixture.button("restore").click();
+  await waitForSolid(() => {
+    expect(recoveryIo.confirm).toHaveBeenCalledOnce();
+    expect(fixture.button("restore").disabled).toBe(true);
+    expect(fixture.button("discard").disabled).toBe(true);
+    expect(fixture.element.querySelector(".chat-outbox-recovery__error")).toBeNull();
+  });
+  expect(readChatOutboxRecovery(fixture.host).entries).toHaveLength(1);
+  const confirmation = await waitForConfirmDialogActions();
+
   const refresh = createDeferred<Awaited<ReturnType<typeof recoveryIo.prepare>>>();
   recoveryIo.prepare.mockReturnValue(refresh.promise);
   try {
     answerConfirmDialog(confirmation, "confirm");
     await waitForSolid(() => expect(fixture.restored).toHaveBeenCalledOnce());
-    expect(host.chatMessage).toBe("Saved input for explicit review");
+    expect(host.chatMessage, "restored owner draft").toBe("Saved input for explicit review");
     await waitForSolid(() =>
-      expect(composer.querySelector("textarea")?.value).toBe("Saved input for explicit review"),
+      expect(composer.querySelector("textarea")?.value, "visible restored draft").toBe(
+        "Saved input for explicit review",
+      ),
     );
   } finally {
     refresh.resolve({ status: "ready", entries: [] });

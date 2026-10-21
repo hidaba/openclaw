@@ -146,11 +146,11 @@ function createChatOutboxRecovery(props: RecoveryProps, element: () => HTMLEleme
       setError(t("chat.outboxRecoveryStorageFailed"));
     }
   }
-  const changeRecovery = action(function* (entry: RecoveryEntry, operation: "restore" | "discard") {
+  const commitRecovery = action(function* (entry: RecoveryEntry, operation: "restore" | "discard") {
     const host = props.host;
     const owner = readOwner();
     if (!host || !owner || changeInFlight || !isConnected()) {
-      return;
+      return undefined;
     }
     const identity = props.identity;
     const client = host.client;
@@ -189,7 +189,7 @@ function createChatOutboxRecovery(props: RecoveryProps, element: () => HTMLEleme
             : false,
         );
         if (!confirmed || !isCurrent()) {
-          return;
+          return undefined;
         }
         let result: ReturnType<typeof discardChatOutboxRecovery>;
         if ("id" in entry) {
@@ -201,24 +201,23 @@ function createChatOutboxRecovery(props: RecoveryProps, element: () => HTMLEleme
           result = discarded.status;
         }
         if (!isCurrent()) {
-          return;
+          return undefined;
         }
         if (result === "discarded") {
-          yield refresh();
-        } else {
-          setError(
-            t(
-              result === "conflict"
-                ? "chat.outboxRecoveryDeleteConflict"
-                : "chat.outboxRecoveryStorageFailed",
-            ),
-          );
+          return "discarded" as const;
         }
-        return;
+        setError(
+          t(
+            result === "conflict"
+              ? "chat.outboxRecoveryDeleteConflict"
+              : "chat.outboxRecoveryStorageFailed",
+          ),
+        );
+        return undefined;
       }
       if (!isCurrent()) {
         setError(t("chat.outboxRecoveryConflict"));
-        return;
+        return undefined;
       }
       const scope = resolveUiConversationIdentity(host, host.sessionKey);
       const destination = captureChatOutboxRecoveryDestination(host, scope);
@@ -228,11 +227,11 @@ function createChatOutboxRecovery(props: RecoveryProps, element: () => HTMLEleme
         yield store.readDurableComposerDraft(durableScope);
       if (before.status === "storage-failed") {
         setError(t("chat.outboxRecoveryStorageFailed"));
-        return;
+        return undefined;
       }
       if (!destination || before.status === "found" || !isCurrent()) {
         setError(t("chat.outboxRecoveryConflict"));
-        return;
+        return undefined;
       }
       const confirmed: boolean = yield Promise.resolve().then(() =>
         isCurrent()
@@ -245,13 +244,13 @@ function createChatOutboxRecovery(props: RecoveryProps, element: () => HTMLEleme
           : false,
       );
       if (!confirmed || !isCurrent()) {
-        return;
+        return undefined;
       }
       const currentDraft: Awaited<ReturnType<typeof store.readDurableComposerDraft>> =
         yield store.readDurableComposerDraft(durableScope);
       if (!isCurrent() || JSON.stringify(currentDraft) !== JSON.stringify(before)) {
         setError(t("chat.outboxRecoveryConflict"));
-        return;
+        return undefined;
       }
       let result:
         | ReturnType<typeof restoreChatOutboxRecovery>
@@ -274,22 +273,15 @@ function createChatOutboxRecovery(props: RecoveryProps, element: () => HTMLEleme
         result = restored.status;
       }
       if (result === "restored" || result === "persisted") {
-        // Publish the restored composer before waiting for recovery preparation.
-        yield Promise.resolve().then(() => {
-          if (active && props.host === host && props.identity === identity) {
-            props.onRestored?.();
-          }
-          return refresh();
-        });
-      } else {
-        setError(
-          t(
-            result === "conflict"
-              ? "chat.outboxRecoveryConflict"
-              : "chat.outboxRecoveryStorageFailed",
-          ),
-        );
+        return "restored" as const;
       }
+      setError(
+        t(
+          result === "conflict"
+            ? "chat.outboxRecoveryConflict"
+            : "chat.outboxRecoveryStorageFailed",
+        ),
+      );
     } catch {
       if (active && (restoring || isCurrent())) {
         setError(t("chat.outboxRecoveryStorageFailed"));
@@ -297,7 +289,28 @@ function createChatOutboxRecovery(props: RecoveryProps, element: () => HTMLEleme
     } finally {
       changeInFlight = false;
     }
+    return undefined;
   });
+  async function changeRecovery(entry: RecoveryEntry, operation: "restore" | "discard") {
+    const host = props.host;
+    const identity = props.identity;
+    try {
+      const result = await commitRecovery(entry, operation);
+      if (!result || !isConnected() || props.host !== host || props.identity !== identity) {
+        return;
+      }
+      // Finish the mutation before publishing another owner's state. A refresh
+      // inside the held action would also hold the restored composer's render.
+      if (result === "restored") {
+        props.onRestored?.();
+      }
+      await refresh();
+    } catch {
+      if (isConnected() && props.host === host && props.identity === identity) {
+        setError(t("chat.outboxRecoveryStorageFailed"));
+      }
+    }
+  }
   function chatName(sessionKey: string) {
     const row = props.host?.sessionsResult?.sessions.find((session) => session.key === sessionKey);
     return resolveSessionDisplayName(sessionKey, row);
