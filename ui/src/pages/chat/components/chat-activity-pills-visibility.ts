@@ -1,4 +1,4 @@
-import type { ChatActivityPillsProps } from "./chat-activity-pills.tsx";
+import type { ChatActivityPillsProps } from "./chat-activity-pills-types.ts";
 
 export function hasVisibleChatActivityPills(props: ChatActivityPillsProps): boolean {
   return (

@@ -8,7 +8,7 @@ import {
   renderComposerInto,
   resetComposerFixture,
 } from "./chat-composer.test-support.ts";
-import type { ChatActivityPillsProps } from "./components/chat-activity-pills.tsx";
+import type { ChatActivityPillsProps } from "./components/chat-activity-pills-types.ts";
 
 beforeEach(() => {
   const matchMedia = window.matchMedia.bind(window);

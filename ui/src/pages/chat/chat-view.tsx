@@ -26,7 +26,7 @@ import {
   renderChatComposerNotices as ChatComposerNoticesView,
   renderChatTopbarNotices as ChatTopbarNotices,
 } from "./chat-view-notices.tsx";
-import type { ChatActivityPillsProps } from "./components/chat-activity-pills.tsx";
+import type { ChatActivityPillsProps } from "./components/chat-activity-pills-types.ts";
 import { ChatCommentController } from "./components/chat-comment-controller.ts";
 import {
   ComposerQuestionDock,

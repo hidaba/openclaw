@@ -6,6 +6,7 @@ import { t } from "../../../lib/reactive/i18n.ts";
 import { resolveSessionDisplayName } from "../../../lib/session-display.ts";
 import { isSessionRunStateActive } from "../../../lib/session-run-state.ts";
 import { resolveChatSwarmParent } from "./chat-swarm-progress-parent.ts";
+import type { ChatSwarmProgressProps } from "./chat-swarm-progress-types.ts";
 
 type SwarmDotStatus = "queued" | "running" | "done" | "failed";
 
@@ -73,12 +74,6 @@ function collectSwarmTasks(
     ]),
   );
 }
-
-export type ChatSwarmProgressProps = {
-  sessions: readonly GatewaySessionRow[];
-  sessionKey: string;
-  agentId?: string;
-};
 
 export function ChatSwarmProgress(props: ChatSwarmProgressProps) {
   const parent = createMemo(() => resolveChatSwarmParent(props));

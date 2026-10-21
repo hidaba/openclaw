@@ -1,5 +1,5 @@
 import { areUiSessionKeysEquivalent } from "../../../lib/sessions/session-key.ts";
-import type { ChatSwarmProgressProps } from "./chat-swarm-progress.solid.tsx";
+import type { ChatSwarmProgressProps } from "./chat-swarm-progress-types.ts";
 
 export function resolveChatSwarmParent(props: ChatSwarmProgressProps) {
   return props.sessions.find(
