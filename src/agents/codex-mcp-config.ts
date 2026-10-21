@@ -89,7 +89,7 @@ export function applyCodexSessionMcpToolDenials(
 export function normalizeCodexMcpServerConfig(
   name: string,
   server: BundleMcpServerConfig,
-  grants: readonly McpToolGrant[] = [],
+  grants: readonly Readonly<McpToolGrant>[] = [],
 ): Record<string, unknown> {
   const next = normalizeBundleMcpServerConfig(server);
   const connectionTimeoutMs = clampPositiveTimerTimeoutMs(server.connectionTimeoutMs);
@@ -153,7 +153,7 @@ export function normalizeCodexMcpServerConfig(
  */
 export function buildCodexMcpServersConfig(
   config: BundleMcpConfig,
-  grants: readonly McpToolGrant[] = [],
+  grants: readonly Readonly<McpToolGrant>[] = [],
 ): CodexMcpServersConfig {
   const { staticServers } = partitionMcpServersByConnectionScope(config.mcpServers);
   return Object.fromEntries(

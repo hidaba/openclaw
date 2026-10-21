@@ -15,7 +15,7 @@ import {
   resolveExecModeFromPolicy,
   resolveExecModePolicy,
   type ExecApprovalsDefaults,
-  type ExecApprovalsFile,
+  type ReadonlyExecApprovalsFile,
   type ExecAsk,
   type ExecSecurity,
   type ExecTarget,
@@ -117,7 +117,7 @@ function resolveRequestedPolicy(params: {
 
 export function collectExecPolicyScopeSnapshots(params: {
   cfg: OpenClawConfig;
-  approvals: ExecApprovalsFile;
+  approvals: ReadonlyExecApprovalsFile;
   hostPath?: string;
   hostDefaults?: ExecPolicyHostDefaults;
   hostDefaultSource?: string;
@@ -166,7 +166,7 @@ export function collectExecPolicyScopeSnapshots(params: {
 }
 
 export function resolveExecPolicyScopeSnapshot(params: {
-  approvals: ExecApprovalsFile;
+  approvals: ReadonlyExecApprovalsFile;
   scopeExecConfig?: ExecPolicyConfig | undefined;
   globalExecConfig?: ExecPolicyConfig | undefined;
   configPath: string;

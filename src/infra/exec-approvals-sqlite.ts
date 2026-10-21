@@ -14,7 +14,10 @@ import {
   stripExecApprovalsSocketCredentials,
   stripExecApprovalsRawSocketCredentials,
 } from "./exec-approvals-config.js";
-import type { ExecApprovalsFile, ExecApprovalsSnapshot } from "./exec-approvals-core.js";
+import type {
+  ReadonlyExecApprovalsFile,
+  ReadonlyExecApprovalsSnapshot,
+} from "./exec-approvals-core.js";
 import {
   ExecApprovalsMigrationRequiredError,
   resetExecApprovalsMigrationGateForTest,
@@ -45,8 +48,8 @@ export class ExecApprovalsMutationFencedError extends Error {
 
 export function assertExecApprovalsMutationAllowed(params: {
   db: EngineConnection;
-  current: ExecApprovalsFile;
-  next: ExecApprovalsFile;
+  current: ReadonlyExecApprovalsFile;
+  next: ReadonlyExecApprovalsFile;
   agentId?: string;
 }): void {
   const current = normalizeExecApprovalsInternal(params.current);
@@ -82,7 +85,7 @@ function hashExecApprovalsRaw(raw: string | null): string {
   return raw === null ? `missing:${sha256Hex("")}` : sha256Hex(raw);
 }
 
-export function serializeExecApprovals(file: ExecApprovalsFile): string {
+export function serializeExecApprovals(file: ReadonlyExecApprovalsFile): string {
   return `${JSON.stringify(file, null, 2)}\n`;
 }
 
@@ -102,7 +105,7 @@ export function snapshotFromExecApprovalsRow(params: {
   path: string;
   row?: ExecApprovalsConfigRow;
   onMalformed?: () => void;
-}): ExecApprovalsSnapshot {
+}): ReadonlyExecApprovalsSnapshot {
   const raw = params.row?.raw_json ?? null;
   if (raw === null) {
     return {
@@ -133,7 +136,7 @@ export function snapshotFromExecApprovalsRow(params: {
 export function snapshotFromReadReply(
   reply: { row: ExecApprovalsConfigRow | undefined } | undefined,
   displayPath: () => string,
-): ExecApprovalsSnapshot {
+): ReadonlyExecApprovalsSnapshot {
   return snapshotFromExecApprovalsRow({
     path: displayPath(),
     row: reply?.row,
@@ -142,7 +145,7 @@ export function snapshotFromReadReply(
   });
 }
 
-export function projectionValues(file: ExecApprovalsFile) {
+export function projectionValues(file: ReadonlyExecApprovalsFile) {
   const normalized = normalizeExecApprovalsInternal(file);
   const agents = Object.values(normalized.agents ?? {});
   return {
@@ -164,7 +167,7 @@ export function projectionValues(file: ExecApprovalsFile) {
 
 export function writeExecApprovalsConfigRow(params: {
   db: EngineConnection;
-  file: ExecApprovalsFile;
+  file: ReadonlyExecApprovalsFile;
   raw?: string;
   now?: number;
   change?: "policy" | "usage";
@@ -219,7 +222,7 @@ export function mintMcpToolGrantLocked(
   nowMs: number,
 ): void {
   const row = readExecApprovalsConfigRow(db);
-  const current: ExecApprovalsFile | null = row
+  const current: ReadonlyExecApprovalsFile | null = row
     ? tryParsePersistedExecApprovals(row.raw_json)
     : { version: 1 };
   if (!current) {
@@ -270,7 +273,7 @@ export function warnFailClosed(message: string, error?: unknown): void {
 export function snapshotFromExecApprovalsDatabase(
   db: EngineConnection,
   displayPath = resolveExecApprovalsDisplayPath(),
-): ExecApprovalsSnapshot {
+): ReadonlyExecApprovalsSnapshot {
   return snapshotFromExecApprovalsRow({
     path: displayPath,
     row: readExecApprovalsConfigRow(db),

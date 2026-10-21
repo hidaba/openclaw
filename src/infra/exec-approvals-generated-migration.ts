@@ -1,5 +1,5 @@
-import type { ExecApprovalsFile } from "./exec-approvals-core.js";
-import { updateExecApprovalsForMaintenance } from "./exec-approvals-store.js";
+import type { ReadonlyExecApprovalsFile } from "./exec-approvals-core.js";
+import { updateExecApprovalsForMaintenance } from "./exec-approvals-maintenance.js";
 import type { ExecAllowlistEntry } from "./exec-approvals.types.js";
 // Detects and removes generated exec grants that predate cwd-bound authorization.
 import { classifyExecAllowlistScope } from "./exec-command-resolution.js";
@@ -16,15 +16,15 @@ export function countObsoleteGeneratedExecApprovalRules(
   return rules.filter(isObsoleteGeneratedEntry).length;
 }
 
-export function countObsoleteGeneratedExecApprovals(file: ExecApprovalsFile): number {
+export function countObsoleteGeneratedExecApprovals(file: ReadonlyExecApprovalsFile): number {
   return Object.values(file.agents ?? {}).reduce(
     (count, agent) => count + countObsoleteGeneratedExecApprovalRules(agent.allowlist ?? []),
     0,
   );
 }
 
-function removeObsoleteGeneratedExecApprovals(file: ExecApprovalsFile): {
-  file: ExecApprovalsFile;
+function removeObsoleteGeneratedExecApprovals(file: ReadonlyExecApprovalsFile): {
+  file: ReadonlyExecApprovalsFile;
   removed: number;
 } {
   let removed = 0;

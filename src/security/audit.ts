@@ -19,7 +19,7 @@ import {
 import { isInterpreterLikeAllowlistPattern } from "../infra/command-analysis/inline-eval.js";
 import { emitTrustedSecurityEvent } from "../infra/diagnostic-events.js";
 import {
-  type ExecApprovalsFile,
+  type ReadonlyExecApprovalsFile,
   loadExecApprovals,
   resolveExecModePolicy,
 } from "../infra/exec-approvals.js";
@@ -957,7 +957,7 @@ function collectOpenExecSurfacePaths(cfg: OpenClawConfig): string[] {
   return Array.from(hits).toSorted();
 }
 
-function collectAutoAllowSkillsHits(approvals: ExecApprovalsFile): string[] {
+function collectAutoAllowSkillsHits(approvals: ReadonlyExecApprovalsFile): string[] {
   const hits: string[] = [];
   if (approvals.defaults?.autoAllowSkills === true) {
     hits.push("defaults.autoAllowSkills");
@@ -971,7 +971,7 @@ function collectAutoAllowSkillsHits(approvals: ExecApprovalsFile): string[] {
 }
 
 function collectInterpreterAllowlistHits(params: {
-  approvals: ExecApprovalsFile;
+  approvals: ReadonlyExecApprovalsFile;
   strictInlineEvalForAgentId: (agentId: string | undefined) => boolean;
 }): string[] {
   const hits: string[] = [];

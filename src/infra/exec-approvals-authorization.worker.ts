@@ -8,18 +8,18 @@ import type {
   ExecAuthorizationCommitInput,
   ExecAuthorizationCommitOutcome,
 } from "./exec-approvals-contracts.js";
-import type { ExecApprovalsSnapshot } from "./exec-approvals-core.js";
+import type { ReadonlyExecApprovalsFile } from "./exec-approvals-core.js";
 import { assertNoPendingLegacyExecApprovals } from "./exec-approvals-migration-gate.js";
 import { execPolicyMutationOperations } from "./exec-approvals-mutation.worker.js";
 import { assertExecApprovalsHostPolicyUnchanged } from "./exec-approvals-policy.js";
 import { execApprovalsPublication } from "./exec-approvals-publication.js";
+import { retainExecApprovalsPolicy } from "./exec-approvals-resolver.js";
 import { execApprovalRetirementOperations } from "./exec-approvals-retirement.worker.js";
 import {
   snapshotFromExecApprovalsDatabase,
   assertExecApprovalsMutationAllowed,
   ExecApprovalsMutationFencedError,
   serializeExecApprovals,
-  snapshotFromExecApprovalsRow,
   writeExecApprovalsConfigRow,
 } from "./exec-approvals-sqlite.js";
 import type { EngineConnection } from "./sql-connection.js";
@@ -30,14 +30,14 @@ import {
 
 function applyAuthorizationBatch(
   db: EngineConnection,
-  initial: ExecApprovalsSnapshot,
+  initial: ReadonlyExecApprovalsFile,
   items: readonly ExecAuthorizationCommitInput[],
 ) {
-  let current = initial;
+  let current = retainExecApprovalsPolicy(initial);
   const outcomes = items.map((item): ExecAuthorizationCommitOutcome => {
     let next: ReturnType<typeof applyExecAuthorizationCommit>;
     try {
-      next = applyExecAuthorizationCommit(current.file, item);
+      next = applyExecAuthorizationCommit(current, item);
     } catch (error) {
       return { ok: false, message: error instanceof Error ? error.message : String(error) };
     }
@@ -45,8 +45,8 @@ function applyAuthorizationBatch(
       try {
         assertExecApprovalsMutationAllowed({
           db,
-          current: current.file,
-          next: next ?? current.file,
+          current,
+          next: next ?? current,
           ...(item.requireCommit ? { agentId: item.agentId } : {}),
         });
       } catch (error) {
@@ -57,15 +57,12 @@ function applyAuthorizationBatch(
       }
     }
     if (next !== null) {
-      assertExecApprovalsHostPolicyUnchanged(current.file, next);
-      const raw = serializeExecApprovals(next);
-      if (!current.exists || current.raw !== raw) {
-        current = snapshotFromExecApprovalsRow({ path: current.path, row: { raw_json: raw } });
-      }
+      assertExecApprovalsHostPolicyUnchanged(current, next);
+      current = retainExecApprovalsPolicy(next);
     }
-    return { ok: true, snapshot: current };
+    return { ok: true, file: current };
   });
-  return { snapshot: current, outcomes };
+  return { file: current, outcomes };
 }
 
 export function commitExecAuthorizationsInWorker(
@@ -85,7 +82,7 @@ export function commitExecAuthorizationsInWorker(
     const { db } = context.open();
     return applyAuthorizationBatch(
       db,
-      snapshotFromExecApprovalsDatabase(db, displayPath),
+      snapshotFromExecApprovalsDatabase(db, displayPath).file,
       input.items,
     ).outcomes;
   }
@@ -94,12 +91,14 @@ export function commitExecAuthorizationsInWorker(
       requestSqliteWorkerOperationAdmission({ stage: "transaction", facts: undefined });
       const captured = execApprovalsPublication.capture(db, () => {
         const current = snapshotFromExecApprovalsDatabase(db, displayPath);
-        const committed = applyAuthorizationBatch(db, current, input.items);
-        if (committed.snapshot.raw !== current.raw) {
+        const committed = applyAuthorizationBatch(db, current.file, input.items);
+        const raw =
+          committed.file === current.file ? current.raw : serializeExecApprovals(committed.file);
+        if (raw !== current.raw) {
           writeExecApprovalsConfigRow({
             db,
-            file: committed.snapshot.file,
-            raw: committed.snapshot.raw ?? undefined,
+            file: committed.file,
+            raw: raw ?? undefined,
             change: input.items.some(
               (item, index) =>
                 committed.outcomes[index]?.ok &&

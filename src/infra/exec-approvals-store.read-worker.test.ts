@@ -23,6 +23,7 @@ import { observeMainThreadSql } from "../test-utils/main-thread-sql-spies.test-s
 import { createExecApprovalPolicySnapshot } from "./exec-approvals-allow-always.js";
 import { commitExecAuthorizationLocked } from "./exec-approvals-authorization.js";
 import { prepareCronExecHostPolicyUse } from "./exec-approvals-cron-policy.js";
+import { updateExecApprovalsForMaintenance } from "./exec-approvals-maintenance.js";
 import { loadMcpToolGrants } from "./exec-approvals-mcp.js";
 import { execApprovalsPublication } from "./exec-approvals-publication.js";
 import { writeExecApprovalsConfigRow } from "./exec-approvals-sqlite.js";
@@ -31,7 +32,6 @@ import {
   readExecApprovalsPolicyReadOnlyAsync,
   readExecApprovalsSnapshot,
   restoreExecApprovalsSnapshotLocked,
-  updateExecApprovalsForMaintenance,
   updateExecApprovals,
 } from "./exec-approvals-store.js";
 import { testing } from "./exec-approvals-store.test-support.js";
@@ -325,9 +325,24 @@ it("reuses prepared policy until a native or worker policy write", async () => {
   vi.stubEnv("OPENCLAW_STATE_DIR", root);
   const read = vi.spyOn(stateReads, "executeExistingOpenClawStateRead");
   const initial = await loadExecApprovalsReadOnlyAsync({ env });
-  initial.agents!.main!.mcpTools!.length = 0;
+  expect(Object.isFrozen(initial.agents?.main?.mcpTools)).toBe(true);
+  expect(await loadExecApprovalsReadOnlyAsync({ env })).toBe(initial);
   expect((await loadExecApprovalsReadOnlyAsync({ env })).agents?.main?.mcpTools).toEqual([grant]);
   expect(read).toHaveBeenCalledTimes(1);
+
+  const sdk = await import("../plugin-sdk/exec-approvals-runtime.js");
+  const detached = await sdk.loadExecApprovalsReadOnlyAsync({ env });
+  detached.agents!.main!.mcpTools!.length = 0;
+  const sdkSnapshot = await sdk.readExecApprovalsSnapshotAsync();
+  sdkSnapshot.file.agents!.main!.mcpTools!.length = 0;
+  const resolved = sdk.resolveExecApprovalsFromFile({ file: detached, agentId: "main" });
+  resolved.file.agents!.main!.mcpTools!.push({ ...grant, tool: "sdk-only" });
+  expect(detached.agents?.main?.mcpTools).toEqual([]);
+  detached.defaults = { security: "deny" };
+  expect(sdk.resolveExecApprovalsFromFile({ file: detached, agentId: "main" }).agent.security).toBe(
+    "deny",
+  );
+  expect((await loadExecApprovalsReadOnlyAsync({ env })).agents?.main?.mcpTools).toEqual([grant]);
 
   seed(env, "native-change");
   expect((await loadExecApprovalsReadOnlyAsync({ env })).agents?.main?.mcpTools).toEqual([

@@ -262,5 +262,14 @@ export type ExecApprovalsResolved = {
   file: ExecApprovalsFile;
 };
 
+type DeepReadonly<T> = {
+  readonly [K in keyof T]: DeepReadonly<T[K]>;
+};
+
+/** Internal readers share the policy owner's immutable generation. */
+export type ReadonlyExecApprovalsFile = DeepReadonly<ExecApprovalsFile>;
+export type ReadonlyExecApprovalsSnapshot = DeepReadonly<ExecApprovalsSnapshot>;
+export type ReadonlyExecApprovalsResolved = DeepReadonly<ExecApprovalsResolved>;
+
 // Keep CLI + gateway defaults in sync.
 export const DEFAULT_EXEC_APPROVAL_TIMEOUT_MS = 1_800_000;

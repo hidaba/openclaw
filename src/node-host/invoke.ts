@@ -28,7 +28,8 @@ import {
   type ExecAsk,
   type ExecCommandSegment,
   type ExecApprovalsFile,
-  type ExecApprovalsSnapshot,
+  type ReadonlyExecApprovalsFile,
+  type ReadonlyExecApprovalsSnapshot,
   type ExecSecurity,
 } from "../infra/exec-approvals.js";
 import { planShellAuthorization } from "../infra/exec-authorization-plan.js";
@@ -176,7 +177,7 @@ function resolveExecAsk(value?: string): ExecAsk {
 
 function requireExecApprovalsBaseHash(
   params: SystemExecApprovalsSetParams,
-  snapshot: ExecApprovalsSnapshot,
+  snapshot: ReadonlyExecApprovalsSnapshot,
 ) {
   const baseHash = typeof params.baseHash === "string" ? params.baseHash.trim() : "";
   if (!snapshot.exists) {
@@ -392,7 +393,7 @@ async function dispatchInvoke(
   if (command === "system.execApprovals.set") {
     const assertCurrent = () => runtime.signal?.throwIfAborted();
     let params: SystemExecApprovalsSetParams;
-    let normalized: ExecApprovalsFile;
+    let normalized: ReadonlyExecApprovalsFile;
     try {
       params = decodeParams<SystemExecApprovalsSetParams>(frame.paramsJSON);
       if (!params.file || typeof params.file !== "object") {
@@ -404,7 +405,7 @@ async function dispatchInvoke(
       return;
     }
 
-    let snapshot: ExecApprovalsSnapshot;
+    let snapshot: ReadonlyExecApprovalsSnapshot;
     let context: ReturnType<typeof captureOpenClawStateWorkerContext>;
     try {
       // A stale save must not initialize state before its base hash is checked.
@@ -423,7 +424,7 @@ async function dispatchInvoke(
       return;
     }
 
-    let nextSnapshot: ExecApprovalsSnapshot | null;
+    let nextSnapshot: ReadonlyExecApprovalsSnapshot | null;
     try {
       nextSnapshot = await updateExecApprovals(
         {

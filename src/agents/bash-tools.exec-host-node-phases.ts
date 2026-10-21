@@ -366,7 +366,7 @@ export async function analyzeNodeApprovalRequirement(params: {
   const evaluateCommand = (
     command: string,
     cwd: string | undefined,
-    allowlist: ExecAllowlistEntry[] = [],
+    allowlist: readonly Readonly<ExecAllowlistEntry>[] = [],
   ) =>
     evaluateShellAllowlistWithAuthorization({
       command,
@@ -448,7 +448,7 @@ export async function analyzeNodeApprovalRequirement(params: {
   ) {
     try {
       const snapshotRules = params.prepared.plan.policySnapshot?.allowlistRules;
-      let allowlist = snapshotRules ? [...snapshotRules] : undefined;
+      let allowlist: readonly Readonly<ExecAllowlistEntry>[] | undefined = snapshotRules;
       // Shipped v2026.7.1 prepare responses omit the agent-scoped snapshot.
       if (!allowlist) {
         const snapshot = await callGatewayTool<{ file?: ExecApprovalsFile }>(

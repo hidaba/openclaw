@@ -1,9 +1,9 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import { createStateDomainPublication } from "../state/state-domain-publication.js";
-import { parsePersistedExecApprovals } from "./exec-approvals-config.js";
+import { isPersistedExecApprovals } from "./exec-approvals-config.js";
 import type { ExecAuthorizationCommitInput } from "./exec-approvals-contracts.js";
-import type { ExecApprovalsFile } from "./exec-approvals-core.js";
+import type { ReadonlyExecApprovalsFile } from "./exec-approvals-core.js";
 import {
   observeSqliteWorkerCommittedFacts,
   type SqliteWorkerAdmissionFactory,
@@ -11,7 +11,7 @@ import {
 import { observeSqliteWorkerAdmissionFinish } from "./sqlite-worker-operation-settlement.js";
 
 export type ExecApprovalsPublicationValue = {
-  file: Omit<ExecApprovalsFile, "socket">;
+  file: Omit<ReadonlyExecApprovalsFile, "socket">;
   change: "policy" | "usage";
 };
 
@@ -25,7 +25,7 @@ export const execApprovalsPublication = createStateDomainPublication<ExecApprova
       (value.change === "policy" || value.change === "usage") &&
       isRecord(value.file) &&
       !Object.hasOwn(value.file, "socket") &&
-      parsePersistedExecApprovals(JSON.stringify(value.file)).ok,
+      isPersistedExecApprovals(value.file),
   },
 );
 

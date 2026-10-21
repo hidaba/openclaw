@@ -9,13 +9,16 @@ import {
   readExecApprovalsSnapshotAsync,
   redactExecApprovals,
   updateExecApprovals,
-  type ExecApprovalsFile,
-  type ExecApprovalsSnapshot,
+  type ReadonlyExecApprovalsFile,
+  type ReadonlyExecApprovalsSnapshot,
 } from "../infra/exec-approvals.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { runWithLocalStateOwner } from "./local-state-owner.js";
 
-type LocalExecApprovalsSnapshot = Pick<ExecApprovalsSnapshot, "path" | "exists" | "hash" | "file">;
+type LocalExecApprovalsSnapshot = Pick<
+  ReadonlyExecApprovalsSnapshot,
+  "path" | "exists" | "hash" | "file"
+>;
 
 export function loadSnapshotLocal(): Promise<LocalExecApprovalsSnapshot> {
   return runWithLocalStateOwner({
@@ -42,7 +45,7 @@ export function loadSnapshotLocal(): Promise<LocalExecApprovalsSnapshot> {
 }
 
 export function saveSnapshotLocal(
-  file: ExecApprovalsFile,
+  file: ReadonlyExecApprovalsFile,
   baseHash: string,
 ): Promise<LocalExecApprovalsSnapshot> {
   const normalized = normalizeExecApprovals(file);

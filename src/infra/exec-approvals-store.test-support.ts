@@ -1,6 +1,6 @@
 import { runClientCredentialOperation } from "./client-credential-store.js";
 import type { ExecApprovalsFile } from "./exec-approvals-core.js";
-import { updateExecApprovalsForMaintenance } from "./exec-approvals-store.js";
+import { updateExecApprovalsForMaintenance } from "./exec-approvals-maintenance.js";
 
 export function saveExecApprovals(file: ExecApprovalsFile): void {
   updateExecApprovalsForMaintenance({ update: () => file });

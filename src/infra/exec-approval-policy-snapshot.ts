@@ -11,6 +11,12 @@ export type ExecApprovalPolicySnapshot = Omit<PolicySnapshot, "allowlistRules"> 
   allowlistRules: readonly ExecApprovalPolicyRule[];
 };
 
+export type ReadonlyExecApprovalPolicySnapshot = Readonly<
+  Omit<ExecApprovalPolicySnapshot, "allowlistRules">
+> & {
+  readonly allowlistRules: readonly Readonly<ExecApprovalPolicyRule>[];
+};
+
 function compareUtf8(left: string, right: string): number {
   return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
 }

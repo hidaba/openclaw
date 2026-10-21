@@ -2560,19 +2560,20 @@ preceding authorization batch; later authorizations cannot join it. Cron policy
 uses are fenced before the commit grant, including uses prepared while that
 grant awaits settlement. Failed or uncertain writes cannot revive revoked uses.
 
-The final pre-spawn policy authority read remains synchronous and T1. It observes
-committed policy changes after preparation and before
-each launch or retry; published or cached policy facts cannot replace it.
-Preparation admits a live read-only connection through the existing reader pool.
-The final guard uses one indexed policy-row SELECT on that handle, without a
-freshness/schema PRAGMA or transaction envelope: it consumes current rows, not
-cached facts. Physical identity, source lifetime, integrity, and transaction
-exclusion are still checked. A retired reader requires new preparation.
-The released v2026.9.8 `prepareExecAuthorization` contract returns a synchronous
-guard for immediate use before spawn, and `plugin-sdk/exec-approvals-runtime`
-exports synchronous policy readers. Retirement requires the next Plugin SDK
-major, removal of raw synchronous writers, and complete revocation publications
-for launch adapters, preserving current authority and unknown-launch settlement. Doctor retains its native migration adapter. Approval resolution with
+Final pre-spawn guards synchronously check the captured physical owner and its
+current committed policy. Pending policy edits and unknown outcomes refuse
+execution. Preparation and guards share deeply readonly canonical policy;
+receipt publication replaces it, while usage-only writes preserve semantic rule
+indexes and delayed-approval snapshots. Per-agent projections include their
+selection and default overrides. Mutable Plugin SDK reads remain detached.
+
+Authorization input is captured once before queue admission. The writer still
+rereads durable policy and checks deletion fences and policy at commit; each
+accepted batch item retains its own copy-on-write policy, and the final policy
+is serialized once. Additive grants and source upgrades remain valid; revocation
+and source downgrades still invalidate delayed authority. Receipt transport
+validates policy shape without a JSON round trip. Raw hashes/CAS and local
+socket credentials retain their separate owners. Doctor retains its native migration adapter. Approval resolution with
 the released opaque SDK
 commit guard still reaches the shared MCP grant kernels, so their policy write
 and deletion-fence query remain T1. These changes introduce no schema, stored

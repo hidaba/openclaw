@@ -22,7 +22,7 @@ import {
   resolveExecApprovalsFromFile,
   updateExecApprovals,
   type ExecApprovalsFile,
-  type ExecApprovalsSnapshot,
+  type ReadonlyExecApprovalsSnapshot,
 } from "../../infra/exec-approvals.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { isNodeCommandAllowed, resolveNodeCommandAllowlist } from "../node-command-policy.js";
@@ -43,7 +43,7 @@ import { assertValidParams, defineValidatedGatewayHandler, type Validator } from
 
 function requireApprovalsBaseHash(
   params: unknown,
-  snapshot: ExecApprovalsSnapshot,
+  snapshot: ReadonlyExecApprovalsSnapshot,
   respond: RespondFn,
 ): boolean {
   // Approval allowlists are admin-editable state. Require the caller's last
@@ -78,7 +78,7 @@ function respondApprovalsChanged(respond: RespondFn): void {
   );
 }
 
-function toExecApprovalsPayload(snapshot: ExecApprovalsSnapshot) {
+function toExecApprovalsPayload(snapshot: ReadonlyExecApprovalsSnapshot) {
   return {
     ...redactExecApprovals(snapshot),
     resolvedDefaults: resolveExecApprovalsFromFile({ file: snapshot.file }).defaults,
@@ -242,7 +242,7 @@ export const execApprovalsHandlers: GatewayRequestHandlers = {
     }
     await respondUnavailableOnThrow(respond, async () => {
       guard.assertPreparationCurrent();
-      let snapshot: ExecApprovalsSnapshot;
+      let snapshot: ReadonlyExecApprovalsSnapshot;
       if (params.expectedOwnerId) {
         const context = captureOpenClawStateWorkerContext();
         const assertCurrent = () => {

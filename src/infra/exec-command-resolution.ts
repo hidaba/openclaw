@@ -298,12 +298,12 @@ function matchesExecutableBasenamePattern(
 }
 
 export function matchAllowlist(
-  entries: ExecAllowlistEntry[],
+  entries: readonly Readonly<ExecAllowlistEntry>[],
   resolution: ExecutableResolution | null,
   argv?: string[],
   platform?: string | null,
   cwd?: string,
-): ExecAllowlistEntry | null {
+): Readonly<ExecAllowlistEntry> | null {
   if (!entries.length) {
     return null;
   }
@@ -320,7 +320,7 @@ export function matchAllowlist(
     return null;
   }
   const trustPath = resolution.resolvedRealPath?.trim() || resolution.resolvedPath;
-  let pathOnlyMatch: ExecAllowlistEntry | null = null;
+  let pathOnlyMatch: Readonly<ExecAllowlistEntry> | null = null;
   let cwdBoundHash: string | undefined;
   for (const entry of entries) {
     const pattern = entry.pattern?.trim();

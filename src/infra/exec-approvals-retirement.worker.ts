@@ -8,7 +8,7 @@ import type {
   WorkerWriteOperationContext,
 } from "../state/worker-operation-registry.js";
 import { resolveExecApprovalsDisplayPath } from "./exec-approvals-config.js";
-import type { ExecApprovalsAgent } from "./exec-approvals-core.js";
+import type { ReadonlyExecApprovalsFile } from "./exec-approvals-core.js";
 import { assertNoPendingLegacyExecApprovals } from "./exec-approvals-migration-gate.js";
 import { execApprovalsPublication } from "./exec-approvals-publication.js";
 import {
@@ -19,7 +19,9 @@ import {
 } from "./exec-approvals-sqlite.js";
 import { deferSqliteWorkerCommitReceipt } from "./sqlite-worker-operation-admission.js";
 
-export type RemovedExecApprovalPolicies = Array<[string, ExecApprovalsAgent]>;
+export type RemovedExecApprovalPolicies = Array<
+  [string, NonNullable<ReadonlyExecApprovalsFile["agents"]>[string]]
+>;
 
 type RetirementInput = {
   guard: AgentDeletionWorkerGuard;

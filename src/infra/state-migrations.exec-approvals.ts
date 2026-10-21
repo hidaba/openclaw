@@ -14,7 +14,7 @@ import {
   parseLegacyExecApprovals,
   resolveExecApprovalsPath,
 } from "./exec-approvals-config.js";
-import type { ExecApprovalsFile } from "./exec-approvals-core.js";
+import type { ReadonlyExecApprovalsFile } from "./exec-approvals-core.js";
 import { ExecApprovalsMigrationRequiredError } from "./exec-approvals-migration-gate.js";
 import {
   readExecApprovalsConfigRow,
@@ -62,7 +62,7 @@ const emptyLegacyExecApprovalsSchema = z.strictObject({
   socket: z.strictObject({ path: z.string().optional(), token: z.string().optional() }).optional(),
 });
 
-type ArchivedEmptyLegacy = { file: ExecApprovalsFile; archivePath: string };
+type ArchivedEmptyLegacy = { file: ReadonlyExecApprovalsFile; archivePath: string };
 
 type MigrationDecision =
   | "empty-legacy-retired"
@@ -165,7 +165,7 @@ function decodeLegacySourceSnapshot(snapshot: LegacyMigrationSourceSnapshot): Le
   return { ...snapshot, raw };
 }
 
-function emptyLegacyFile(snapshot: LegacySourceSnapshot): ExecApprovalsFile | undefined {
+function emptyLegacyFile(snapshot: LegacySourceSnapshot): ReadonlyExecApprovalsFile | undefined {
   const parsed = emptyLegacyExecApprovalsSchema.safeParse(
     snapshot.raw === null ? null : safeParseJsonRecord(snapshot.raw),
   );
@@ -177,11 +177,11 @@ function emptyLegacyFile(snapshot: LegacySourceSnapshot): ExecApprovalsFile | un
 function decideLegacyExecApprovals(
   params: LegacyExecApprovalsFacts & {
     snapshot: LegacySourceSnapshot;
-    emptyStub?: ExecApprovalsFile;
+    emptyStub?: ReadonlyExecApprovalsFile;
   },
 ) {
   const legacy = params.emptyStub
-    ? ok<ExecApprovalsFile, string>(params.emptyStub)
+    ? ok<ReadonlyExecApprovalsFile, string>(params.emptyStub)
     : params.snapshot.raw === null
       ? err<never, string>("invalid UTF-8 encoding")
       : parseLegacyExecApprovals(normalizeLegacyNullableUsageMetadata(params.snapshot.raw));

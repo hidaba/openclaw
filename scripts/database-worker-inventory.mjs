@@ -2830,7 +2830,7 @@ const reviewedOperations = new Map([
     ],
   ],
   [
-    "src/infra/exec-approvals-store.ts",
+    "src/infra/exec-approvals-maintenance.ts",
     [
       {
         tier: "T2",

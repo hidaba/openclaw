@@ -3,7 +3,7 @@ import { Command } from "commander";
 import { vi } from "vitest";
 import type { ClientSocketRecord } from "../infra/client-credential-store.js";
 import { applyExecApprovalsUpdate } from "../infra/exec-approvals-mutation.kernel.js";
-import type { ExecApprovalsSnapshot } from "../infra/exec-approvals.js";
+import type { ExecApprovalsSnapshot, ReadonlyExecApprovalsFile } from "../infra/exec-approvals.js";
 import { registerExecApprovalsCli } from "./exec-approvals-cli.js";
 
 const mocks = vi.hoisted(() => {
@@ -74,7 +74,9 @@ const mocks = vi.hoisted(() => {
 });
 
 export const { callGatewayFromCli, defaultRuntime, readBestEffortConfig, runtimeErrors } = mocks;
-export const localSnapshot: ExecApprovalsSnapshot = {
+export const localSnapshot: Omit<ExecApprovalsSnapshot, "file"> & {
+  file: ReadonlyExecApprovalsFile;
+} = {
   path: "/tmp/local-exec-approvals.json",
   exists: true,
   raw: "{}",
@@ -148,7 +150,7 @@ vi.mock("../infra/exec-approvals.js", async () => {
           localSnapshot.raw = JSON.stringify(next);
           localSnapshot.hash = "hash-local-written";
         }
-        const snapshot = structuredClone(localSnapshot);
+        const snapshot = structuredClone(localSnapshot) as ExecApprovalsSnapshot;
         if (update.kind === "replace" && update.preserveSocket) {
           setLocalSocket(
             update.file.socket?.path?.trim() ||

@@ -4,7 +4,10 @@ import {
   resolveExecApprovalsDisplayPath,
   stripExecApprovalsSocketCredentials,
 } from "./exec-approvals-config.js";
-import type { ExecApprovalsFile, ExecApprovalsSnapshot } from "./exec-approvals-core.js";
+import type {
+  ReadonlyExecApprovalsFile,
+  ReadonlyExecApprovalsSnapshot,
+} from "./exec-approvals-core.js";
 import { assertNoPendingLegacyExecApprovals } from "./exec-approvals-migration-gate.js";
 import {
   applyExecApprovalsUpdate,
@@ -28,11 +31,11 @@ function mutate<T>(
   context: WorkerWriteOperationContext,
   label: string,
   operation: (
-    current: ExecApprovalsSnapshot,
+    current: ReadonlyExecApprovalsSnapshot,
     db: ReturnType<WorkerWriteOperationContext["open"]>["db"],
   ) => {
-    next: ExecApprovalsFile | null;
-    result: (snapshot: ExecApprovalsSnapshot) => T;
+    next: ReadonlyExecApprovalsFile | null;
+    result: (snapshot: ReadonlyExecApprovalsSnapshot) => T;
     raw?: string;
     remove?: boolean;
   },
@@ -97,7 +100,7 @@ export const execPolicyMutationOperations = {
       return { next, result: (snapshot) => snapshot };
     }),
   "execApprovals.restoreSnapshot": (
-    input: { snapshot: ExecApprovalsSnapshot; baseHash: string },
+    input: { snapshot: ReadonlyExecApprovalsSnapshot; baseHash: string },
     context: WorkerWriteOperationContext,
   ) =>
     mutate(context, "exec-approvals.restore-cas", (current, db) => {

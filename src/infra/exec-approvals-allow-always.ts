@@ -1,16 +1,12 @@
 import { sha256HexPrefixCore } from "./crypto-digest.js";
-import {
-  buildExecApprovalPolicyRuleKey,
-  canonicalizeExecApprovalPolicyRules,
-} from "./exec-approval-policy-snapshot.js";
-import type { ExecApprovalPolicySnapshot } from "./exec-approval-policy-snapshot.js";
+import type { ReadonlyExecApprovalPolicySnapshot } from "./exec-approval-policy-snapshot.js";
 import { resolveAllowAlwaysPatternEntries } from "./exec-approvals-allowlist.js";
 import type {
   AllowAlwaysPersistenceDecision,
   AllowAlwaysPersistenceReason,
 } from "./exec-approvals-contracts.js";
-import type { ExecApprovalsFile } from "./exec-approvals-core.js";
-import { resolveExecApprovalsFromFileInternal } from "./exec-approvals-resolver.js";
+import type { ReadonlyExecApprovalsFile } from "./exec-approvals-core.js";
+import { readExecApprovalPolicyFacts } from "./exec-approvals-resolver.js";
 import type { ExecAllowlistEntry } from "./exec-approvals.types.js";
 import type { ExecAuthorizationPlan } from "./exec-authorization-plan.js";
 import { isCwdBoundHashedArgPattern } from "./exec-command-resolution.js";
@@ -102,69 +98,12 @@ export function resolveDurableExecApprovalRequirement(params: {
     : "segment-allowlist";
 }
 
-export function buildAllowlistEntryMatchKey(
-  entry: Pick<ExecAllowlistEntry, "pattern" | "argPattern">,
-): string {
-  return JSON.stringify([entry.pattern, entry.argPattern ?? null]);
-}
-
 /** Captures effective file policy while excluding ids and mutable usage metadata. */
 export function createExecApprovalPolicySnapshot(params: {
-  file: ExecApprovalsFile;
+  file: ReadonlyExecApprovalsFile;
   agentId: string | undefined;
-}): ExecApprovalPolicySnapshot {
-  // Runtime overrides are deliberately absent: the snapshot protects the
-  // persisted policy that may change while a human approval is pending.
-  const resolved = resolveExecApprovalsFromFileInternal({
-    file: params.file,
-    agentId: params.agentId,
-  });
-  return {
-    security: resolved.agent.security,
-    ask: resolved.agent.ask,
-    askFallback: resolved.agent.askFallback,
-    autoAllowSkills: resolved.agent.autoAllowSkills,
-    allowlistRules: canonicalizeExecApprovalPolicyRules(
-      resolved.allowlist.map((entry) => {
-        const rule: ExecApprovalPolicySnapshot["allowlistRules"][number] = {
-          pattern: entry.pattern,
-        };
-        if (entry.argPattern !== undefined) {
-          rule.argPattern = entry.argPattern;
-        }
-        if (entry.source === "allow-always") {
-          rule.source = entry.source;
-        }
-        return rule;
-      }),
-    ),
-  };
-}
-
-export function isExecApprovalPolicySnapshotCurrent(
-  expected: ExecApprovalPolicySnapshot,
-  current: ExecApprovalPolicySnapshot,
-): boolean {
-  const currentRuleKeys = new Set(current.allowlistRules.map(buildExecApprovalPolicyRuleKey));
-  return (
-    expected.security === current.security &&
-    expected.ask === current.ask &&
-    expected.askFallback === current.askFallback &&
-    expected.autoAllowSkills === current.autoAllowSkills &&
-    // Concurrent operator-approved grants are additive. Preserve them while
-    // accepting an in-place allow-always upgrade of the same rule. Revocations
-    // and reverse source downgrades still remove an expected authority.
-    expected.allowlistRules.every((rule) => {
-      const key = buildExecApprovalPolicyRuleKey(rule);
-      if (currentRuleKeys.has(key)) {
-        return true;
-      }
-      return (
-        rule.source === undefined &&
-        currentRuleKeys.has(buildExecApprovalPolicyRuleKey({ ...rule, source: "allow-always" }))
-      );
-    })
-  );
+}): ReadonlyExecApprovalPolicySnapshot {
+  return readExecApprovalPolicyFacts(params.file, params.agentId).snapshot;
 }
 
 export function resolveAllowAlwaysPatternCoverage(
@@ -298,10 +237,10 @@ export function resolveAllowAlwaysPersistenceDecision(
 }
 
 export function applyAllowAlwaysDecision(params: {
-  file: ExecApprovalsFile;
+  file: ReadonlyExecApprovalsFile;
   agentId: string | undefined;
   decision: Exclude<AllowAlwaysPersistenceDecision, { kind: "one-shot" }>;
-}): ExecApprovalsFile | null {
+}): ReadonlyExecApprovalsFile | null {
   const entries: Array<Pick<ExecAllowlistEntry, "pattern" | "argPattern">> =
     params.decision.kind === "patterns" ? [...params.decision.patterns] : [];
   const commandText = params.decision.commandText?.trim();

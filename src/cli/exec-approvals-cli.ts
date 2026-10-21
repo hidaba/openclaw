@@ -36,9 +36,9 @@ import {
 } from "../infra/exec-approvals-effective.js";
 import {
   redactExecApprovals,
-  type ExecApprovalsAgent,
   type ExecApprovalsDefaults,
   type ExecApprovalsFile,
+  type ReadonlyExecApprovalsFile,
 } from "../infra/exec-approvals.js";
 import { classifyExecAllowlistScope } from "../infra/exec-command-resolution.js";
 import { formatTimeAgo } from "../infra/format-time/format-relative.ts";
@@ -279,7 +279,7 @@ type SaveSnapshotTargetedParams = {
   nodeId: string | null;
   baseHash: string;
   targetLabel: string;
-} & ({ file: ExecApprovalsFile } | { native: NativeExecApprovalPolicy });
+} & ({ file: ReadonlyExecApprovalsFile } | { native: NativeExecApprovalPolicy });
 
 async function saveSnapshotTargeted(params: SaveSnapshotTargetedParams): Promise<void> {
   let next: ExecApprovalsSnapshot;
@@ -731,7 +731,7 @@ async function loadConfigForApprovalsTarget(params: {
 function buildEffectivePolicyReport(params: {
   configLoad: ConfigLoadResult;
   source: ApprovalsTargetSource;
-  approvals?: ExecApprovalsFile;
+  approvals?: ReadonlyExecApprovalsFile;
   resolvedDefaults?: Required<ExecApprovalsDefaults>;
   hostPath: string;
   nativePolicy: boolean;
@@ -1007,11 +1007,9 @@ async function loadWritableAllowlistAgent(opts: ExecApprovalsCliOpts) {
       "Host-native node approvals do not support allowlist mutations; use approvals set --node with host-native JSON.",
     );
   }
-  const file = snapshot.file;
-  file.version = 1;
-
-  const agent: ExecApprovalsAgent = file.agents?.[agentKey] ?? {};
-  const allowlistEntries = Array.isArray(agent.allowlist) ? agent.allowlist : [];
+  const file = { ...snapshot.file };
+  const agent = { ...file.agents?.[agentKey] };
+  const allowlistEntries = [...(agent.allowlist ?? [])];
 
   return { ...target, snapshot, file, agentKey, agent, allowlistEntries };
 }

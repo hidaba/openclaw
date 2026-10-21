@@ -1,28 +1,31 @@
 // Applies exec authority and usage changes to an authoritative policy snapshot.
 import {
   applyAllowAlwaysDecision,
-  buildAllowlistEntryMatchKey,
-  createExecApprovalPolicySnapshot,
   hasExactCommandDurableExecApproval,
-  isExecApprovalPolicySnapshotCurrent,
 } from "./exec-approvals-allow-always.js";
 import type {
   ExecApprovalUsageAuthorization,
   ExecAuthorizationCommitInput,
 } from "./exec-approvals-contracts.js";
-import type { ExecApprovalsFile } from "./exec-approvals-core.js";
+import type { ReadonlyExecApprovalsFile } from "./exec-approvals-core.js";
 import { maxAsk, minSecurity } from "./exec-approvals-policy.js";
-import { resolveExecApprovalsFromFileInternal } from "./exec-approvals-resolver.js";
+import {
+  buildAllowlistEntryMatchKey,
+  readExecApprovalPolicyFacts,
+  isExecApprovalPolicySnapshotCurrent,
+  resolveExecApprovalsPolicy,
+  retainExecApprovalsPolicy,
+} from "./exec-approvals-resolver.js";
 import { isGeneratedHashedArgPattern } from "./exec-command-resolution.js";
 
 export function assertCurrentUsageAuthorization(params: {
-  file: ExecApprovalsFile;
+  file: ReadonlyExecApprovalsFile;
   agentId: string | undefined;
   command: string;
   matchKeys: ReadonlySet<string>;
   authorization: ExecApprovalUsageAuthorization;
 }): void {
-  const current = resolveExecApprovalsFromFileInternal({
+  const current = resolveExecApprovalsPolicy({
     file: params.file,
     agentId: params.agentId,
     overrides: {
@@ -48,12 +51,10 @@ export function assertCurrentUsageAuthorization(params: {
     params.authorization.source === "auto-review";
   if (delayedAuthorization) {
     const expectedPolicy = params.authorization.policySnapshot;
+    const facts = readExecApprovalPolicyFacts(params.file, params.agentId);
     if (
       !expectedPolicy ||
-      !isExecApprovalPolicySnapshotCurrent(
-        expectedPolicy,
-        createExecApprovalPolicySnapshot({ file: params.file, agentId: params.agentId }),
-      )
+      !isExecApprovalPolicySnapshotCurrent(expectedPolicy, facts.snapshot, facts.ruleKeys)
     ) {
       throw new Error("Exec approval changed before execution");
     }
@@ -101,22 +102,20 @@ export function assertCurrentUsageAuthorization(params: {
     }
     return;
   }
-  if (params.authorization.requireDurableAllowlistApproval) {
-    const durableKeys = new Set(
-      current.allowlist
-        .filter((entry) => entry.source === "allow-always")
-        .map(buildAllowlistEntryMatchKey),
-    );
-    if (params.matchKeys.size === 0 || [...params.matchKeys].some((key) => !durableKeys.has(key))) {
-      throw new Error("Exec approval changed before execution");
-    }
+  const facts = readExecApprovalPolicyFacts(params.file, params.agentId);
+  if (params.authorization.requireDurableAllowlistApproval && params.matchKeys.size === 0) {
+    throw new Error("Exec approval changed before execution");
   }
   if (!params.authorization.allowlistSatisfied) {
     throw new Error("Exec approval changed before execution");
   }
-  const currentKeys = new Set(current.allowlist.map(buildAllowlistEntryMatchKey));
-  if ([...params.matchKeys].some((key) => !currentKeys.has(key))) {
-    throw new Error("Exec approval changed before execution");
+  for (const key of params.matchKeys) {
+    if (
+      !facts.matchKeys.has(key) ||
+      (params.authorization.requireDurableAllowlistApproval && !facts.durableKeys.has(key))
+    ) {
+      throw new Error("Exec approval changed before execution");
+    }
   }
   if (params.authorization.requireAutoAllowSkills && !current.agent.autoAllowSkills) {
     throw new Error("Exec approval changed before execution");
@@ -124,13 +123,13 @@ export function assertCurrentUsageAuthorization(params: {
 }
 
 function applyRecordedAllowlistMetadata(params: {
-  file: ExecApprovalsFile;
+  file: ReadonlyExecApprovalsFile;
   agentId: string | undefined;
   keys: ReadonlySet<string>;
   command: string;
   resolvedPath?: string;
   matches: ExecAuthorizationCommitInput["matches"];
-}): ExecApprovalsFile | null {
+}): ReadonlyExecApprovalsFile | null {
   const { keys } = params;
   if (keys.size === 0) {
     return null;
@@ -172,17 +171,14 @@ function applyRecordedAllowlistMetadata(params: {
     }
   }
   return changed
-    ? {
-        ...params.file,
-        agents: nextAgents,
-      }
+    ? retainExecApprovalsPolicy({ ...params.file, agents: nextAgents }, params.file)
     : null;
 }
 
 export function applyExecAuthorizationCommit(
-  file: ExecApprovalsFile,
+  file: ReadonlyExecApprovalsFile,
   params: ExecAuthorizationCommitInput,
-): ExecApprovalsFile | null {
+): ReadonlyExecApprovalsFile | null {
   if (params.allowAlwaysDecision && params.allowAlwaysDecision.kind !== "one-shot") {
     if (params.authorization.source !== "explicit-approval") {
       throw new Error("Allow-always persistence requires explicit approval");
@@ -209,6 +205,10 @@ export function applyExecAuthorizationCommit(
         })
       : null;
   return (
-    applyRecordedAllowlistMetadata({ ...params, file: granted ?? file, keys: matchKeys }) ?? granted
+    applyRecordedAllowlistMetadata({
+      ...params,
+      file: granted ? retainExecApprovalsPolicy(granted) : file,
+      keys: matchKeys,
+    }) ?? granted
   );
 }

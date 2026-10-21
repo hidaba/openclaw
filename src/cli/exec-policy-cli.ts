@@ -21,7 +21,7 @@ import {
   resolveExecModePolicy,
   restoreExecApprovalsSnapshotLocked,
   updateExecApprovals,
-  type ExecApprovalsFile,
+  type ReadonlyExecApprovalsFile,
   type ExecAsk,
   type ExecSecurity,
   type ExecTarget,
@@ -181,12 +181,10 @@ function applyConfigExecPolicy(root: OpenClawConfig, policy: ExecPolicyResolved)
 }
 
 function applyApprovalsDefaults(
-  file: ExecApprovalsFile,
+  file: ReadonlyExecApprovalsFile,
   policy: ExecPolicyResolved,
-): ExecApprovalsFile {
-  const next: ExecApprovalsFile = structuredClone(file ?? { version: 1 });
-  next.version = 1;
-  next.defaults ??= {};
+): ReadonlyExecApprovalsFile {
+  const next = { ...file, defaults: { ...file.defaults } };
   if (policy.security !== undefined) {
     next.defaults.security = policy.security;
   }

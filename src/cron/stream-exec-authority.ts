@@ -2,7 +2,11 @@ import { isDeepStrictEqual } from "node:util";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import type { SandboxContext } from "../agents/sandbox/types.js";
 import type { ExecApprovalPreparedConsumption } from "../gateway/operator-approval-store.types.js";
-import type { ExecApprovalsFile, ExecAsk, ExecSecurity } from "../infra/exec-approvals-core.js";
+import type {
+  ReadonlyExecApprovalsFile,
+  ExecAsk,
+  ExecSecurity,
+} from "../infra/exec-approvals-core.js";
 import { isRecord } from "../utils.js";
 import { resolveCronJobConfigRevision } from "./config-revision.js";
 import { cronStreamScheduleKey, type CronStreamSchedule } from "./stream-schedule.js";
@@ -65,7 +69,7 @@ export type CronStreamExecPolicy = {
   | { kind: "resolved"; assertCurrent: (approvedPolicyKey?: string) => void }
   | {
       kind: "needs-approvals";
-      assertCurrent: (file: ExecApprovalsFile, approvedPolicyKey?: string) => void;
+      assertCurrent: (file: ReadonlyExecApprovalsFile, approvedPolicyKey?: string) => void;
     }
 );
 

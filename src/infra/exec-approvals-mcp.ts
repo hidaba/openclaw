@@ -8,7 +8,7 @@ export type { McpToolGrant } from "./exec-approvals.types.js";
 export async function loadMcpToolGrants(
   agentId: string,
   options?: Pick<OpenClawStateDatabaseOptions, "path" | "env">,
-): Promise<readonly McpToolGrant[]> {
+): Promise<readonly Readonly<McpToolGrant>[]> {
   return agentId === "*"
     ? []
     : ((await loadExecApprovalsReadOnlyAsync(options)).agents?.[agentId]?.mcpTools ?? []);

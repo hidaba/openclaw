@@ -2,26 +2,26 @@ import { stripExecApprovalsSocketCredentials } from "./exec-approvals-config.js"
 import type {
   ExecApprovalsAgent,
   ExecApprovalsDefaults,
-  ExecApprovalsFile,
+  ReadonlyExecApprovalsFile,
 } from "./exec-approvals-core.js";
 import { maxAsk, minSecurity } from "./exec-approvals-policy.js";
 import { resolveExecApprovalsFromFileInternal } from "./exec-approvals-resolver.js";
 
 export type ExecApprovalsUpdate =
-  | { kind: "replace"; file: ExecApprovalsFile; preserveSocket?: boolean }
+  | { kind: "replace"; file: ReadonlyExecApprovalsFile; preserveSocket?: boolean }
   | { kind: "ensure-agent"; agentId: string; policy: ExecApprovalsAgent }
   | {
       kind: "rollback-defaults";
-      original: ExecApprovalsFile;
-      written: ExecApprovalsFile;
+      original: ReadonlyExecApprovalsFile;
+      written: ReadonlyExecApprovalsFile;
       policy: Pick<ExecApprovalsDefaults, "security" | "ask" | "askFallback">;
     };
 
 /** Apply the requested edit to the transaction's current policy, never a host callback. */
 export function applyExecApprovalsUpdate(
-  file: ExecApprovalsFile,
+  file: ReadonlyExecApprovalsFile,
   update: ExecApprovalsUpdate,
-): ExecApprovalsFile | null {
+): ReadonlyExecApprovalsFile | null {
   if (update.kind === "replace") {
     return stripExecApprovalsSocketCredentials(update.file);
   }
@@ -32,7 +32,7 @@ export function applyExecApprovalsUpdate(
   }
   const originalDefaults = resolveExecApprovalsFromFileInternal({ file: update.original }).defaults;
   const currentDefaults = resolveExecApprovalsFromFileInternal({ file }).defaults;
-  const next = structuredClone(file);
+  const next = { ...file, defaults: { ...file.defaults } };
   let changed = false;
   // A whole-file rollback lost its CAS. Revert only unchanged fields without loosening policy.
   for (const field of ["security", "ask", "askFallback"] as const) {

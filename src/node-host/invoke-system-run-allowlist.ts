@@ -5,7 +5,7 @@ import {
   evaluateShellAllowlistWithAuthorization,
   resolvePlannedSegmentArgv,
   type ExecAllowlistAnalysis,
-  type ExecApprovalsResolved,
+  type ReadonlyExecApprovalsResolved,
   type ExecCommandSegment,
   type ExecSegmentSatisfiedBy,
   type ExecSecurity,
@@ -33,7 +33,7 @@ type SystemRunAllowlistAnalysis = ExecAllowlistAnalysis & {
 export async function evaluateSystemRunAllowlist(params: {
   shellCommand: string | null;
   argv: string[];
-  approvals: ExecApprovalsResolved;
+  approvals: ReadonlyExecApprovalsResolved;
   security: ExecSecurity;
   safeBins: ReturnType<typeof resolveExecSafeBinRuntimePolicy>["safeBins"];
   safeBinProfiles: ReturnType<typeof resolveExecSafeBinRuntimePolicy>["safeBinProfiles"];

@@ -14,7 +14,7 @@ import { ExecApprovalsMigrationRequiredError } from "../infra/exec-approvals-mig
 import {
   loadExecApprovalsReadOnly,
   resolveExecApprovalsDisplayPath,
-  type ExecApprovalsFile,
+  type ReadonlyExecApprovalsFile,
 } from "../infra/exec-approvals.js";
 import { findSecretStoreRedactedValueFindings } from "../secrets/audit-store.js";
 import { classifyConfigSecretTarget } from "../secrets/config-secret-target.js";
@@ -62,7 +62,7 @@ function collectImplicitHeartbeatDirectPolicyWarnings(cfg: OpenClawConfig): Secu
 
 function collectExecPolicyConflictWarnings(
   cfg: OpenClawConfig,
-  approvals: ExecApprovalsFile,
+  approvals: ReadonlyExecApprovalsFile,
 ): SecurityAuditFinding[] {
   const findings: SecurityAuditFinding[] = [];
 
@@ -139,7 +139,9 @@ function collectExecPolicyConflictWarnings(
   return findings;
 }
 
-function collectDurableExecApprovalWarnings(approvals: ExecApprovalsFile): SecurityAuditFinding[] {
+function collectDurableExecApprovalWarnings(
+  approvals: ReadonlyExecApprovalsFile,
+): SecurityAuditFinding[] {
   const count = countObsoleteGeneratedExecApprovals(approvals);
   if (count === 0) {
     return [];
@@ -223,7 +225,7 @@ export async function collectSecurityWarnings(
   }
 
   findings.push(...collectImplicitHeartbeatDirectPolicyWarnings(cfg));
-  let approvals: ExecApprovalsFile | undefined;
+  let approvals: ReadonlyExecApprovalsFile | undefined;
   try {
     approvals = loadExecApprovalsReadOnly();
   } catch (error) {

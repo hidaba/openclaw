@@ -11,7 +11,7 @@ import { captureRuntimeConfig } from "../config/runtime-source-projection.js";
 import type { SessionEntryCohortReader } from "../config/sessions/session-entry-read-runtime.types.js";
 import { captureSessionTranscriptStorageEnvironment } from "../config/sessions/transcript-target-binding.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import type { ExecApprovalsFile } from "../infra/exec-approvals-core.js";
+import type { ReadonlyExecApprovalsFile } from "../infra/exec-approvals-core.js";
 import { loadExecApprovalsReadOnlyAsync } from "../infra/exec-approvals-store.js";
 import { resolveRequiredHomeDir } from "../infra/home-dir.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
@@ -37,7 +37,7 @@ export type PreparedToolConstruction = Omit<
   CapturedToolConstruction,
   "statePath" | "admitStateRead"
 > & {
-  loadExecApprovals: () => Promise<ExecApprovalsFile>;
+  loadExecApprovals: () => Promise<ReadonlyExecApprovalsFile>;
   reader?: SessionEntryCohortReader;
 };
 
@@ -92,7 +92,7 @@ function captureToolConstructionScope(
 
 async function loadToolConstructionExecApprovals(
   scope: CapturedToolConstruction,
-): Promise<ExecApprovalsFile> {
+): Promise<ReadonlyExecApprovalsFile> {
   const { statePath, env, assertCurrent } = scope;
   scope.admitStateRead();
   const file = await loadExecApprovalsReadOnlyAsync({ path: statePath, env });

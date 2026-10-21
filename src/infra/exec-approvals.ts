@@ -5,9 +5,9 @@ import {
 } from "./exec-approvals-config.js";
 import type { ExecApprovalsDefaultOverrides } from "./exec-approvals-contracts.js";
 import type {
-  ExecApprovalsFile,
-  ExecApprovalsResolved,
-  ExecApprovalsSnapshot,
+  ReadonlyExecApprovalsFile,
+  ReadonlyExecApprovalsResolved,
+  ReadonlyExecApprovalsSnapshot,
 } from "./exec-approvals-core.js";
 import { resolveExecApprovalsFromFileInternal } from "./exec-approvals-resolver.js";
 import { readExecApprovalsSocket } from "./exec-approvals-socket.js";
@@ -29,7 +29,10 @@ export {
   normalizeExecApprovalsInternal as normalizeExecApprovals,
   resolveExecApprovalsDisplayPath,
 } from "./exec-approvals-config.js";
-export { resolveExecApprovalsFromFileInternal as resolveExecApprovalsFromFile } from "./exec-approvals-resolver.js";
+export {
+  resolveExecApprovalsFromFileInternal as resolveExecApprovalsFromFile,
+  isExecApprovalPolicySnapshotCurrent,
+} from "./exec-approvals-resolver.js";
 export {
   ensureExecApprovalsSnapshot,
   loadExecApprovals,
@@ -43,8 +46,10 @@ export {
 } from "./exec-approvals-store.js";
 
 export function redactExecApprovals(
-  snapshot: Omit<ExecApprovalsSnapshot, "raw"> & { raw?: ExecApprovalsSnapshot["raw"] },
-): Omit<ExecApprovalsSnapshot, "raw"> {
+  snapshot: Omit<ReadonlyExecApprovalsSnapshot, "raw"> & {
+    raw?: ReadonlyExecApprovalsSnapshot["raw"];
+  },
+): Omit<ReadonlyExecApprovalsSnapshot, "raw"> {
   const { raw: _raw, ...rest } = snapshot;
   const socketPath = snapshot.file.socket?.path?.trim();
   // Socket connection material is runtime-only; presentation boundaries need only its path.
@@ -58,12 +63,12 @@ export function redactExecApprovals(
 }
 
 function shapeResolvedExecApprovals(params: {
-  file: ExecApprovalsFile;
+  file: ReadonlyExecApprovalsFile;
   filePath: string;
   agentId?: string;
   overrides?: ExecApprovalsDefaultOverrides;
   socket: "none" | "persisted";
-}): ExecApprovalsResolved {
+}): ReadonlyExecApprovalsResolved {
   const defaultSocketPath = resolveExecApprovalsSocketPath();
   return resolveExecApprovalsFromFileInternal({
     file: params.file,
@@ -81,7 +86,7 @@ function shapeResolvedExecApprovals(params: {
 export async function resolveExecApprovalsLocked(
   agentId?: string,
   overrides?: ExecApprovalsDefaultOverrides,
-): Promise<ExecApprovalsResolved> {
+): Promise<ReadonlyExecApprovalsResolved> {
   const filePath = resolveExecApprovalsDisplayPath();
   if (!overrides?.requireSocket) {
     const file = await loadExecApprovalsReadOnlyAsync();
@@ -123,7 +128,6 @@ export {
   hasDurableExecApproval,
   hasExactCommandDurableExecApproval,
   hasNodeCommandAllowAlwaysMarker,
-  isExecApprovalPolicySnapshotCurrent,
   resolveAllowAlwaysPatternCoverage,
   resolveAllowAlwaysPersistenceDecision,
   resolveDurableExecApprovalRequirement,

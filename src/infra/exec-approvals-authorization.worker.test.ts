@@ -97,9 +97,7 @@ it("commits accepted usage once and preserves the agent deletion fence", () => {
   );
   expect(writes).toHaveBeenCalledTimes(1);
   expect(outcomes.map((outcome) => outcome.ok)).toEqual([true, false, true]);
-  expect(
-    outcomes.map((outcome) => (outcome.ok ? outcome.snapshot.file.agents : null)),
-  ).toMatchObject([
+  expect(outcomes.map((outcome) => (outcome.ok ? outcome.file.agents : null))).toMatchObject([
     { main: { allowlist: [{ lastUsedCommand: "echo first" }] } },
     null,
     {
@@ -117,6 +115,6 @@ it.each(["explicit-approval", "auto-review"] as const)(
       changed,
     ]);
     const [unchanged] = commit(input);
-    expect(unchanged?.ok && unchanged.snapshot.file.agents?.main?.allowlist).toEqual([entry]);
+    expect(unchanged?.ok && unchanged.file.agents?.main?.allowlist).toEqual([entry]);
   },
 );

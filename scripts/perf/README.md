@@ -342,6 +342,50 @@ gate milliseconds, and total cold-open milliseconds including seal lookup.
 This is cold process admission, not cold OS page cache; it does not measure
 Gateway readiness or model/channel startup. Record those limits with results.
 
+## Exec approval final checks and channel tool turns
+
+`scripts/bench-channel-turn.mts` can seed a synthetic 100- or 1,000-rule policy,
+split between the main agent and wildcard, and measure the actual retained
+authorization guard after a real SQLite authorization commit:
+
+```sh
+node --expose-gc --import ./scripts/tsx.mjs scripts/bench-channel-turn.mts \
+  --exec-policy-rules 1000 --exec-policy-only --iterations 1000 --samples 5
+```
+
+The owner workload measures current-policy and delayed explicit approvals. Cold
+commit and first-check latency are separate from warmed median/p95 latency.
+Each sample runs an unprofiled timing loop and a separate allocation loop using
+V8 sampling with collected major/minor-GC objects included. Raw `.heapprofile`
+files and `evidence.json` are saved under the printed output directory. Allocation
+bytes per check cover the main isolate's final guard, excluding worker commits,
+process launch, and channel dispatch. They are statistical estimates, not live
+heap growth. Exact `structuredClone` counts come from a separate ten-check loop;
+normalization is reported only as sampled allocation attribution, not an exact
+call count. A live-policy matrix checks unchanged and metadata-only policy,
+additive grants, source upgrades/downgrades, revocation, denial, and always-ask
+changes for current-policy, explicit-approval, and auto-review guards.
+
+Omit `--exec-policy-only` to run one cold and ten warm QA-channel turns through
+an isolated Gateway and mock provider, with one real allowlisted `/bin/echo`
+tool call per turn:
+
+```sh
+node --import ./scripts/tsx.mjs scripts/bench-channel-turn.mts \
+  --entry dist/entry.js --exec-policy-rules 1000
+```
+
+Every turn requires the exact echo result in the provider's matching tool output
+as well as the durable channel reply. These timings cover the full channel turn;
+the owner allocation estimate must not be presented as whole-tool allocation.
+The Gateway mode needs a current build; the owner-only mode uses source modules.
+Both modes create fresh synthetic state beneath `TMPDIR` and leave their evidence
+for inspection. Run both rule counts with the same script on each revision.
+For concurrent pairs, use separate sandbox `TMPDIR`s and the same future
+`--start-at <epoch-ms>`; a run fails if setup misses that time. Hold the sandbox
+measurement lock, swap the assigned 16-core halves between pairs, and compare
+paired differences. Build and fixture preparation stay outside measurement.
+
 ## Shared writer contention from audit retention
 
 `scripts/bench-channel-ingress-writer.ts` measures the real audit FIFO, ingress

@@ -3,7 +3,7 @@ import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-
 import { runClientCredentialOperationAsync } from "./client-credential-async.js";
 import type { ClientSocketRecord } from "./client-credential-store.js";
 import { resolveExecApprovalsSocketPath } from "./exec-approvals-config.js";
-import type { ExecApprovalsFile, ExecApprovalsSnapshot } from "./exec-approvals-core.js";
+import type { ExecApprovalsFile, ReadonlyExecApprovalsSnapshot } from "./exec-approvals-core.js";
 
 type SocketOperationOptions = { signal?: AbortSignal; assertCurrent?: () => void };
 
@@ -45,14 +45,14 @@ export async function ensureExecApprovalsSocket(
 }
 
 export async function attachExecApprovalsSocket(
-  snapshot: ExecApprovalsSnapshot,
+  snapshot: ReadonlyExecApprovalsSnapshot,
   context: Pick<
     OpenClawStateWorkerContext,
     "environment" | "initializationEnvironment" | "admission"
   >,
   assertCurrent?: () => void,
   requested?: ExecApprovalsFile["socket"],
-): Promise<ExecApprovalsSnapshot> {
+): Promise<ReadonlyExecApprovalsSnapshot> {
   const socket = await ensureExecApprovalsSocket(
     context.initializationEnvironment ?? context.environment,
     {

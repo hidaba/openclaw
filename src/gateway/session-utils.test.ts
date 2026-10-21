@@ -23,6 +23,7 @@ import {
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import type { CronJob } from "../cron/types.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../infra/agent-run-registry.js";
+import { updateExecApprovalsForMaintenance } from "../infra/exec-approvals-maintenance.js";
 import * as execApprovalsStore from "../infra/exec-approvals-store.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
@@ -776,8 +777,7 @@ describe("gateway session utils", () => {
     "projects the private native model instead of outer or observed guesses (lightweight=%s)",
     async (lightweightListRow) => {
       const cfg = createModelDefaultsConfig({ primary: "openai/gpt-5.6-sol" });
-      setRuntimeConfigSnapshot(cfg);
-      onTestFinished(() => resetConfigRuntimeState());
+      installConfig(cfg);
       const entry = (sessionId: string): InternalSessionEntry => ({
         sessionId,
         updatedAt: 1,
@@ -1633,7 +1633,7 @@ describe("gateway session utils", () => {
   test("listAgentsForGateway never overstates global sandbox all", async () => {
     const cfg: OpenClawConfig = { agents: { defaults: { sandbox: { mode: "all" } } } };
     await withAgentPermissionState(async () => {
-      execApprovalsStore.updateExecApprovalsForMaintenance({ update: () => ({ version: 1 }) });
+      updateExecApprovalsForMaintenance({ update: () => ({ version: 1 }) });
       const agent = (await listAgentsForGateway(cfg)).agents.find((entry) => entry.id === "main");
       expect(agent).toBeDefined();
       expect(agent).not.toHaveProperty("defaultPermissionMode");

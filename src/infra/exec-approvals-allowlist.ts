@@ -137,8 +137,7 @@ function isSafeBinUsage(params: {
   if (!execName) {
     return false;
   }
-  const matchesSafeBin = params.safeBins.has(execName);
-  if (!matchesSafeBin) {
+  if (!params.safeBins.has(execName)) {
     return false;
   }
   const trustPath = resolveExecutableTrustPath(resolution);
@@ -164,8 +163,8 @@ function isSafeBinUsage(params: {
 
 export type ExecAllowlistEvaluation = {
   allowlistSatisfied: boolean;
-  allowlistMatches: ExecAllowlistEntry[];
-  segmentAllowlistEntries: Array<ExecAllowlistEntry | null>;
+  allowlistMatches: Readonly<ExecAllowlistEntry>[];
+  segmentAllowlistEntries: Array<Readonly<ExecAllowlistEntry> | null>;
   segmentSatisfiedBy: ExecSegmentSatisfiedBy[];
 };
 
@@ -180,8 +179,9 @@ export type SkillBinTrustEntry = {
   name: string;
   resolvedPath: string;
 };
+type Allowlist = readonly Readonly<ExecAllowlistEntry>[];
 type ExecAllowlistContext = {
-  allowlist: ExecAllowlistEntry[];
+  allowlist: Allowlist;
   safeBins: Set<string>;
   safeBinProfiles?: Readonly<Record<string, SafeBinProfile>>;
   cwd?: string;
@@ -256,7 +256,7 @@ const MAX_SHELL_WRAPPER_INLINE_EVAL_DEPTH = 3;
 type SegmentMatchEvaluation = {
   effectiveArgv: string[];
   inlineCommand: string | null;
-  match: ExecAllowlistEntry | null;
+  match: Readonly<ExecAllowlistEntry> | null;
 };
 
 const MAX_PACKAGE_MANAGER_EXEC_UNWRAP_DEPTH = 6;
@@ -489,7 +489,7 @@ function resolveSegmentAllowlistMatch(params: {
           platform: params.context.platform,
         })
       : undefined;
-  const matchShellPath = (allowlist: ExecAllowlistEntry[], candidate: string, argv: string[]) =>
+  const matchShellPath = (allowlist: Allowlist, candidate: string, argv: string[]) =>
     matchAllowlist(
       allowlist,
       {
@@ -540,7 +540,7 @@ function resolveSegmentAllowlistMatch(params: {
 }
 
 function resolveSegmentSatisfaction(params: {
-  match: ExecAllowlistEntry | null;
+  match: Readonly<ExecAllowlistEntry> | null;
   segment: ExecCommandSegment;
   effectiveArgv: string[];
   context: ExecAllowlistContext;
@@ -579,7 +579,7 @@ function evaluateShellWrapperInlineCommand(params: {
   inlineCommand: string;
   context: ExecAllowlistContext;
   inlineDepth: number;
-}): ExecAllowlistEntry[] | null {
+}): Readonly<ExecAllowlistEntry>[] | null {
   if (params.inlineDepth >= MAX_SHELL_WRAPPER_INLINE_EVAL_DEPTH) {
     return null;
   }
@@ -596,7 +596,7 @@ function evaluateShellWrapperInlineCommand(params: {
     return null;
   }
 
-  const matches: ExecAllowlistEntry[] = [];
+  const matches: Readonly<ExecAllowlistEntry>[] = [];
   for (const group of analysis.chains ?? [analysis.segments]) {
     const result = evaluateSegments(group, params.context, params.inlineDepth);
     if (!result.allowlistSatisfied) {
@@ -686,7 +686,7 @@ function evaluateAuthorizationPlan(params: {
   const skillBinTrust = buildSkillBinTrustIndex(skillBins);
   for (const group of params.plan.groups) {
     for (const candidate of group.candidates) {
-      let match: ExecAllowlistEntry | null = null;
+      let match: Readonly<ExecAllowlistEntry> | null = null;
       let satisfiedBy: ExecSegmentSatisfiedBy = null;
       if (candidate.trustMode !== "prompt-only") {
         const evaluation = resolveSegmentAllowlistMatch({

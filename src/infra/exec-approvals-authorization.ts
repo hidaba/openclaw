@@ -1,14 +1,12 @@
 // Revalidates and commits exec authority against the current policy.
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
-import {
-  buildAllowlistEntryMatchKey,
-  createExecApprovalPolicySnapshot,
-} from "./exec-approvals-allow-always.js";
+import { createExecApprovalPolicySnapshot } from "./exec-approvals-allow-always.js";
 import { assertCurrentUsageAuthorization } from "./exec-approvals-authorization.kernel.js";
 import type {
   ExecApprovalUsageAuthorization,
   ExecAuthorizationCommitInput,
 } from "./exec-approvals-contracts.js";
+import { buildAllowlistEntryMatchKey } from "./exec-approvals-resolver.js";
 import { commitExecAuthorizations } from "./exec-approvals-store.js";
 import type { ExecAllowlistEntry } from "./exec-approvals.types.js";
 
@@ -25,28 +23,29 @@ export async function recordAllowlistMatchesUse(
   },
   context?: OpenClawStateWorkerContext,
 ): Promise<() => void> {
-  const input: ExecAuthorizationCommitInput = structuredClone({
+  const input: ExecAuthorizationCommitInput = {
     agentId: params.agentId,
-    matches: [...params.matches],
+    matches: params.matches,
     command: params.command,
     resolvedPath: params.resolvedPath,
     authorization: params.authorization,
-  });
-  const committed = await commitExecAuthorizations(input, params.assertCurrent, context);
-  return retainedAuthorization(input, committed);
+  };
+  return retainedAuthorization(
+    await commitExecAuthorizations(input, params.assertCurrent, context),
+  );
 }
 
 export async function commitExecAuthorizationLocked(
   input: ExecAuthorizationCommitInput,
 ): Promise<() => void> {
-  const params = structuredClone(input);
-  return retainedAuthorization(params, await commitExecAuthorizations(params));
+  return retainedAuthorization(await commitExecAuthorizations(input));
 }
 
-function retainedAuthorization(
-  params: ExecAuthorizationCommitInput,
-  { snapshot, readCurrent }: Awaited<ReturnType<typeof commitExecAuthorizations>>,
-): () => void {
+function retainedAuthorization({
+  input: params,
+  file,
+  readCurrent,
+}: Awaited<ReturnType<typeof commitExecAuthorizations>>): () => void {
   const matchKeys = new Set(
     params.matches.filter((entry) => entry.pattern).map(buildAllowlistEntryMatchKey),
   );
@@ -55,7 +54,7 @@ function retainedAuthorization(
   const authorization = {
     ...params.authorization,
     policySnapshot: createExecApprovalPolicySnapshot({
-      file: snapshot.file,
+      file,
       agentId: params.agentId,
     }),
   };

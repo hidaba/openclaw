@@ -1,4 +1,10 @@
 // Resolves normalized exec approval policy without persistence side effects.
+import { freezeTrustedJsonSnapshot } from "../shared/immutable-data.js";
+import {
+  buildExecApprovalPolicyRuleKey,
+  canonicalizeExecApprovalPolicyRules,
+  type ReadonlyExecApprovalPolicySnapshot,
+} from "./exec-approval-policy-snapshot.js";
 import {
   DEFAULT_ASK,
   DEFAULT_AUTO_ALLOW_SKILLS,
@@ -11,22 +17,157 @@ import {
 import type { ExecApprovalsDefaultOverrides } from "./exec-approvals-contracts.js";
 import type {
   ExecApprovalsDefaults,
-  ExecApprovalsFile,
-  ExecApprovalsResolved,
+  ReadonlyExecApprovalsFile,
+  ReadonlyExecApprovalsResolved,
 } from "./exec-approvals-core.js";
+import type { ExecAllowlistEntry } from "./exec-approvals.types.js";
 import { expandHomePrefix } from "./home-dir.js";
 
-export function resolveExecApprovalsFromFileInternal(params: {
-  file: ExecApprovalsFile;
+type ResolvedPolicy = Pick<
+  ReadonlyExecApprovalsResolved,
+  "defaults" | "agent" | "agentSources" | "allowlist" | "file"
+>;
+type PolicyFacts = Readonly<{
+  snapshot: ReadonlyExecApprovalPolicySnapshot;
+  ruleKeys: ReadonlySet<string>;
+  matchKeys: ReadonlySet<string>;
+  durableKeys: ReadonlySet<string>;
+}>;
+type PreparedPolicy = {
+  resolutions: Map<string, ResolvedPolicy>;
+  facts: Map<string | undefined, PolicyFacts>;
+};
+const preparedPolicies = new WeakMap<ReadonlyExecApprovalsFile, PreparedPolicy>();
+const snapshotRequirements = new WeakMap<
+  ReadonlyExecApprovalPolicySnapshot,
+  readonly (readonly [string, string | undefined])[]
+>();
+
+function policyRequirements(
+  snapshot: ReadonlyExecApprovalPolicySnapshot,
+): readonly (readonly [string, string | undefined])[] {
+  return snapshot.allowlistRules.map(
+    (rule) =>
+      [
+        buildExecApprovalPolicyRuleKey(rule),
+        rule.source === undefined
+          ? buildExecApprovalPolicyRuleKey({ ...rule, source: "allow-always" })
+          : undefined,
+      ] as const,
+  );
+}
+
+export function isExecApprovalPolicySnapshotCurrent(
+  expected: ReadonlyExecApprovalPolicySnapshot,
+  current: ReadonlyExecApprovalPolicySnapshot,
+  preparedRuleKeys?: ReadonlySet<string>,
+): boolean {
+  if (expected === current) {
+    return true;
+  }
+  if (
+    expected.security !== current.security ||
+    expected.ask !== current.ask ||
+    expected.askFallback !== current.askFallback ||
+    expected.autoAllowSkills !== current.autoAllowSkills
+  ) {
+    return false;
+  }
+  const currentKeys =
+    preparedRuleKeys ?? new Set(current.allowlistRules.map(buildExecApprovalPolicyRuleKey));
+  // Additive grants and source upgrades preserve authority; revocation/downgrade does not.
+  for (const rule of snapshotRequirements.get(expected) ?? policyRequirements(expected)) {
+    if (!currentKeys.has(rule[0]) && (rule[1] === undefined || !currentKeys.has(rule[1]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Only decoded canonical rows, validated receipts and owner-authored COW writes enter here. */
+export function retainExecApprovalsPolicy(
+  file: ReadonlyExecApprovalsFile,
+  usageOf?: ReadonlyExecApprovalsFile,
+): ReadonlyExecApprovalsFile {
+  if (!preparedPolicies.has(file)) {
+    freezeTrustedJsonSnapshot(file);
+    preparedPolicies.set(file, {
+      resolutions: new Map(),
+      // Usage writers cannot change policy semantics; receipts retain that distinction.
+      facts: (usageOf && preparedPolicies.get(usageOf)?.facts) || new Map(),
+    });
+  }
+  return file;
+}
+
+export function buildAllowlistEntryMatchKey(
+  entry: Pick<ExecAllowlistEntry, "pattern" | "argPattern">,
+): string {
+  return JSON.stringify([entry.pattern, entry.argPattern ?? null]);
+}
+
+export function readExecApprovalPolicyFacts(
+  file: ReadonlyExecApprovalsFile,
+  agentId: string | undefined,
+): PolicyFacts {
+  const retained = preparedPolicies.get(file);
+  // Unknown agent names all select the same defaults and wildcard policy.
+  const agentKey = agentId ?? "default";
+  const key = Object.hasOwn(file.agents ?? {}, agentKey) ? agentKey : undefined;
+  const cached = retained?.facts.get(key);
+  if (cached) {
+    return cached;
+  }
+  const resolved = resolveExecApprovalsPolicy({ file, agentId });
+  const snapshot = freezeTrustedJsonSnapshot({
+    ...resolved.agent,
+    allowlistRules: canonicalizeExecApprovalPolicyRules(
+      resolved.allowlist.map(({ pattern, argPattern, source }) => ({
+        pattern,
+        ...(argPattern !== undefined ? { argPattern } : {}),
+        ...(source === "allow-always" ? { source } : {}),
+      })),
+    ),
+  });
+  snapshotRequirements.set(snapshot, policyRequirements(snapshot));
+  const facts = {
+    snapshot,
+    ruleKeys: new Set(snapshot.allowlistRules.map(buildExecApprovalPolicyRuleKey)),
+    matchKeys: new Set(resolved.allowlist.map(buildAllowlistEntryMatchKey)),
+    durableKeys: new Set(
+      resolved.allowlist
+        .filter((entry) => entry.source === "allow-always")
+        .map(buildAllowlistEntryMatchKey),
+    ),
+  };
+  retained?.facts.set(key, facts);
+  return facts;
+}
+
+type ResolvePolicyParams = {
+  file: ReadonlyExecApprovalsFile;
   agentId?: string;
   overrides?: ExecApprovalsDefaultOverrides;
-  path?: string;
-  socketPath?: string;
-  token?: string;
-}): ExecApprovalsResolved {
+};
+
+export function resolveExecApprovalsPolicy(params: ResolvePolicyParams): ResolvedPolicy {
   const rawFile = params.file;
-  const file = normalizeExecApprovalsInternal(rawFile);
-  const defaults = file.defaults ?? {};
+  const retained = preparedPolicies.get(rawFile);
+  const cacheKey =
+    retained &&
+    JSON.stringify([
+      params.agentId,
+      params.overrides?.security,
+      params.overrides?.ask,
+      params.overrides?.askFallback,
+      params.overrides?.autoAllowSkills,
+    ]);
+  const cached = cacheKey && retained?.resolutions.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+  const file = retained ? rawFile : normalizeExecApprovalsInternal(rawFile);
+  const defaults: ExecApprovalsDefaults = file.defaults ?? {};
   const agentKey = params.agentId ?? "default";
   const agent = file.agents?.[agentKey] ?? {};
   const wildcard = file.agents?.["*"] ?? {};
@@ -72,12 +213,7 @@ export function resolveExecApprovalsFromFileInternal(params: {
       agent.autoAllowSkills ?? wildcard.autoAllowSkills ?? resolvedDefaults.autoAllowSkills,
   };
   const allowlist = [...(wildcard.allowlist ?? []), ...(agent.allowlist ?? [])];
-  return {
-    path: params.path ?? resolveExecApprovalsDisplayPath(),
-    socketPath: expandHomePrefix(
-      params.socketPath ?? file.socket?.path ?? resolveExecApprovalsSocketPath(),
-    ),
-    token: params.token ?? file.socket?.token ?? "",
+  const resolved = {
     defaults: resolvedDefaults,
     agent: resolvedAgent,
     agentSources: {
@@ -87,5 +223,31 @@ export function resolveExecApprovalsFromFileInternal(params: {
     },
     allowlist,
     file,
+  };
+  if (cacheKey && retained) {
+    // Overrides and agent selection are request shape, never authority.
+    if (retained.resolutions.size >= 64) {
+      retained.resolutions.delete(retained.resolutions.keys().next().value!);
+    }
+    retained.resolutions.set(cacheKey, freezeTrustedJsonSnapshot(resolved));
+  }
+  return resolved;
+}
+
+export function resolveExecApprovalsFromFileInternal(
+  params: ResolvePolicyParams & {
+    path?: string;
+    socketPath?: string;
+    token?: string;
+  },
+): ReadonlyExecApprovalsResolved {
+  const resolved = resolveExecApprovalsPolicy(params);
+  return {
+    ...resolved,
+    path: params.path ?? resolveExecApprovalsDisplayPath(),
+    socketPath: expandHomePrefix(
+      params.socketPath ?? (resolved.file.socket?.path?.trim() || resolveExecApprovalsSocketPath()),
+    ),
+    token: params.token ?? resolved.file.socket?.token?.trim() ?? "",
   };
 }

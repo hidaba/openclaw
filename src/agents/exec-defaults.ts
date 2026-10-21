@@ -5,7 +5,7 @@ import {
   loadExecApprovals,
   loadExecApprovalsReadOnlyAsync,
   type ExecAsk,
-  type ExecApprovalsFile,
+  type ReadonlyExecApprovalsFile,
   type ExecHost,
   type ExecMode,
   type ExecSecurity,
@@ -109,7 +109,7 @@ export async function resolveNodeExecEligibilityAsync(
 
 export type ResolveExecDefaultsParams = {
   cfg?: OpenClawConfig;
-  execApprovals?: ExecApprovalsFile;
+  execApprovals?: ReadonlyExecApprovalsFile;
   sessionEntry?: ExecSessionDefaults | null;
   execOverrides?: ExecPolicyOverrides;
   agentId?: string;
@@ -134,8 +134,8 @@ type ExecDefaultsPreparation =
   | { kind: "resolved"; defaults: ResolvedExecDefaults }
   | {
       kind: "needs-approvals";
-      suppliedApprovals: ExecApprovalsFile | undefined;
-      resolve: (file: ExecApprovalsFile) => ResolvedExecDefaults;
+      suppliedApprovals: ReadonlyExecApprovalsFile | undefined;
+      resolve: (file: ReadonlyExecApprovalsFile) => ResolvedExecDefaults;
     };
 
 /** Resolve policy inputs first; only the host-floor branch requests approval state. */
@@ -280,7 +280,7 @@ export async function resolveExecDefaultsAsync(
 /** Called inside retained session-reader scopes, before synchronous tool construction. */
 export async function resolvePreparedExecDefaultsAsync(
   preparation: ExecDefaultsPreparation,
-  loadApprovals: () => Promise<ExecApprovalsFile>,
+  loadApprovals: () => Promise<ReadonlyExecApprovalsFile>,
 ): Promise<ResolvedExecDefaults> {
   return preparation.kind === "resolved"
     ? preparation.defaults

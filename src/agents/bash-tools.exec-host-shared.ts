@@ -22,7 +22,7 @@ import {
   resolveExecApprovalsLocked,
   type ExecAsk,
   type ExecApprovalDecision,
-  type ExecApprovalsResolved,
+  type ReadonlyExecApprovalsResolved,
   type ExecSecurity,
 } from "../infra/exec-approvals.js";
 import { LruCache } from "../infra/lru-cache.js";
@@ -56,10 +56,10 @@ function rememberExecApprovalFollowupFailureKey(key: string): boolean {
 
 /** Effective approval policy after caller config and approvals file are merged. */
 type ExecHostApprovalContext = {
-  approvals: ExecApprovalsResolved;
+  approvals: ReadonlyExecApprovalsResolved;
   hostSecurity: ExecSecurity;
   hostAsk: ExecAsk;
-  askFallback: ExecApprovalsResolved["agent"]["askFallback"];
+  askFallback: ReadonlyExecApprovalsResolved["agent"]["askFallback"];
 };
 
 /** Why an approval request cannot be delivered interactively. */
@@ -100,7 +100,7 @@ type ExecApprovalFollowupTarget = {
 /** Converts a raw approval decision plus fallback policy into execution state. */
 function resolveBaseExecApprovalDecision(params: {
   decision: string | null;
-  askFallback: ExecApprovalsResolved["agent"]["askFallback"];
+  askFallback: ReadonlyExecApprovalsResolved["agent"]["askFallback"];
 }): {
   approvedByAsk: boolean;
   deniedReason: string | null;
@@ -220,7 +220,7 @@ async function createAndRegisterDefaultExecApprovalRequest(
 
 type ExecApprovalDecisionParams<TTimeoutContext> = {
   decision: string | null;
-  askFallback: ExecApprovalsResolved["agent"]["askFallback"];
+  askFallback: ReadonlyExecApprovalsResolved["agent"]["askFallback"];
   resolveTimedOut?: (state: {
     baseDecision: { timedOut: boolean };
     approvedByAsk: boolean;
@@ -364,7 +364,7 @@ export function buildHeadlessExecApprovalDeniedMessage(params: {
   host: "gateway" | "node";
   security: ExecSecurity;
   ask: ExecAsk;
-  askFallback: ExecApprovalsResolved["agent"]["askFallback"];
+  askFallback: ReadonlyExecApprovalsResolved["agent"]["askFallback"];
 }): string {
   const runLabel = params.trigger === "cron" ? "Automation runs" : "Headless runs";
   const approvalTarget = params.host === "node" ? "--node <id|name|ip>" : "--gateway";

@@ -12,6 +12,7 @@ import type {
   ExecApprovalsAgent,
   ExecApprovalsDefaults,
   ExecApprovalsFile,
+  ReadonlyExecApprovalsFile,
   ExecAsk,
   ExecSecurity,
 } from "./exec-approvals-core.js";
@@ -132,7 +133,7 @@ export function resolveExecApprovalsDisplayPath(env: NodeJS.ProcessEnv = process
     : path.join(stateDir, locator);
 }
 
-export function createFailClosedExecApprovalsFallback(): ExecApprovalsFile {
+export function createFailClosedExecApprovalsFallback(): ReadonlyExecApprovalsFile {
   return normalizeExecApprovalsInternal({
     version: 1,
     defaults: {
@@ -271,12 +272,16 @@ function parseExecApprovals(
   }
 }
 
+export function isPersistedExecApprovals(value: unknown): value is ExecApprovalsFile {
+  return persistedExecApprovalsSchema.safeParse(value).success;
+}
+
 export function parsePersistedExecApprovals(raw: string): Result<ExecApprovalsFile, string> {
   return parseExecApprovals(raw, persistedExecApprovalsSchema);
 }
 
 /** Doctor imports historical documents before ordinary readers accept their canonical shape. */
-export function parseLegacyExecApprovals(raw: string): Result<ExecApprovalsFile, string> {
+export function parseLegacyExecApprovals(raw: string): Result<ReadonlyExecApprovalsFile, string> {
   const parsed = parseExecApprovals(raw, legacyExecApprovalsSchema);
   return parsed.ok ? ok(normalizeExecApprovalsInternal(parsed.value)) : parsed;
 }
@@ -288,9 +293,9 @@ export function tryParsePersistedExecApprovals(raw: string): ExecApprovalsFile |
 }
 
 function mergeLegacyAgent(
-  current: ExecApprovalsAgent,
-  legacy: ExecApprovalsAgent,
-): ExecApprovalsAgent {
+  current: NonNullable<ReadonlyExecApprovalsFile["agents"]>[string],
+  legacy: NonNullable<ReadonlyExecApprovalsFile["agents"]>[string],
+): NonNullable<ReadonlyExecApprovalsFile["agents"]>[string] {
   const allowlist: ExecAllowlistEntry[] = [];
   const seen = new Set<string>();
   const pushEntry = (entry: ExecAllowlistEntry) => {
@@ -363,8 +368,8 @@ function coerceAllowlistEntries(allowlist: unknown): ExecAllowlistEntry[] | unde
 }
 
 function normalizeAllowlistMetadata(
-  allowlist: ExecAllowlistEntry[] | undefined,
-): ExecAllowlistEntry[] | undefined {
+  allowlist: readonly ExecAllowlistEntry[] | undefined,
+): readonly ExecAllowlistEntry[] | undefined {
   if (!Array.isArray(allowlist) || allowlist.length === 0) {
     return allowlist;
   }
@@ -405,7 +410,9 @@ function sanitizeExecApprovalPolicy(
   return { security, ask, askFallback, autoAllowSkills: policy?.autoAllowSkills };
 }
 
-export function normalizeExecApprovalsInternal(file: ExecApprovalsFile): ExecApprovalsFile {
+export function normalizeExecApprovalsInternal(
+  file: ReadonlyExecApprovalsFile,
+): ReadonlyExecApprovalsFile {
   const { path: rawSocketPath, token: rawValue } = file.socket ?? {};
   const socketPath = rawSocketPath?.trim();
   const token = rawValue?.trim();
@@ -448,7 +455,9 @@ export function normalizeExecApprovalsInternal(file: ExecApprovalsFile): ExecApp
 }
 
 /** Socket credentials are local; shared policy retains only unrelated socket metadata. */
-export function stripExecApprovalsSocketCredentials(file: ExecApprovalsFile): ExecApprovalsFile {
+export function stripExecApprovalsSocketCredentials(
+  file: ReadonlyExecApprovalsFile,
+): ReadonlyExecApprovalsFile {
   const { path: _path, token: _token, ...metadata } = file.socket ?? {};
   return {
     ...file,

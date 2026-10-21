@@ -4,7 +4,7 @@ import type { AllowAlwaysPersistenceDecision } from "./exec-approvals-contracts.
 import {
   EXEC_APPROVAL_DECISIONS,
   normalizeExecAsk,
-  type ExecApprovalsFile,
+  type ReadonlyExecApprovalsFile,
   type ExecApprovalDecision,
   type ExecApprovalUnavailableDecision,
   type ExecAsk,
@@ -87,10 +87,10 @@ export function resolveExecApprovalRequestAllowedDecisions(params?: {
 
 /** These worker commands may change grants/usage, never host execution floors. */
 export function assertExecApprovalsHostPolicyUnchanged(
-  before: ExecApprovalsFile,
-  after: ExecApprovalsFile,
+  before: ReadonlyExecApprovalsFile,
+  after: ReadonlyExecApprovalsFile,
 ): void {
-  const fields = (file: ExecApprovalsFile) => ({
+  const fields = (file: ReadonlyExecApprovalsFile) => ({
     security: file.defaults?.security,
     ask: file.defaults?.ask,
     agents: Object.fromEntries(

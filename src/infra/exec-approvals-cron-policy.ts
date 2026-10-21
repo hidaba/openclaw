@@ -6,7 +6,7 @@ import {
 import { executeExistingOpenClawStateRead } from "../state/openclaw-state-db-readonly.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import { resolveExecApprovalsDisplayPath } from "./exec-approvals-config.js";
-import type { ExecApprovalsFile, ExecAsk, ExecSecurity } from "./exec-approvals-core.js";
+import type { ReadonlyExecApprovalsFile, ExecAsk, ExecSecurity } from "./exec-approvals-core.js";
 import { assertNoPendingLegacyExecApprovals } from "./exec-approvals-migration-gate.js";
 import { maxAsk, minSecurity } from "./exec-approvals-policy.js";
 import { resolveExecApprovalsFromFileInternal } from "./exec-approvals-resolver.js";
@@ -20,7 +20,7 @@ type CronExecHostPolicyUse = {
   retired: boolean;
   pending: number;
   initiating: boolean;
-  accepts: (file: ExecApprovalsFile) => boolean;
+  accepts: (file: ReadonlyExecApprovalsFile) => boolean;
 };
 const cronPolicyUses = resolveGlobalSingleton(
   Symbol.for("openclaw.execApprovalsCronPolicyUses"),
@@ -29,17 +29,20 @@ const cronPolicyUses = resolveGlobalSingleton(
 
 const pendingPolicyPublications = resolveGlobalSingleton(
   Symbol.for("openclaw.execApprovalsPendingPolicyPublications"),
-  () => new Map<string, Set<ExecApprovalsFile>>(),
+  () => new Map<string, Set<ReadonlyExecApprovalsFile>>(),
 );
 
-export function retainCronPolicyPublication(key: string, file: ExecApprovalsFile): () => void {
+export function retainCronPolicyPublication(
+  key: string,
+  file: ReadonlyExecApprovalsFile,
+): () => void {
   const affected = [...(cronPolicyUses.get(key) ?? [])].filter((use) => !use.accepts(file));
   if (affected.some((use) => use.initiating)) {
     throw new Error(
       "Exec policy change refused while cron native launch acknowledgement is pending; retry after command startup settles.",
     );
   }
-  const pending = pendingPolicyPublications.get(key) ?? new Set<ExecApprovalsFile>();
+  const pending = pendingPolicyPublications.get(key) ?? new Set<ReadonlyExecApprovalsFile>();
   pendingPolicyPublications.set(key, pending);
   pending.add(file);
   for (const use of affected) {
@@ -185,7 +188,7 @@ export async function prepareCronExecHostPolicyUse(
 
 export function stageCronExecHostPolicyPublication(
   db: EngineConnection,
-  file: ExecApprovalsFile,
+  file: ReadonlyExecApprovalsFile,
 ): void {
   if (cronPolicyUses.size === 0) {
     return;
