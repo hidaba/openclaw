@@ -169,6 +169,37 @@ describe("Web Push native read boundaries", () => {
   });
 });
 
+describe("Web Push command presentation", () => {
+  it("keeps settings available after an admitted command rejects", async () => {
+    const completion = createDeferred();
+    const initial = webPush();
+    const [current, setCurrent] = createSignal(initial);
+    const view = renderSection({
+      get webPush() {
+        return current();
+      },
+      onWebPushTest: () => {
+        setCurrent({ ...initial, loading: true });
+        void completion.promise.catch(() =>
+          setCurrent({ ...initial, command: completion.promise }),
+        );
+        return completion.promise;
+      },
+    });
+    const send = view.getByRole("button", { name: "Send test" });
+    send.click();
+    await waitForSolid(() => expect(send.hasAttribute("disabled")).toBe(true));
+    completion.reject(new Error("Example notification service is unavailable."));
+    await waitForSolid(() =>
+      expect(view.container.textContent).toContain("Example notification service is unavailable."),
+    );
+    expect(view.container.textContent).toContain("Browser support");
+    expect(view.container.querySelectorAll(".cfg-field__error")).toHaveLength(1);
+    expect(view.getByRole("button", { name: "Send test" }).hasAttribute("disabled")).toBe(false);
+    expect(view.container.querySelector(".settings-stack")?.hasAttribute("inert")).toBe(false);
+  });
+});
+
 type DevicePreferencesListener = NonNullable<NotificationProps["onWebPushSetDevicePreferences"]>;
 
 describe("Web Push preference controls", () => {

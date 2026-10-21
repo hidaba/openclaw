@@ -15,7 +15,7 @@ export type WebPushSnapshot = WebPushAccess & {
   permission: NotificationPermission | "install-required" | "unsupported";
   subscription: WebPushSubscriptionState;
   loading: boolean;
-  read?: Promise<void>;
+  read?: Promise<unknown>;
   command?: Promise<void>;
   error?: string | null;
   preferences?: WebPushPreferencesResult | null;
@@ -36,7 +36,7 @@ export function createWebPushCapability(
     "serviceWorker" in nav &&
     "PushManager" in globalThis &&
     "Notification" in globalThis;
-  let owner: WebPushCapabilityRuntime | null = null;
+  let owner: WebPushCapabilityRuntime | undefined;
   const snapshot: WebPushSnapshot = {
     supported,
     ...readWebPushAccess(gateway.snapshot),
@@ -65,31 +65,26 @@ export function createWebPushCapability(
       publish(access);
     }
   });
-  const runtime: Promise<WebPushCapabilityRuntime | null> | null = snapshot.supported
-    ? import("./web-push.runtime.ts")
-        .then(
-          ({ createWebPushCapabilityRuntime }) =>
-            (owner = createWebPushCapabilityRuntime({
-              gateway,
-              publish,
-              connectionBootstrap: options.connectionBootstrap,
-            })),
-        )
-        .catch((error: unknown) => {
-          const read = Promise.reject<void>(
-            error instanceof Error ? error : new Error(String(error)),
-          );
-          void read.catch(() => {});
-          publish({
-            supported: false,
-            permission: "unsupported",
-            subscription: "unknown",
-            preferences: null,
-            read,
-          });
-          return null;
-        })
-    : null;
+  const initialization = supported
+    ? import("./web-push.runtime.ts").then(
+        ({ createWebPushCapabilityRuntime }) =>
+          (owner = createWebPushCapabilityRuntime({
+            gateway,
+            publish,
+            connectionBootstrap: options.connectionBootstrap,
+          })),
+      )
+    : undefined;
+  const runtime = initialization?.catch(() => {
+    publish({
+      supported: false,
+      permission: "unsupported",
+      subscription: "unknown",
+      preferences: null,
+      read: initialization,
+    });
+    return null;
+  });
   return {
     snapshot,
     subscribe(listener: () => void) {

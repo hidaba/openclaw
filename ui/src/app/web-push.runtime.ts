@@ -15,7 +15,7 @@ const WEB_PUSH_USER_PREFERENCES_KEY = "notifications.web.v1";
 
 type WebPushReconcileResult =
   | { state: "missing" }
-  | { state: "registered" }
+  | { state: "registered"; subscription: PushSubscription }
   | { state: "vapid-mismatch"; error: string };
 
 export type WebPushSubscriptionState = WebPushReconcileResult["state"] | "unknown" | "local";
@@ -37,7 +37,7 @@ export type WebPushCapabilityAction =
 
 export type WebPushCapabilityPatch = Partial<WebPushAccess> & {
   error?: string | null;
-  read?: Promise<void>;
+  read?: Promise<unknown>;
   command?: Promise<void>;
   permission?: NotificationPermission | "unsupported";
   supported?: boolean;
@@ -90,14 +90,9 @@ function webPushClient(gateway: ApplicationGateway, client: GatewayBrowserClient
   };
 }
 
-function pushManagerFor(registration: ServiceWorkerRegistration | undefined): PushManager | null {
-  const manager = registration?.pushManager;
-  return manager && typeof manager.getSubscription === "function" ? manager : null;
-}
-
 function requirePushManager(registration: ServiceWorkerRegistration): PushManager {
-  const manager = pushManagerFor(registration);
-  if (!manager || typeof manager.subscribe !== "function") {
+  const manager = registration.pushManager;
+  if (!manager) {
     throw new Error(
       "Web Push is unavailable in this browser. On iPhone or iPad, add OpenClaw to the Home Screen and open the installed app.",
     );
@@ -112,12 +107,9 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
 }
 
 export async function getExistingSubscription(): Promise<PushSubscription | null> {
-  if (!("serviceWorker" in navigator)) {
-    return null;
-  }
   // Passive reads must settle even when no worker is installed or activation is blocked.
   const registration = await navigator.serviceWorker.getRegistration();
-  return (await pushManagerFor(registration)?.getSubscription()) ?? null;
+  return (await registration?.pushManager?.getSubscription()) ?? null;
 }
 
 async function resolveGatewayVapidPublicKey(
@@ -173,7 +165,7 @@ async function registerPushSubscription(
     return { state: "vapid-mismatch", error: VAPID_MISMATCH_MESSAGE };
   }
   await client.request("push.web.subscribe", serializePushSubscription(subscription));
-  return { state: "registered" };
+  return { state: "registered", subscription };
 }
 
 async function resolveWebPushCapabilityPatch(
@@ -184,7 +176,7 @@ async function resolveWebPushCapabilityPatch(
     subscription: result.state,
     preferences:
       result.state === "registered" && client.canReadPreferences()
-        ? await getWebPushPreferences(client)
+        ? await getWebPushPreferences(client, result.subscription)
         : null,
     error: result.state === "vapid-mismatch" ? result.error : null,
   };
@@ -200,7 +192,9 @@ async function reconcileWebPushCapability(
     publish({ subscription: "local" });
     return {
       subscription: "local",
-      preferences: client.canReadPreferences() ? await getWebPushPreferences(client) : null,
+      preferences: client.canReadPreferences()
+        ? await getWebPushPreferences(client, subscription)
+        : null,
       error: null,
     };
   }
@@ -214,47 +208,43 @@ async function reconcileWebPushCapability(
   return await resolveWebPushCapabilityPatch(client, result);
 }
 
-export function startWebPushReconciliation(params: {
+export function createWebPushCapabilityRuntime(params: {
   connectionBootstrap?: ConnectionBootstrapCoordinator;
   gateway: ApplicationGateway;
   publish: (patch: WebPushCapabilityPatch) => void;
-}): { retire: () => void; dispose: () => void } {
+}): WebPushCapabilityRuntime {
+  let operation: Promise<void> | null = null;
   let connectedClient: GatewayBrowserClient | null = null;
   let profileId: string | undefined;
   let lastAccess: WebPushAccess | null = null;
-  let generation = 0;
   let disposed = false;
-  let retireRead = () => {};
-  const reconcile = (client: GatewayBrowserClient, currentGeneration: number, queued = false) => {
-    retireRead();
-    const completion = Promise.withResolvers<void>();
-    retireRead = completion.resolve;
-    const current = () => !disposed && currentGeneration === generation;
+  let pendingRead: PromiseWithResolvers<void> | undefined;
+  let scope = Promise.withResolvers<void>();
+  const retire = () => {
+    pendingRead?.resolve();
+    pendingRead = undefined;
+  };
+  const reconcile = (client: GatewayBrowserClient, queued = false) => {
+    retire();
+    const completion = (pendingRead = Promise.withResolvers<void>());
+    const current = () => pendingRead === completion;
     const publish = (patch: WebPushCapabilityPatch) => {
       if (current()) {
         params.publish(patch);
       }
     };
-    const run = async () => {
+    // Bootstrap completion absorbs task errors; the task settles its own read receipt.
+    const run = () => {
       if (!current()) {
-        return;
+        return Promise.resolve();
       }
-      try {
-        publish(
-          await reconcileWebPushCapability(
-            webPushClient(params.gateway, client),
-            readWebPushAccess(params.gateway.snapshot).canManage,
-            publish,
-          ),
-        );
-        completion.resolve();
-      } catch (error) {
-        if (current()) {
-          completion.reject(error);
-        } else {
-          completion.resolve();
-        }
-      }
+      return reconcileWebPushCapability(
+        webPushClient(params.gateway, client),
+        readWebPushAccess(params.gateway.snapshot).canManage,
+        publish,
+      )
+        .then(publish)
+        .then(completion.resolve, completion.reject);
     };
     // The receipt describes admitted work even while the bootstrap queue holds it.
     void completion.promise.catch(() => {});
@@ -278,11 +268,18 @@ export function startWebPushReconciliation(params: {
     connectedClient = client;
     profileId = snapshot.selfUser?.id;
     lastAccess = access;
-    const currentGeneration = ++generation;
-    retireRead();
-    params.publish({ subscription: "unknown", preferences: null, error: null, read: undefined });
+    scope.resolve();
+    scope = Promise.withResolvers<void>();
+    retire();
+    params.publish({
+      subscription: "unknown",
+      preferences: null,
+      error: null,
+      read: undefined,
+      command: undefined,
+    });
     if (client) {
-      reconcile(client, currentGeneration, clientChanged);
+      reconcile(client, clientChanged);
     }
   };
   // Connection receipts invalidate prior registration work before reconciling the new client.
@@ -303,51 +300,9 @@ export function startWebPushReconciliation(params: {
     ) {
       return;
     }
-    reconcile(client, ++generation);
+    reconcile(client);
   });
   handleGateway(params.gateway.snapshot);
-  const retire = () => {
-    generation += 1;
-    retireRead();
-  };
-  return {
-    retire,
-    dispose() {
-      disposed = true;
-      retire();
-      stopGateway();
-      stopEvents();
-    },
-  };
-}
-
-export function createWebPushCapabilityRuntime(params: {
-  connectionBootstrap?: ConnectionBootstrapCoordinator;
-  gateway: ApplicationGateway;
-  publish: (patch: WebPushCapabilityPatch) => void;
-}): WebPushCapabilityRuntime {
-  let operation: Promise<void> | null = null;
-  let scope = params.gateway.snapshot;
-  let retired = Promise.withResolvers<void>();
-  let disposed = false;
-  const stopScope = params.gateway.subscribe((next) => {
-    const access = readWebPushAccess(next);
-    const previous = readWebPushAccess(scope);
-    if (
-      next.client === scope.client &&
-      next.phase === scope.phase &&
-      next.selfUser?.id === scope.selfUser?.id &&
-      access.canManage === previous.canManage &&
-      access.canReadPreferences === previous.canReadPreferences
-    ) {
-      return;
-    }
-    retired.resolve();
-    retired = Promise.withResolvers<void>();
-    scope = next;
-    params.publish({ command: undefined });
-  });
-  const reconciliation = startWebPushReconciliation(params);
   return {
     get pending() {
       return operation !== null;
@@ -357,12 +312,11 @@ export function createWebPushCapabilityRuntime(params: {
       if (!client || disposed) {
         return Promise.resolve();
       }
-      const admitted = retired;
-      const isCurrent = () => !disposed && admitted === retired;
-      const previous = operation;
+      const admitted = scope;
+      const isCurrent = () => !disposed && admitted === scope;
       // This command's readback supersedes any earlier passive reconciliation.
-      reconciliation.retire();
-      const actionRun = (previous?.catch(() => {}) ?? Promise.resolve())
+      retire();
+      const next = (operation?.catch(() => {}) ?? Promise.resolve())
         .then(async () => {
           if (!isCurrent()) {
             return;
@@ -376,19 +330,14 @@ export function createWebPushCapabilityRuntime(params: {
             params.publish(patch);
           }
         })
-        .catch((error: unknown) => {
-          if (isCurrent()) {
-            throw error;
+        .finally(() => {
+          if (operation === next) {
+            operation = null;
+            params.publish({
+              permission: Notification.permission,
+            });
           }
         });
-      const next = actionRun.finally(() => {
-        if (operation === next) {
-          operation = null;
-          params.publish({
-            permission: "Notification" in window ? Notification.permission : "unsupported",
-          });
-        }
-      });
       operation = next;
       params.publish({ command: undefined, read: undefined, error: null });
       const completion = Promise.race([next, admitted.promise]);
@@ -401,9 +350,10 @@ export function createWebPushCapabilityRuntime(params: {
     },
     dispose() {
       disposed = true;
-      retired.resolve();
-      stopScope();
-      reconciliation.dispose();
+      scope.resolve();
+      retire();
+      stopGateway();
+      stopEvents();
     },
   };
 }
@@ -475,9 +425,11 @@ async function requireExistingSubscription(): Promise<PushSubscription> {
   return subscription;
 }
 
-async function getWebPushPreferences(client: WebPushClient): Promise<WebPushPreferencesResult> {
-  const subscription = await requireExistingSubscription();
-  return await client.request<WebPushPreferencesResult>("push.web.preferences.get", {
+function getWebPushPreferences(
+  client: WebPushClient,
+  subscription: PushSubscription,
+): Promise<WebPushPreferencesResult> {
+  return client.request<WebPushPreferencesResult>("push.web.preferences.get", {
     endpoint: subscription.endpoint,
   });
 }
@@ -506,7 +458,7 @@ async function runWebPushCapabilityAction(
         scope: action.scope,
         preferences: action.preferences,
       });
-      return { preferences: await getWebPushPreferences(client) };
+      return { preferences: await getWebPushPreferences(client, subscription) };
     }
     default:
       return action satisfies never;

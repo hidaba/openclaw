@@ -45,15 +45,18 @@ function encodedVapidKey(bytes: number[]): string {
   return Buffer.from(bytes).toString("base64url");
 }
 
-function existingSubscription(vapidBytes: number[]): PushSubscription {
+function existingSubscription(
+  vapidBytes: number[],
+  endpoint = "https://push.example.test/subscription",
+): PushSubscription {
   return {
-    endpoint: "https://push.example.test/subscription",
+    endpoint,
     options: {
       applicationServerKey: Uint8Array.from(vapidBytes).buffer,
       userVisibleOnly: true,
     },
     toJSON: () => ({
-      endpoint: "https://push.example.test/subscription",
+      endpoint,
       keys: { p256dh: "p256dh", auth: "auth" },
     }),
   } as unknown as PushSubscription;
@@ -384,14 +387,14 @@ describe("web push Gateway reconciliation", () => {
   });
 
   it("reconciles changed access while initial registration is queued", async ({ signal }) => {
-    const { startWebPushReconciliation } = await import("./web-push.runtime.ts");
+    const { createWebPushCapabilityRuntime } = await import("./web-push.runtime.ts");
     const coordinator = createConnectionBootstrapCoordinator();
     const request = vi.fn();
     const client = { request } as unknown as GatewayBrowserClient;
     const harness = gatewayHarness();
     harness.connect(client);
     const settled = createDeferred();
-    const stop = startWebPushReconciliation({
+    const stop = createWebPushCapabilityRuntime({
       gateway: harness.gateway,
       connectionBootstrap: coordinator,
       publish: (patch) => {
@@ -444,11 +447,20 @@ describe("web push Gateway reconciliation", () => {
     }
   });
 
-  it("schedules initial reconciliation through the connection bootstrap coordinator", async () => {
+  it("preserves initial reconciliation failures through the connection bootstrap coordinator", async () => {
     const coordinator = createConnectionBootstrapCoordinator();
     const run = vi.spyOn(coordinator, "run");
     const harness = gatewayHarness();
-    const connection = gatewayClient(Promise.resolve(encodedVapidKey([4, 1, 2, 3])));
+    const vapidPublicKey = encodedVapidKey([4, 1, 2, 3]);
+    const connection = gatewayClient(Promise.resolve(vapidPublicKey));
+    connection.request.mockImplementation(async (method) => {
+      if (method === "push.web.preferences.get") {
+        throw new Error("Notification preferences are unavailable.");
+      }
+      return method === "push.web.vapidPublicKey"
+        ? { vapidPublicKey }
+        : { subscriptionId: "subscription-1" };
+    });
     const capability = createWebPushCapability(harness.gateway, {
       connectionBootstrap: coordinator,
     });
@@ -458,19 +470,37 @@ describe("web push Gateway reconciliation", () => {
       expect(run).toHaveBeenCalledExactlyOnceWith("web-push-reconcile", expect.any(Function)),
     );
     expect(connection.request).not.toHaveBeenCalled();
+    const read = capability.snapshot.read;
     coordinator.synchronize({ client: connection.client, connected: true });
-    await vi.waitFor(() =>
+    try {
+      await expect(read).rejects.toThrow("Notification preferences are unavailable.");
       expect(connection.request).toHaveBeenCalledWith(
         "push.web.subscribe",
         expect.objectContaining({ endpoint: "https://push.example.test/subscription" }),
-      ),
-    );
-
-    capability.dispose();
-    coordinator.reset();
+      );
+    } finally {
+      capability.dispose();
+      coordinator.reset();
+    }
   });
 
   it("serializes rapid preference edits without dropping the latest full object", async () => {
+    const initialSubscription = existingSubscription([4, 1, 2, 3]);
+    const replacementSubscription = existingSubscription(
+      [4, 1, 2, 3],
+      "https://push.example.test/replacement",
+    );
+    let subscription = initialSubscription;
+    const registration = {
+      pushManager: { getSubscription: async () => subscription },
+    };
+    Object.defineProperty(navigator, "serviceWorker", {
+      configurable: true,
+      value: {
+        ready: Promise.resolve(registration),
+        getRegistration: async () => registration,
+      },
+    });
     const firstSave = createDeferred();
     const first = notificationPreferences(true);
     const second = notificationPreferences(false);
@@ -509,6 +539,7 @@ describe("web push Gateway reconciliation", () => {
         expect.objectContaining({ preferences: first }),
       ),
     );
+    subscription = replacementSubscription;
     const secondOperation = capability.run({ kind: "set", scope: "user", preferences: second });
     firstSave.resolve();
 
@@ -516,6 +547,16 @@ describe("web push Gateway reconciliation", () => {
     expect(request.mock.calls.filter(([method]) => method === "push.web.preferences.set")).toEqual([
       ["push.web.preferences.set", expect.objectContaining({ preferences: first })],
       ["push.web.preferences.set", expect.objectContaining({ preferences: second })],
+    ]);
+    expect(
+      request.mock.calls
+        .filter(([method]) => method.startsWith("push.web.preferences."))
+        .map(([method, params]) => [method, (params as { endpoint: string }).endpoint]),
+    ).toEqual([
+      ["push.web.preferences.set", initialSubscription.endpoint],
+      ["push.web.preferences.get", initialSubscription.endpoint],
+      ["push.web.preferences.set", replacementSubscription.endpoint],
+      ["push.web.preferences.get", replacementSubscription.endpoint],
     ]);
     expect(capability.snapshot.preferences?.user).toEqual(second);
     capability.dispose();
