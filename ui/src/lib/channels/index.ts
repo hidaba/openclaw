@@ -500,7 +500,6 @@ export function createChannelCapability(gateway: ChannelGateway) {
         state.channelsLoading = false;
         state.channelsLoadingProbe = null;
         resolve(state.channelsError);
-        settleChannelRead = undefined;
         if (channelsInvalidated) {
           await loadChannels(false);
         }
