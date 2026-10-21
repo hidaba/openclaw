@@ -404,7 +404,6 @@ export async function buildReplyPayloads(params: {
     replyPayloads: filteredPayloads.flatMap(
       (payload) =>
         normalizeReplyPayload(payload, {
-          applyChannelTransforms: false,
           conversationContext: params.conversationContext,
         }) ?? [],
     ),

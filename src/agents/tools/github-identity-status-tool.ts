@@ -3,12 +3,9 @@ import type { ToolsGitHubStatusResult } from "../../../packages/gateway-protocol
 import type { AnyAgentTool } from "./common.js";
 import { jsonResult } from "./common.js";
 import { getGatewayToolCallerIdentity } from "./gateway-caller-context.js";
-import { callInProcessGatewayTool, type InProcessGatewayCaller } from "./in-process-gateway.js";
+import { callInProcessGatewayTool } from "./in-process-gateway.js";
 
-export function createGitHubIdentityStatusTool(
-  options: { callGateway?: InProcessGatewayCaller } = {},
-): AnyAgentTool {
-  const callGateway = options.callGateway ?? callInProcessGatewayTool;
+export function createGitHubIdentityStatusTool(): AnyAgentTool {
   return {
     label: "GitHub Identity Status",
     name: "github_identity_status",
@@ -20,10 +17,13 @@ export function createGitHubIdentityStatusTool(
       if (!caller?.agentId) {
         throw new Error("GitHub identity status requires the current Gateway agent.");
       }
-      const status = await callGateway<ToolsGitHubStatusResult>("tools.github.status", {
-        agentId: caller.agentId,
-        selectedScope: "agent",
-      });
+      const status = await callInProcessGatewayTool<ToolsGitHubStatusResult>(
+        "tools.github.status",
+        {
+          agentId: caller.agentId,
+          selectedScope: "agent",
+        },
+      );
       const reconnect =
         status.effective.credentialState !== "available" ||
         ["expired", "failed", "unavailable"].includes(status.effective.refreshState);

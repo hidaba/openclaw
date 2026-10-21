@@ -408,7 +408,7 @@ describe("cloud turn media boundary", () => {
 
     // Age the original only: the configured sweep does not own the worker's private copy.
     await fs.utimes(expired.path, 0, 0);
-    await cleanOldMedia(60 * 60_000, { recursive: true, pruneEmptyDirs: true });
+    await cleanOldMedia(60 * 60_000);
     await expect(fs.stat(expired.path)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.readFile(described.path)).resolves.toEqual(png);
     expect(rig.inputFiles()).toEqual(privateInputs);

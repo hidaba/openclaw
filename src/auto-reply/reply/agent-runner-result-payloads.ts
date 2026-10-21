@@ -314,8 +314,7 @@ export async function prepareReplyAgentPayloads(state: {
     (payload.isCommentary !== true || opts?.commentaryPayloadsEnabled === true);
   const applyFinalReplyToMode = (payload: ReplyPayload) => {
     const laneEnabled = isPayloadLaneEnabled(payload);
-    const isFilteredPayload =
-      normalizeReplyPayload(payload, { applyChannelTransforms: false }) === null;
+    const isFilteredPayload = normalizeReplyPayload(payload) === null;
     const shouldDeferToolWarning = waitingStatusPayload && isGeneratedToolWarning(payload);
     return !laneEnabled || isFilteredPayload || shouldDeferToolWarning
       ? payload
@@ -583,7 +582,7 @@ export async function prepareReplyAgentPayloads(state: {
         ((!shouldDeliverTerminalFailure && !waitingStatusPayload) ||
           followupRun.run.sourceReplyDeliveryMode !== "message_tool_only" ||
           getReplyPayloadMetadata(payload)?.deliverDespiteSourceReplySuppression === true) &&
-        normalizeReplyPayload(payload, { applyChannelTransforms: false }) !== null,
+        normalizeReplyPayload(payload) !== null,
     );
   if (waitingStatusPayload && hasTerminalReply) {
     replyPayloads = replyPayloadsWithoutToolWarnings;
@@ -629,7 +628,7 @@ export async function prepareReplyAgentPayloads(state: {
       payload.isError ||
       (!isReplyPayloadStatusNotice(payload) &&
         isPayloadLaneEnabled(payload) &&
-        normalizeReplyPayload(payload, { applyChannelTransforms: false }) !== null),
+        normalizeReplyPayload(payload) !== null),
   );
   const canDeliverStandaloneFallbackNotice =
     Boolean(blockReplyPipeline?.didStream()) || successfulSideEffectDelivery;

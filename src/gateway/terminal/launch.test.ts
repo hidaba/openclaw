@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { mergeProcessEnv, resolveEnvironmentValue } from "../../infra/process-env.js";
+import { withEnv } from "../../test-utils/env.js";
+import { withMockedWindowsPlatform } from "../../test-utils/vitest-spies.js";
 import {
   buildTerminalEnv,
   createTerminalLaunchPolicy,
@@ -492,26 +494,24 @@ describe("resolveTerminalSpawnPlan", () => {
       initialCommand: ["claude", "--resume", "id"],
     };
     expect(resolveTerminalSpawnPlan({ ...base, cwdOverride: cwd }).cwd).toBe(cwd);
-    expect(
-      resolveTerminalSpawnPlan(
-        { ...base, cwdOverride: "/definitely/missing" },
-        { env: { HOME: "/fallback/home" } },
-      ).cwd,
-    ).toBe("/fallback/home");
+    withEnv({ HOME: "/fallback/home" }, () => {
+      expect(resolveTerminalSpawnPlan({ ...base, cwdOverride: "/definitely/missing" }).cwd).toBe(
+        "/fallback/home",
+      );
+    });
   });
 
   it("spawns the resume executable directly on Windows", () => {
-    expect(
-      resolveTerminalSpawnPlan(
-        {
+    withMockedWindowsPlatform(() => {
+      expect(
+        resolveTerminalSpawnPlan({
           agentId: "main",
           cwd: "/work",
           shell: "cmd.exe",
           args: [],
           initialCommand: ["codex.exe", "resume", "thread"],
-        },
-        { platform: "win32" },
-      ),
-    ).toMatchObject({ shell: "codex.exe", args: ["resume", "thread"] });
+        }),
+      ).toMatchObject({ shell: "codex.exe", args: ["resume", "thread"] });
+    });
   });
 });

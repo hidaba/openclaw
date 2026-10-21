@@ -15,9 +15,7 @@ export function normalizePendingFinalDeliveryPayloads(
 export function normalizePendingFinalRecoveryPayloads(
   payloads: readonly ReplyPayload[],
 ): ReplyPayload[] {
-  return payloads.flatMap(
-    (payload) => normalizeReplyPayload(payload, { applyChannelTransforms: false }) ?? [],
-  );
+  return payloads.flatMap((payload) => normalizeReplyPayload(payload) ?? []);
 }
 
 /** Build durable recovery text only for payload shapes this marker can replay without loss. */

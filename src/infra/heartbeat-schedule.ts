@@ -4,22 +4,12 @@ import { resolveIntegerOption } from "@openclaw/normalization-core/number-coerci
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveStateDir } from "../config/state-dir.js";
 import { loadOrCreateDeviceIdentityAsync } from "./device-identity-async.js";
-import { loadDeviceIdentityIfPresent, loadOrCreateDeviceIdentity } from "./device-identity.js";
+import { loadDeviceIdentityIfPresent } from "./device-identity.js";
 
 /** Doctor previews and migrations retain their synchronous one-shot admission. */
-export function resolveHeartbeatSchedulerSeed(
-  explicitSeed?: string,
-  options: { env?: NodeJS.ProcessEnv; readOnly?: boolean } = {},
-) {
-  const normalized = normalizeOptionalString(explicitSeed);
-  if (normalized) {
-    return normalized;
-  }
-  const env = options.env ?? process.env;
+export function resolveHeartbeatSchedulerSeed(env: NodeJS.ProcessEnv) {
   try {
-    const identity = options.readOnly
-      ? loadDeviceIdentityIfPresent({ env })
-      : loadOrCreateDeviceIdentity({ env });
+    const identity = loadDeviceIdentityIfPresent({ env });
     if (identity) {
       return identity.deviceId;
     }

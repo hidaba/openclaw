@@ -457,9 +457,6 @@ async function resolveReplyFromConfig(
             model,
             api: findModelInCatalog(preparedModelCatalog?.entries ?? [], provider, model)?.api,
           },
-          // Cache and classify now; the final provider and owner policy are
-          // resolved later, immediately before the embedded turn starts.
-          selfServeLocalPaths: false,
           ...(utilityModelSelectionLocked
             ? {
                 processingMode:

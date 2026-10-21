@@ -19,11 +19,7 @@ import {
   ToolInputError,
 } from "./common.js";
 import { getGatewayToolCallerIdentity } from "./gateway-caller-context.js";
-import {
-  callInProcessGatewayTool,
-  getInProcessGatewayToolContext,
-  type InProcessGatewayCaller,
-} from "./in-process-gateway.js";
+import { callInProcessGatewayTool, getInProcessGatewayToolContext } from "./in-process-gateway.js";
 
 const DASHBOARD_ACTIONS = [
   "read",
@@ -95,8 +91,6 @@ const DashboardToolSchema = Type.Object(
 type DashboardToolOptions = {
   agentSessionKey?: string;
   agentId?: string;
-  callGateway?: InProcessGatewayCaller;
-  emitCommand?: typeof emitBoardCommand;
 };
 
 function requireInteger(params: Record<string, unknown>, key: string): number {
@@ -233,8 +227,6 @@ function snapshotResult(
 }
 
 export function createDashboardTool(opts: DashboardToolOptions = {}): AnyAgentTool {
-  const gatewayCall = opts.callGateway ?? callInProcessGatewayTool;
-  const emitCommand = opts.emitCommand ?? emitBoardCommand;
   return {
     label: "Dashboard",
     name: "dashboard",
@@ -253,7 +245,7 @@ export function createDashboardTool(opts: DashboardToolOptions = {}): AnyAgentTo
         ? { resolveGatewayContext: admittedResolver }
         : undefined;
       const callGateway = <T>(method: string, gatewayParams: Record<string, unknown>) =>
-        gatewayCall<T>(method, gatewayParams, gatewayOptions);
+        callInProcessGatewayTool<T>(method, gatewayParams, gatewayOptions);
       if (action === "read") {
         const [snapshot, described] = await Promise.all([
           callGateway<BoardSnapshot>("board.get", {
@@ -293,7 +285,7 @@ export function createDashboardTool(opts: DashboardToolOptions = {}): AnyAgentTo
                 kind: "set_chat_dock",
                 dock: readPresentation(params) === "expanded" ? "hidden" : "right",
               };
-        const delivered = emitCommand(
+        const delivered = emitBoardCommand(
           { sessionKey, agentId: opts.agentId, command },
           admittedResolver,
         );

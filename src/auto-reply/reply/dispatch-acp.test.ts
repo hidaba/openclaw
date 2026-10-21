@@ -1034,7 +1034,6 @@ describe("tryDispatchAcpReplyCore", () => {
       "media understanding",
     );
     expect(input.agentDir).toBe(agentDir);
-    expect(input.selfServeLocalPaths).toBeUndefined();
   });
 
   it.each([["unknown", "application/pdf"]] as const)(

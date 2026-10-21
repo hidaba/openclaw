@@ -91,17 +91,9 @@ export function resolveOpenClawCliEntryPath(argv1: string | undefined): string |
 
 export function resolveCurrentOpenClawCliInvocation(
   args: readonly string[],
-  options: {
-    argv1?: string;
-    cwd?: string;
-    execArgv?: readonly string[];
-    execPath?: string;
-    moduleUrl?: string;
-  } = {},
 ): OpenClawCliInvocation {
-  const execPath = options.execPath ?? process.execPath;
-  const embeddedRoot =
-    execPath === process.execPath ? getEmbeddedStandaloneRuntimeRoot() : undefined;
+  const execPath = process.execPath;
+  const embeddedRoot = getEmbeddedStandaloneRuntimeRoot();
   const manifest = embeddedRoot ? undefined : readStandaloneRuntimeManifest(execPath);
   const standaloneRoot =
     embeddedRoot ??
@@ -111,15 +103,15 @@ export function resolveCurrentOpenClawCliInvocation(
   }
 
   // Only loose installations need entry discovery and source-loader preparation.
-  const entry = resolveOpenClawCliEntryPath(options.argv1 ?? process.argv[1]);
-  const cwd = options.cwd ?? tryProcessCwd();
+  const entry = resolveOpenClawCliEntryPath(process.argv[1]);
+  const cwd = tryProcessCwd();
   const entryPackageRoot = entry ? resolveOpenClawPackageRootSync({ argv1: entry }) : null;
   const packageRoot =
     entryPackageRoot ??
     resolveOpenClawPackageRootSync({
       argv1: entry,
       cwd,
-      moduleUrl: options.moduleUrl ?? import.meta.url,
+      moduleUrl: import.meta.url,
     });
   const invocationCwd =
     packageRoot ?? cwd ?? (entry ? path.dirname(path.resolve(entry)) : path.dirname(execPath));
@@ -138,7 +130,7 @@ export function resolveCurrentOpenClawCliInvocation(
   const cliArgs = currentEntry
     ? [
         ...filterOpenClawChildExecArgv(
-          options.execArgv ?? process.execArgv,
+          process.execArgv,
           currentEntry === sourceEntry ? (packageRoot ?? undefined) : undefined,
         ),
         currentEntry,

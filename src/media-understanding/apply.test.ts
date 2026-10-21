@@ -227,11 +227,8 @@ async function applyFile(
     [{ path: await createTempMediaFile(fileName, content), contentType: mediaType }],
     body,
   );
-  await applyMediaUnderstanding({
-    ctx,
-    cfg,
-    selfServeLocalPaths: true,
-  });
+  const result = await applyMediaUnderstanding({ ctx, cfg });
+  result.enableLocalPathSelfServe?.([ctx]);
   return ctx;
 }
 
@@ -962,8 +959,6 @@ describe("applyMediaUnderstanding", () => {
     const result = await applyMediaUnderstanding({
       ctx,
       cfg: createMediaDisabledConfig(),
-      // Preprocessing does not yet own the final reply tool surface.
-      selfServeLocalPaths: false,
     });
 
     expect(ctx.Body).toContain(

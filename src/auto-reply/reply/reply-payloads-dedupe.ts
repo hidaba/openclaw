@@ -313,7 +313,7 @@ export function filterMessagingToolReplyPayload(
       decision.matchingRoute &&
       remaining.length === 0 &&
       isReplyPayloadTerminalContent(params.payload) &&
-      normalizeReplyPayload(params.payload, { applyChannelTransforms: false }) !== null
+      normalizeReplyPayload(params.payload) !== null
     ) {
       params.onDeliveredTerminalDuplicate();
     }

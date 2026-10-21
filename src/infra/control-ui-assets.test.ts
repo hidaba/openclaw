@@ -33,7 +33,7 @@ function sourceCheckout(relativePath: string) {
 }
 
 const uiIndex = (dir: string) => path.join(dir, "dist", "control-ui", "index.html");
-const buildFailure = (message: string, built = false) => ({ ok: false, built, message });
+const buildFailure = (message: string) => ({ ok: false, message });
 const buildExit = (stderr: string) => ({ ...successfulBuild, code: 1, stderr });
 
 vi.mock("./openclaw-root.js", () => ({
@@ -56,9 +56,9 @@ const {
 } = await import("./control-ui-assets.js");
 const openclawRoot = await import("./openclaw-root.js");
 
-const expectBuildFailure = (dir: string, message: string, built = false) =>
+const expectBuildFailure = (dir: string, message: string) =>
   expect(ensureControlUiAssetsBuilt(undefined, { root: dir })).resolves.toEqual(
-    buildFailure(message, built),
+    buildFailure(message),
   );
 const expectHealth = (
   options: Parameters<typeof resolveControlUiAssetHealth>[0],
@@ -191,7 +191,7 @@ process.exitCode = 1;
 
     const result = await ensureControlUiAssetsBuilt(undefined, { root });
 
-    expect(result).toMatchObject({ ok: false, built: false });
+    expect(result).toMatchObject({ ok: false });
     if (!result.ok) {
       expect(result.message).toMatch(`Control UI build failed: error during build: ${diagnostic}`);
       const summary = result.message.slice("Control UI build failed: ".length);
@@ -226,7 +226,6 @@ process.exitCode = 1;
 
     await expect(ensureControlUiAssetsBuilt(undefined, { root })).resolves.toMatchObject({
       ok: true,
-      built: false,
     });
   });
 
@@ -299,7 +298,7 @@ process.exitCode = 1;
         argv1: path.join(packagedRoot, "dist", "entry.js"),
         cwd: checkoutRoot,
       }),
-    ).resolves.toMatchObject({ ok: true, built: true });
+    ).resolves.toMatchObject({ ok: true });
     const message = runtime.log.mock.calls.flat().join("\n");
     const commands = [...message.matchAll(/`(pnpm [^`]+)`/gu)].map((match) => match[1]);
     expect(commands).toHaveLength(2);
@@ -321,7 +320,7 @@ process.exitCode = 1;
 
     await expect(
       ensureControlUiAssetsBuilt(undefined, { root, force: true, signal: controller.signal }),
-    ).resolves.toMatchObject({ ok: true, built: true });
+    ).resolves.toMatchObject({ ok: true });
     expect(state.runCommandWithTimeout).toHaveBeenCalledWith(
       [process.execPath, path.join(root, "scripts", "ui.js"), "build"],
       { cwd: root, timeoutMs: 600_000, signal: controller.signal },
@@ -377,7 +376,7 @@ process.exitCode = 1;
       }
       return successfulBuild;
     });
-    await expectBuildFailure(root, `Control UI build completed but ${issue(root)}`, true);
+    await expectBuildFailure(root, `Control UI build completed but ${issue(root)}`);
   });
 
   it("resolves control-ui root from override file or directory", () => {

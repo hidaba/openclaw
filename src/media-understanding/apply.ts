@@ -92,8 +92,6 @@ export async function applyMediaUnderstanding(params: {
   execution?: MediaExecutionContext;
   /** Limit utility processing while preserving native image and video inputs. */
   processingMode?: "audio-only" | "files-only" | "audio-and-files";
-  /** Render local paths immediately only when the caller owns the final tool surface. */
-  selfServeLocalPaths?: boolean;
   /** Attachment indexes the caller (ACP) has already resolved into native turn attachments. */
   deliveredImageIndexes?: ReadonlySet<number>;
 }): Promise<ApplyMediaUnderstandingResult> {
@@ -262,9 +260,6 @@ export async function applyMediaUnderstanding(params: {
             limits: resolveFileExtractionLimits(cfg),
             skipAttachmentIndexes:
               audioAttachmentIndexes.size > 0 ? audioAttachmentIndexes : undefined,
-            // Placement is the caller's fact. Absent an authoritative host-readable
-            // placement, suppress — a wrong path is worse than the plain marker (#122411).
-            selfServePathsEnabled: params.selfServeLocalPaths === true,
           });
     // Only processed capabilities have decisions, so audio-only runs cannot
     // add markers for image/video inputs still owned by the native harness.

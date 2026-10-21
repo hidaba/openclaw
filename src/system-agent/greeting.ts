@@ -153,8 +153,6 @@ export async function loadSystemAgentGreetingFacts(
     cacheStore?: SystemAgentGreetingCacheStore;
     openCache?: () => SystemAgentGreetingCacheStore;
     configAuditStore?: SystemAgentGreetingConfigAuditStore;
-    getUpdateAvailable?: () => UpdateAvailable | null;
-    getHealthCache?: () => HealthSummary | null;
   } = {},
 ): Promise<SystemAgentGreetingFacts> {
   // Facts stay best-effort: a broken snapshot source degrades that fact
@@ -186,12 +184,8 @@ export async function loadSystemAgentGreetingFacts(
       ? auditStore.configAuditFacts(cache?.lastSeenAuditSequence ?? 0)
       : { auditSequence: 0, recentExternalEdit: false },
   );
-  const update = await tryOr<UpdateAvailable | null>(null, () =>
-    (opts.getUpdateAvailable ?? getUpdateAvailable)(),
-  );
-  const health = await tryOr<HealthSummary | null>(null, () =>
-    (opts.getHealthCache ?? getHealthCache)(),
-  );
+  const update = await tryOr<UpdateAvailable | null>(null, getUpdateAvailable);
+  const health = await tryOr<HealthSummary | null>(null, getHealthCache);
   cacheStore?.assertCurrent();
   auditStore?.assertCurrent();
   return {

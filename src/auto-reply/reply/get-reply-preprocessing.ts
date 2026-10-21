@@ -42,7 +42,6 @@ export async function applyMediaUnderstandingIfNeeded(params: {
   workspaceDir?: string;
   activeModel: ActiveMediaModel;
   processingMode?: "audio-only" | "files-only" | "audio-and-files";
-  selfServeLocalPaths?: boolean;
 }): Promise<ApplyMediaUnderstandingResult | undefined> {
   if (!hasInboundMediaForUnderstanding(params.ctx)) {
     return undefined;

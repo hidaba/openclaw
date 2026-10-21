@@ -240,7 +240,7 @@ describe("pruneSupersededSilentPairingsAfterApproval", () => {
     await expect(listNodePairing(baseDir)).resolves.toMatchObject({ paired: [] });
     expect(getNodeWakeStateSnapshot("node-stale")).toBeUndefined();
     expect(wakeLifecycle.aborted).toBe(true);
-    expect(drainNodePendingWork("node-stale", { includeDefaultStatus: false }).items).toEqual([]);
+    expect(drainNodePendingWork("node-stale").items).toMatchObject([{ id: "baseline-status" }]);
     expect(listPendingNodeActions({ nodeId: "node-stale", ttlMs: 60_000 })).toEqual([]);
     await expect(loadApnsRegistration("node-stale", baseDir)).resolves.toBeNull();
     expect(context.order).toEqual([

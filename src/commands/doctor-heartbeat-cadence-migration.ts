@@ -245,7 +245,7 @@ export async function ensureHeartbeatMonitorJobs(
   if (agentIds.size === 0 && !loaded.some(isPendingLegacyHeartbeatRetry)) {
     return new Map();
   }
-  const schedulerSeed = resolveHeartbeatSchedulerSeed(undefined, { env, readOnly: true });
+  const schedulerSeed = resolveHeartbeatSchedulerSeed(env);
   const nowMs = Date.now();
   const planned = [...agentIds].toSorted().flatMap((agentId) => {
     const legacyJobs = loaded.filter(

@@ -219,7 +219,6 @@ export async function extractFileContext(params: {
   limits: FileExtractionLimits;
   skipAttachmentIndexes?: Set<number>;
   assertCurrent?: () => void;
-  selfServePathsEnabled: boolean;
 }) {
   const { attachments, cache, cfg, limits, skipAttachmentIndexes } = params;
   const blocks: AttachmentContextBlock[] = [];
@@ -244,7 +243,7 @@ export async function extractFileContext(params: {
       );
     }
     const blockText = renderFileAttachmentOutcome(outcome, {
-      selfServeLocalPath: params.selfServePathsEnabled ? undefined : false,
+      selfServeLocalPath: false,
     });
     if (blockText === null) {
       continue;
@@ -329,7 +328,6 @@ export async function renderInboundDocumentContext(params: {
         params.maxChars === undefined
           ? limits
           : { ...limits, maxChars: Math.min(limits.maxChars, params.maxChars) },
-      selfServePathsEnabled: false,
       assertCurrent: params.assertCurrent,
     });
     params.assertCurrent?.();

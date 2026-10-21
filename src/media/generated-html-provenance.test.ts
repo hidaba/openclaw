@@ -112,10 +112,7 @@ describe("generated HTML provenance worker boundary", () => {
     const sql = observeMainThreadSql();
     try {
       sql.calibrate();
-      for (const prune of [
-        () => cleanOldMedia(undefined, { recursive: true }),
-        pruneOutboundMedia,
-      ]) {
+      for (const prune of [() => cleanOldMedia(120_000), pruneOutboundMedia]) {
         const staged = await stageHtml();
         expect(await readHtml(staged)).toMatchObject({
           buffer: html,

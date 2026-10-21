@@ -298,12 +298,7 @@ export function createPackageIntegrityReader(timeoutMs = UPDATE_RUNNER_TIMEOUT_M
     return children.toSorted();
   }
 
-  async function hashFile(
-    file: string,
-    stat: BigIntStats,
-    remainingBytes: number,
-    readBuffer?: Buffer,
-  ) {
+  async function hashFile(file: string, stat: BigIntStats, remainingBytes: number) {
     if (!stat.isFile()) {
       throw new Error("Package rollback verification byte limit exceeded");
     }
@@ -319,7 +314,7 @@ export function createPackageIntegrityReader(timeoutMs = UPDATE_RUNNER_TIMEOUT_M
         throw new Error("Package rollback file changed before reading");
       }
       const hash = createHash("sha256");
-      const buffer = readBuffer ?? Buffer.allocUnsafe(64 * 1024);
+      const buffer = Buffer.allocUnsafe(64 * 1024);
       const size = Number(stat.size);
       let position = 0;
       // The final stat detects growth; an extra EOF read costs one OS call per file.
@@ -336,7 +331,7 @@ export function createPackageIntegrityReader(timeoutMs = UPDATE_RUNNER_TIMEOUT_M
       if (!packageStatUnchanged(stat, await read(() => handle.stat({ bigint: true })))) {
         throw new Error("Package rollback file changed while reading");
       }
-      return { digest: hash.digest("hex"), bytes: position };
+      return hash.digest("hex");
     } finally {
       await close(handle);
     }
@@ -382,8 +377,8 @@ export function createPackageIntegrityReader(timeoutMs = UPDATE_RUNNER_TIMEOUT_M
     // DFS post-order: settled entries (reused files, directories, links) wait only
     // behind earlier hashes, then drain with them.
     const pending: Array<{ entry: HashedEntry } | { outcome: Promise<Outcome> }> = [];
-    const hasher = fileHashing.createPackageFileHasher(
-      async (file, stat) => (await hashFile(file, stat, Number(stat.size))).digest,
+    const hasher = fileHashing.createPackageFileHasher((file, stat) =>
+      hashFile(file, stat, Number(stat.size)),
     );
     const window = 64;
     let pendingFiles = 0;
@@ -674,7 +669,7 @@ export function createPackageIntegrityReader(timeoutMs = UPDATE_RUNNER_TIMEOUT_M
     const symlink = stat.isSymbolicLink();
     const contents = symlink
       ? await read(() => fs.readlink(file))
-      : (await hashFile(file, stat, MAX_LAUNCHER_BYTES)).digest;
+      : await hashFile(file, stat, MAX_LAUNCHER_BYTES);
     const current = await read(() => fs.lstat(file, { bigint: true }));
     if (symlink && current.isSymbolicLink()) {
       // npm can relink an equivalent bin while it is observed. Verify the raw

@@ -57,7 +57,7 @@ export function resolveFollowupDeliveryPayloads(params: {
     (payload.isReasoning === true && params.reasoningPayloadsEnabled !== true) ||
     (payload.isCommentary === true && params.commentaryPayloadsEnabled !== true)
       ? []
-      : (normalizeReplyPayload(payload, { applyChannelTransforms: false }) ?? []),
+      : (normalizeReplyPayload(payload) ?? []),
   );
   const applyReplyToMode = createReplyToModeFilterForChannel(replyToMode, replyToChannel);
   return sanitizedPayloads.flatMap((payload) =>

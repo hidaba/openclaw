@@ -31,7 +31,7 @@ describe("TTS audio media store", () => {
 
       const expired = Date.now() - 10_000;
       await fs.utimes(audioPath, expired / 1000, expired / 1000);
-      await cleanOldMedia(1, { recursive: true });
+      await cleanOldMedia(1);
       await expect(fs.stat(audioPath)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await tempHome.restore();

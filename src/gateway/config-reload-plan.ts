@@ -23,8 +23,6 @@ export type GatewayReloadPlan = {
   restartCron: boolean;
   restartHeartbeat: boolean;
   reloadPlugins: boolean;
-  /** Canonical config/install deltas that require a plugin replacement. */
-  reloadPluginPaths?: string[];
   /** Plugin owners whose undeclared channel settings require fresh registration. */
   reloadPluginIds?: Set<string>;
   pluginLifecycle?: {
@@ -568,9 +566,6 @@ export function buildGatewayReloadPlan(
     plan.hotReasons.push(path);
     for (const action of rule?.actions ?? []) {
       plan[action] = true;
-      if (action === "reloadPlugins") {
-        (plan.reloadPluginPaths ??= []).push(path);
-      }
     }
     if (rule?.replaceChannelPlugins) {
       // Manifest channel IDs survive even when registration has no active channel.

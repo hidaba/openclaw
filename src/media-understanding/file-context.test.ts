@@ -94,7 +94,6 @@ describe("remote document charset", () => {
           cache,
           cfg: {},
           limits: resolveFileExtractionLimits({}),
-          selfServePathsEnabled: false,
         });
         expect(result.blocks).toHaveLength(1);
         expect(result.blocks[0]?.text).toContain(`\n---\n${expected}\n`);

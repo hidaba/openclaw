@@ -202,8 +202,8 @@ export function isPackageProvenControlUiRootSync(
 }
 
 type EnsureControlUiAssetsResult =
-  | { ok: true; built: boolean; assets: Extract<ControlUiAssetHealth, { kind: "ready" }> }
-  | { ok: false; built: boolean; message: string };
+  | { ok: true; assets: Extract<ControlUiAssetHealth, { kind: "ready" }> }
+  | { ok: false; message: string };
 
 type EnsureControlUiAssetsOptions = ControlUiRootResolveOptions & {
   root?: string;
@@ -217,8 +217,8 @@ type EnsureControlUiAssetsOptions = ControlUiRootResolveOptions & {
 
 export const CONTROL_UI_ASSETS_BUILD_TIMEOUT_MS = 10 * 60_000;
 
-function controlUiAssetsFailure(message: string, built = false): EnsureControlUiAssetsResult {
-  return { ok: false, built, message };
+function controlUiAssetsFailure(message: string): EnsureControlUiAssetsResult {
+  return { ok: false, message };
 }
 
 function inspectControlUiAssetHealth(
@@ -338,7 +338,7 @@ export async function ensureControlUiAssetsBuilt(
     : await resolveControlUiDistIndexPath(opts);
   const health = inspectControlUiAssetHealth(selectedIndex, opts.expectedBuildId);
   if (!opts.force && health.kind === "ready") {
-    return { ok: true, built: false, assets: health };
+    return { ok: true, assets: health };
   }
 
   const repoRoot = resolveControlUiRepoRoot(opts);
@@ -415,7 +415,7 @@ export async function ensureControlUiAssetsBuilt(
         : builtHealth.kind === "incomplete"
           ? `startup asset ${builtHealth.missingAsset} is missing.`
           : `its identity is ${builtHealth.buildId ?? "unknown"}; expected ${opts.expectedBuildId}. Restart the Gateway after rebuilding its runtime and UI together.`;
-    return controlUiAssetsFailure(`Control UI build completed but ${issue}`, true);
+    return controlUiAssetsFailure(`Control UI build completed but ${issue}`);
   }
-  return { ok: true, built: true, assets: builtHealth };
+  return { ok: true, assets: builtHealth };
 }

@@ -1,7 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../test/helpers/promise.js";
 import type { ConfigAuditRecord } from "../config/io.audit.js";
+import * as healthState from "../gateway/server/health-state.js";
 import type { SequencedSqliteAuditRecordEntry } from "../infra/sqlite-audit-record.kernel.js";
+import * as updateState from "../infra/update-status-state.js";
 import { SYSTEM_AGENT_GREETING_SYSTEM_PROMPT } from "./assistant-prompts.js";
 import {
   acknowledgeSystemAgentGreetingDelivery,
@@ -764,6 +766,24 @@ describe("system agent greeting facts", () => {
   });
 
   it("uses cached update and health state without probing", async () => {
+    onTestFinished(() => {
+      vi.restoreAllMocks();
+    });
+    vi.spyOn(updateState, "getUpdateAvailable").mockReturnValueOnce({
+      currentVersion: "2026.7.19",
+      latestVersion: "2026.7.20",
+      channel: "latest",
+    });
+    vi.spyOn(healthState, "getHealthCache").mockReturnValueOnce({
+      channels: {
+        telegram: {
+          accountId: "default",
+          configured: true,
+          healthState: "stale-socket",
+        },
+      },
+      channelLabels: { telegram: "Telegram" },
+    } as never);
     const facts = await loadSystemAgentGreetingFacts({
       cacheStore: createCache({
         factsHash: "old",
@@ -775,22 +795,6 @@ describe("system agent greeting facts", () => {
         assertCurrent: vi.fn(),
         configAuditFacts: async () => ({ auditSequence: 2, recentExternalEdit: true }),
       },
-      getUpdateAvailable: () => ({
-        currentVersion: "2026.7.19",
-        latestVersion: "2026.7.20",
-        channel: "latest",
-      }),
-      getHealthCache: () =>
-        ({
-          channels: {
-            telegram: {
-              accountId: "default",
-              configured: true,
-              healthState: "stale-socket",
-            },
-          },
-          channelLabels: { telegram: "Telegram" },
-        }) as never,
     });
     expect(facts).toEqual({
       updateAvailable: "2026.7.20",
