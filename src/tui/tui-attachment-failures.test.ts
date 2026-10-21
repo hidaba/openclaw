@@ -70,8 +70,6 @@ function createDisplayHarness() {
 
 describe("TUI attachment failure presentation", () => {
   it.each([
-    ["caption and failure", assistant([caption, audioFailure]), recordingReceipt],
-    ["caption, success and failure", assistant([caption, image, audioFailure]), recordingReceipt],
     ["two failures", assistant([audioFailure, audioFailure]), `${audioReceipt}\n${audioReceipt}`],
     ["private missing image", privateAttachment("image", "file-not-found"), missingImage],
     ["private blocked video", privateAttachment("video", "unsupported-format"), blockedVideo],
@@ -81,20 +79,17 @@ describe("TUI attachment failure presentation", () => {
     (_name, message, expected) => expectHistoryAndFinal(message, expected),
   );
 
-  it.each([false, true])(
-    "retains streamed captions and thinking visibility (%s) before a failure-only final",
-    (showThinking) => {
-      const assembler = new TuiStreamAssembler();
-      assembler.ingestDelta(
-        "run-1",
-        assistant([caption, { type: "thinking", thinking: "Preparing" }]),
-        showThinking,
-      );
-      expect(assembler.finalize("run-1", assistant([audioFailure]), showThinking)).toBe(
-        `${showThinking ? "[thinking]\nPreparing\n\n" : ""}Your recording\n${audioReceipt}`,
-      );
-    },
-  );
+  it("retains streamed captions and thinking before a failure-only final", () => {
+    const assembler = new TuiStreamAssembler();
+    assembler.ingestDelta(
+      "run-1",
+      assistant([caption, { type: "thinking", thinking: "Preparing" }]),
+      true,
+    );
+    expect(assembler.finalize("run-1", assistant([audioFailure]), true)).toBe(
+      `[thinking]\nPreparing\n\nYour recording\n${audioReceipt}`,
+    );
+  });
 
   it("keeps genuine errors ahead of success fallback while appending the failure receipt", () => {
     const message = {

@@ -134,21 +134,18 @@ describe("createEditorSubmitHandler", () => {
     expectUnused(sendMessage, onBlockedMessageSubmit);
   });
 
-  it("reports rejected message handlers", async () => {
+  it.each(["message", "command"] as const)("reports %s handler failures", async (action) => {
     const harness = createSubmitHarness();
-    harness.sendMessage.mockRejectedValueOnce(new Error("gateway unavailable"));
-    harness.onSubmit("hello");
+    if (action === "message") {
+      harness.sendMessage.mockRejectedValueOnce(new Error("gateway unavailable"));
+    } else {
+      harness.handleCommand.mockImplementationOnce(() => {
+        throw new Error("command exploded");
+      });
+    }
+    expect(() => harness.onSubmit(action === "message" ? "hello" : "/broken")).not.toThrow();
     await Promise.resolve();
-    expect(harness.onSubmitError).toHaveBeenCalledWith("message", expect.any(Error));
-  });
-
-  it("reports synchronous submit handler failures", () => {
-    const harness = createSubmitHarness();
-    harness.handleCommand.mockImplementationOnce(() => {
-      throw new Error("command exploded");
-    });
-    expect(() => harness.onSubmit("/broken")).not.toThrow();
-    expect(harness.onSubmitError).toHaveBeenCalledWith("command", expect.any(Error));
+    expect(harness.onSubmitError).toHaveBeenCalledWith(action, expect.any(Error));
   });
 });
 

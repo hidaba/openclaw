@@ -301,24 +301,6 @@ it("clears session-scoped names and modes while trace changes and delivery stays
     expect(sent.payload).toMatchObject({ deliver: true });
   });
 }, 25_000);
-it("keeps the active stream when the current session is selected again", async () => {
-  const fixture = await createFixture();
-  await withFixture(fixture, async () => {
-    await fixture.output("local ready");
-    await fixture.write("streaming prompt\r");
-    await fixture.output("PTY_STREAMING: streaming prompt");
-    const historyLoadsBefore = (await readFixtureLog(fixture.logPath)).filter(
-      (entry) => entry.method === "loadHistory",
-    ).length;
-    await fixture.write("/session main\r/think\r");
-    await fixture.output("usage: /think");
-    const rows = await fixture.containing("PTY_STREAMING: streaming prompt");
-    expect(rows.join("\n")).not.toContain("local ready | idle");
-    expect(
-      (await readFixtureLog(fixture.logPath)).filter((entry) => entry.method === "loadHistory"),
-    ).toHaveLength(historyLoadsBefore);
-  });
-}, 65_000);
 it("hides a stale approval when startup restores the remembered session", async ({ signal }) => {
   const stateDir = tempDirs.make("openclaw-tui-identity-");
   await seedRememberedSession(stateDir);

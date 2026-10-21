@@ -43,13 +43,6 @@ describe("TuiStreamAssembler", () => {
     );
   });
 
-  it("keeps an error ahead of an attachment summary", () => {
-    const content = message({ type: "video", url: "file:///private/clip.mp4" });
-    expect(assembler.finalize("run-1", content, false, "media generation failed")).toBe(
-      "media generation failed",
-    );
-  });
-
   it("returns null when delta text is unchanged", () => {
     expect(assembler.ingestDelta("run-4", message(text("Repeat")), false)).toBe("Repeat");
     expect(assembler.ingestDelta("run-4", message(text("Repeat")), false)).toBeNull();

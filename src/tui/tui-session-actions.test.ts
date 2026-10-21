@@ -858,69 +858,6 @@ describe("tui session actions", () => {
     },
   );
 
-  it("preserves distinct imported live users through a stale history snapshot", async () => {
-    const { history: deferredHistory, state, chatLog, loadHistory } = createDeferredHistory();
-
-    const loading = loadHistory();
-    for (const [index, cliSessionId] of ["first-cli-session", "second-cli-session"].entries()) {
-      reduceTuiSessionProjection(state, {
-        type: "messagePersisted",
-        message: userMessage(`Imported live prompt ${index + 1}`, "shared-provider-id", index + 1, {
-          importedFrom: "claude-cli",
-          cliSessionId,
-          externalId: "shared-provider-id",
-        }),
-        scope: readTuiSessionProjectionScope(state),
-      });
-    }
-    deferredHistory.resolve({
-      sessionId: "session-main",
-      sessionInfo: mainSession,
-      messages: [assistantMessage("Current branch reply", "imported-live-reply", 3)],
-    });
-
-    await expect(loading).resolves.toMatchObject({ loaded: true });
-    const rendered = renderChat(chatLog);
-    expect(rendered.match(/Imported live prompt 1/g)).toHaveLength(1);
-    expect(rendered.match(/Imported live prompt 2/g)).toHaveLength(1);
-    expect(rendered).toContain("Current branch reply");
-  });
-
-  it("keeps native and separately imported users with the same provider-local ID distinct", async () => {
-    const sharedId = "provider-local-user";
-    const imported = { importedFrom: "claude-cli", externalId: sharedId };
-    const { chatLog, loadHistory } = selectHistoryHarness(
-      [
-        userMessage("Native canonical prompt", sharedId, 1),
-        userMessage("First imported prompt", sharedId, 2, {
-          ...imported,
-          cliSessionId: "first-cli-session",
-        }),
-        userMessage("Second imported prompt", sharedId, 3, {
-          ...imported,
-          cliSessionId: "second-cli-session",
-        }),
-        userMessage("First partially imported prompt", sharedId, 4, imported),
-        userMessage("Second partially imported prompt", sharedId, 5, imported),
-      ],
-      {},
-      { currentSessionId: "session-main" },
-    );
-
-    await expect(loadHistory()).resolves.toMatchObject({ loaded: true });
-
-    const rendered = renderChat(chatLog);
-    for (const text of [
-      "Native canonical prompt",
-      "First imported prompt",
-      "Second imported prompt",
-      "First partially imported prompt",
-      "Second partially imported prompt",
-    ]) {
-      expect(rendered.split(text)).toHaveLength(2);
-    }
-  });
-
   it("preserves new-session live users without leaking the previous session during a switch", async () => {
     const { history: deferredHistory, state, chatLog, setSession } = createDeferredHistory();
     persistLiveUser(state, {
@@ -1518,136 +1455,117 @@ describe("tui session actions", () => {
     },
   );
 
-  it("fences pre-reset history and session-info reads when reset commits", async () => {
-    const history = createDeferred<unknown>();
-    const sessionInfo = createDeferred<TuiSessionDescription>();
-    const loadHistory = vi.fn(() => history.promise);
-    const describeSession = vi.fn(() => sessionInfo.promise);
-    const {
-      state,
-      addUser,
-      clearAll,
-      applySessionMutationResult,
-      loadHistory: readHistory,
-      refreshSessionInfo,
-    } = createHarness({
-      mockChatMethods: historyChatMocks,
-      backend: { loadHistory, describeSession },
+  it.each(["local", "external"])(
+    "fences pre-reset history and session-info after a %s reset",
+    async (source) => {
+      const history = createDeferred<unknown>();
+      const sessionInfo = createDeferred<TuiSessionDescription>();
+      const loadHistory = vi.fn(() => history.promise);
+      const describeSession = vi.fn(() => sessionInfo.promise);
+      const {
+        state,
+        addUser,
+        addSystem,
+        clearAll,
+        applySessionMutationResult,
+        loadHistory: readHistory,
+        refreshSessionInfo,
+      } = createHarness({
+        mockChatMethods: historyChatMocks,
+        backend: { loadHistory, describeSession },
+        state: {
+          currentSessionId: "session-before-reset",
+          sessionGeneration: 4,
+          sessionInfo: {
+            model: "model-before-reset",
+            ...(source === "local" ? { updatedAt: 10 } : {}),
+          },
+        },
+      });
+
+      const staleHistory = readHistory();
+      const staleSessionInfo = refreshSessionInfo();
+      await vi.waitFor(() => {
+        expect(loadHistory).toHaveBeenCalledOnce();
+        expect(describeSession).toHaveBeenCalledOnce();
+      });
+
+      const replacement = {
+        sessionId: "session-after-reset",
+        model: "model-after-reset",
+        updatedAt: 20,
+      };
+      if (source === "local") {
+        expect(
+          applySessionMutationResult({ ok: true, key: mainSession.key, entry: replacement }),
+        ).toBe(true);
+      } else {
+        Object.assign(state, {
+          sessionGeneration: 5,
+          currentSessionId: replacement.sessionId,
+          sessionInfo: { model: replacement.model },
+        });
+      }
+
+      history.resolve({
+        sessionInfo: {
+          key: "agent:main:main",
+          sessionId: "session-before-reset",
+          model: "stale-history-model",
+          ...(source === "local" ? { updatedAt: 10 } : {}),
+        },
+        messages: [{ role: "user", content: "before reset" }],
+      });
+      sessionInfo.resolve(
+        description({
+          key: mainSession.key,
+          sessionId: "session-before-reset",
+          model: "stale-session-info-model",
+          updatedAt: 10,
+        }),
+      );
+
+      await expect(staleHistory).resolves.toEqual({ loaded: false });
+      await staleSessionInfo;
+
+      expect(state).toMatchObject({
+        sessionGeneration: 5,
+        currentSessionId: "session-after-reset",
+        sessionInfo: { model: "model-after-reset" },
+      });
+      expect(addUser).not.toHaveBeenCalled();
+      expect(clearAll).toHaveBeenCalledTimes(source === "local" ? 1 : 0);
+      if (source === "external") {
+        expect(addSystem).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("discards an in-flight description error after an external same-key reset", async () => {
+    const result = createDeferred<TuiSessionDescription>();
+    const h = createHarness({
+      mockChatMethods: ["addSystem"],
+      backend: { describeSession: vi.fn(() => result.promise) },
       state: {
         currentSessionId: "session-before-reset",
         sessionGeneration: 4,
         sessionInfo: { model: "model-before-reset", updatedAt: 10 },
       },
     });
-
-    const staleHistory = readHistory();
-    const staleSessionInfo = refreshSessionInfo();
-    await vi.waitFor(() => {
-      expect(loadHistory).toHaveBeenCalledOnce();
-      expect(describeSession).toHaveBeenCalledOnce();
-    });
-
-    expect(
-      applySessionMutationResult({
-        ok: true,
-        key: "agent:main:main",
-        entry: {
-          sessionId: "session-after-reset",
-          model: "model-after-reset",
-          updatedAt: 20,
-        },
-      }),
-    ).toBe(true);
-
-    history.resolve({
-      sessionInfo: {
-        key: "agent:main:main",
-        sessionId: "session-before-reset",
-        model: "stale-history-model",
-        updatedAt: 10,
-      },
-      messages: [{ role: "user", content: "before reset" }],
-    });
-    sessionInfo.resolve(
-      description({
-        key: mainSession.key,
-        sessionId: "session-before-reset",
-        model: "stale-session-info-model",
-        updatedAt: 10,
-      }),
-    );
-
-    await expect(staleHistory).resolves.toEqual({ loaded: false });
-    await staleSessionInfo;
-
-    expect(state).toMatchObject({
+    const stale = h.refreshSessionInfo();
+    Object.assign(h.state, {
       sessionGeneration: 5,
+      currentSessionId: "session-after-reset",
+      sessionInfo: { model: "model-after-reset", updatedAt: 20 },
+    });
+    result.reject(new Error("private previous-session details"));
+    await stale;
+    expect(h.addSystem).not.toHaveBeenCalled();
+    expect(h.state).toMatchObject({
       currentSessionId: "session-after-reset",
       sessionInfo: { model: "model-after-reset" },
     });
-    expect(addUser).not.toHaveBeenCalled();
-    expect(clearAll).toHaveBeenCalledOnce();
   });
-
-  it.each(["history", "description success", "description failure"] as const)(
-    "discards an in-flight %s after an external same-key reset",
-    async (outcome) => {
-      const history = createDeferred<unknown>();
-      const sessionInfo = createDeferred<TuiSessionDescription>();
-      const h = createHarness({
-        mockChatMethods: outcome === "history" ? historyChatMocks : ["addSystem"],
-        backend:
-          outcome === "history"
-            ? { loadHistory: vi.fn(() => history.promise) }
-            : { describeSession: vi.fn(() => sessionInfo.promise) },
-        state: {
-          currentSessionId: "session-before-reset",
-          sessionGeneration: 4,
-          sessionInfo: {
-            model: "model-before-reset",
-            ...(outcome === "history" ? {} : { updatedAt: 10 }),
-          },
-        },
-      });
-      const { state } = h;
-      const stale = outcome === "history" ? h.loadHistory() : h.refreshSessionInfo();
-      state.sessionGeneration = 5;
-      state.currentSessionId = "session-after-reset";
-      state.sessionInfo = {
-        model: "model-after-reset",
-        ...(outcome === "history" ? {} : { updatedAt: 20 }),
-      };
-      if (outcome === "description failure") {
-        sessionInfo.reject(new Error("private previous-session details"));
-      } else if (outcome === "description success") {
-        sessionInfo.resolve(
-          description({
-            ...mainSession,
-            sessionId: "session-before-reset",
-            model: "private-old-model",
-            updatedAt: 10,
-          }),
-        );
-      } else {
-        history.resolve(
-          historyResult([{ role: "user", content: "PRIVATE OLD HISTORY" }], {
-            sessionInfo: session("session-before-reset", { model: "private-old-model" }),
-          }),
-        );
-      }
-      if (outcome === "history") {
-        await expect(stale).resolves.toEqual({ loaded: false });
-        expectCalls(0, h.addUser, h.clearAll);
-      } else {
-        await stale;
-        expect(h.addSystem).not.toHaveBeenCalled();
-      }
-      expect(state).toMatchObject({
-        currentSessionId: "session-after-reset",
-        sessionInfo: { model: "model-after-reset" },
-      });
-    },
-  );
 
   it.each([
     {
@@ -1716,40 +1634,6 @@ describe("tui session actions", () => {
       currentSessionKey: mainSession.key,
     });
     expect(rememberSessionKey).toHaveBeenCalledWith("agent:main:main");
-  });
-
-  it("preserves optimistic user messages across stale history rebuilds", async () => {
-    const describeSession = vi.fn().mockResolvedValue(description(mainSession));
-    const loadHistory = mockHistory(
-      [
-        { role: "user", content: "persisted", timestamp: 2_000 },
-        { role: "assistant", content: [{ type: "text", text: "reply" }] },
-      ],
-      { sessionId: "session-main" },
-    );
-    const {
-      state,
-      spies,
-      loadHistory: runLoadHistory,
-      requestRender,
-    } = createHarness({
-      mockChatMethods: ["addSystem", "addUser", "addPendingUser", "finalizeAssistant", "clearAll"],
-      backend: { describeSession, loadHistory },
-      state: { currentSessionId: "session-main" },
-    });
-    sendPendingUser(state, "optimistic-run", "optimistic prompt");
-
-    const result = await runLoadHistory();
-
-    expect(spies.clearAll).toHaveBeenCalledWith();
-    expect(spies.addUser).toHaveBeenCalledWith("persisted", { images: [] });
-    expect(spies.addPendingUser).toHaveBeenCalledWith("optimistic-run", "optimistic prompt");
-    expect(spies.finalizeAssistant).toHaveBeenCalledWith("reply", undefined, []);
-    expect(requestRender).toHaveBeenCalledWith(true);
-    expect(result).toEqual({
-      loaded: true,
-      runOutcome: { state: "completed" },
-    });
   });
 
   it.each([

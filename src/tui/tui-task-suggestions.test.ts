@@ -1,8 +1,7 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { stripAnsi } from "../../packages/terminal-core/src/ansi.js";
-import { createDeferred as deferred } from "../../test/helpers/promise.js";
-import { createChoicePromptHarness } from "./tui-overlay.test-support.js";
+import { createChoicePromptHarness, createPendingRequests } from "./tui-overlay.test-support.js";
 import { createTuiTaskSuggestionController } from "./tui-task-suggestions.js";
 const acceptedTask = { taskId: "task_1", key: "agent:main:task" };
 function suggestionPayload(overrides: Record<string, unknown> = {}) {
@@ -18,21 +17,10 @@ function suggestionPayload(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
-const pendingCleanup: Array<() => Promise<void>> = [];
-function pending<T>(fallback: T) {
-  const result = deferred<T>();
-  pendingCleanup.push(async () => {
-    result.resolve(fallback);
-    await Promise.allSettled([result.promise]);
-    await new Promise(setImmediate);
-  });
-  return result;
-}
+const { pending, cleanupPending } = createPendingRequests();
 const controllers: Array<ReturnType<typeof createTuiTaskSuggestionController>> = [];
 afterEach(async () => {
-  for (const cleanup of pendingCleanup.splice(0)) {
-    await cleanup();
-  }
+  await cleanupPending();
   controllers.forEach((controller) => controller.dispose());
   controllers.length = 0;
   await new Promise(setImmediate);

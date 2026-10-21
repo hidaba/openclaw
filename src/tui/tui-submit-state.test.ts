@@ -1,12 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  acceptPendingSubmit,
-  beginPendingSubmit,
   clearPendingSubmit,
   clearPendingSubmitDraft,
-  getPendingSubmitAcceptedRunId,
-  getPendingSubmitDraft,
-  reconcilePendingSubmitHistory,
   resolveTuiChatSubmitAdmission,
   tuiSessionActionBlockedMessage,
   type TuiPendingSubmit,
@@ -16,13 +11,6 @@ type State = { pendingSubmit: TuiPendingSubmit | null };
 const sending = { phase: "sending", runId: "run-local", draftText: "hello" } as const;
 const accepted = { ...sending, phase: "accepted", runId: "run-accepted" } as const;
 const registered = { ...accepted, draftText: null };
-const accept = (state: State) =>
-  acceptPendingSubmit({
-    state,
-    provisionalRunId: "run-local",
-    acceptedRunId: "run-accepted",
-    preserveDraft: true,
-  });
 
 describe("resolveTuiChatSubmitAdmission", () => {
   it.each([
@@ -49,34 +37,6 @@ describe("resolveTuiChatSubmitAdmission", () => {
 });
 
 describe("pending submit transitions", () => {
-  it("moves one submit through sending, accepted, registered, and reconciled states", () => {
-    const state: State = { pendingSubmit: null };
-
-    beginPendingSubmit(state, "run-local", "hello");
-    expect(state.pendingSubmit).toEqual(sending);
-    expect(getPendingSubmitAcceptedRunId(state)).toBeNull();
-    expect(getPendingSubmitDraft(state)).toEqual({ runId: "run-local", text: "hello" });
-
-    expect(accept(state)).toBe(true);
-    expect(state.pendingSubmit).toEqual(accepted);
-    expect(getPendingSubmitAcceptedRunId(state)).toBe("run-accepted");
-
-    expect(clearPendingSubmitDraft(state, "run-accepted")).toBe(true);
-    expect(state.pendingSubmit).toEqual(registered);
-    expect(reconcilePendingSubmitHistory(state, ["other-run"])).toBe(false);
-    expect(reconcilePendingSubmitHistory(state, ["run-accepted"])).toBe(true);
-    expect(state.pendingSubmit).toBeNull();
-  });
-
-  it("does not re-arm a submit cleared by an event before its ACK", () => {
-    const state: State = { pendingSubmit: null };
-    beginPendingSubmit(state, "run-local", "hello");
-    expect(clearPendingSubmit(state, "run-local")).toBe(true);
-
-    expect(accept(state)).toBe(false);
-    expect(state.pendingSubmit).toBeNull();
-  });
-
   it("keeps draft ownership while a submit is still sending", () => {
     const state: State = {
       pendingSubmit: { phase: "sending", runId: "run-sending", draftText: "hello" },

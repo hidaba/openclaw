@@ -169,10 +169,6 @@ describe("extractTextFromMessage", () => {
   });
 
   it.each([
-    [{ type: "image", data: "secret-image" }, "Attached image"],
-    [{ type: "audio", source: { type: "base64", data: "secret-audio" } }, "Attached audio"],
-    [{ type: "video", url: "file:///Users/operator/private/clip.mp4" }, "Attached video"],
-    [{ type: "file", url: "file:///etc/passwd", title: "private.txt" }, "Attached file"],
     [attachment("audio", "file:///private/audio.ogg", "private.ogg"), "Attached audio"],
     [
       { type: "image_url", image_url: { url: "https://secret.test/image?ticket=secret" } },

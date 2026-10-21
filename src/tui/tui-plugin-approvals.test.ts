@@ -1,8 +1,7 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stripAnsi } from "../../packages/terminal-core/src/ansi.js";
-import { createDeferred as deferred } from "../../test/helpers/promise.js";
-import { createChoicePromptHarness } from "./tui-overlay.test-support.js";
+import { createChoicePromptHarness, createPendingRequests } from "./tui-overlay.test-support.js";
 import { createTuiPluginApprovalController } from "./tui-plugin-approvals.js";
 
 function approvalPayload(
@@ -29,17 +28,7 @@ function approvalPayload(
 }
 
 const controllers: Array<ReturnType<typeof createTuiPluginApprovalController>> = [];
-const pendingCleanup: Array<() => Promise<void>> = [];
-
-function pending<T>(fallback: T) {
-  const result = deferred<T>();
-  pendingCleanup.push(async () => {
-    result.resolve(fallback);
-    await Promise.allSettled([result.promise]);
-    await new Promise(setImmediate);
-  });
-  return result;
-}
+const { pending, cleanupPending } = createPendingRequests();
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
@@ -47,9 +36,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  for (const cleanup of pendingCleanup.splice(0)) {
-    await cleanup();
-  }
+  await cleanupPending();
   for (const controller of controllers) {
     controller.dispose();
   }
@@ -182,31 +169,23 @@ describe("TUI plugin approvals", () => {
     },
   );
 
-  it("preserves requested events received while a refresh is in flight", async () => {
-    const harness = createHarness();
-    const pendingList = pending<unknown[]>([]);
-    harness.listPluginApprovals.mockReturnValueOnce(pendingList.promise);
-
-    const refresh = harness.controller.refresh();
-    harness.request();
-    pendingList.resolve([]);
-    await refresh;
-
-    expect(harness.openOverlay).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not resurrect resolved approvals from a stale refresh snapshot", async () => {
-    const harness = createHarness();
-    const pendingList = pending<unknown[]>([]);
-    harness.listPluginApprovals.mockReturnValueOnce(pendingList.promise);
-
-    const refresh = harness.controller.refresh();
-    harness.controller.handleEvent("plugin.approval.resolved", { id: "plugin:skill-1" });
-    pendingList.resolve([approvalPayload()]);
-    await refresh;
-
-    expect(harness.openOverlay).not.toHaveBeenCalled();
-  });
+  it.each(["requested", "resolved"])(
+    "preserves newer %s events over an in-flight refresh snapshot",
+    async (event) => {
+      const harness = createHarness();
+      const pendingList = pending<unknown[]>([]);
+      harness.listPluginApprovals.mockReturnValueOnce(pendingList.promise);
+      const refresh = harness.controller.refresh();
+      if (event === "requested") {
+        harness.request();
+      } else {
+        harness.controller.handleEvent("plugin.approval.resolved", { id: "plugin:skill-1" });
+      }
+      pendingList.resolve(event === "requested" ? [] : [approvalPayload()]);
+      await refresh;
+      expect(harness.openOverlay).toHaveBeenCalledTimes(event === "requested" ? 1 : 0);
+    },
+  );
 
   it("reruns a refresh requested while another refresh is in flight", async () => {
     const harness = createHarness();

@@ -1,5 +1,6 @@
 import type { Component, OverlayHandle } from "@earendil-works/pi-tui";
 import { vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import {
   captureChoicePromptSelector,
   type TestChoiceSelector,
@@ -14,6 +15,26 @@ export function createOverlayHandle(): OverlayHandle {
     unfocus: vi.fn(),
     isFocused: vi.fn(() => true),
     getBounds: () => undefined,
+  };
+}
+
+export function createPendingRequests() {
+  const cleanups: Array<() => Promise<void>> = [];
+  return {
+    pending<T>(fallback: T) {
+      const result = createDeferred<T>();
+      cleanups.push(async () => {
+        result.resolve(fallback);
+        await Promise.allSettled([result.promise]);
+        await new Promise(setImmediate);
+      });
+      return result;
+    },
+    async cleanupPending() {
+      for (const cleanup of cleanups.splice(0)) {
+        await cleanup();
+      }
+    },
   };
 }
 
