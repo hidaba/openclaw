@@ -1,5 +1,5 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { markInboundContextLabel } from "../auto-reply/reply/inbound-context-marker.js";
 import {
   extractContentFromMessage,
@@ -14,6 +14,7 @@ import {
   sanitizeRenderableLine,
   sanitizeRenderableText,
 } from "./tui-formatters.js";
+import { TuiStreamAssembler } from "./tui-stream-assembler.js";
 
 const attachment = (kind: string, url: string, label: string) => ({
   type: "attachment",
@@ -387,4 +388,74 @@ it.each([
   [`safe\x1b]52;c;Y2xpcGJvYXJk\x07\r\n${"�".repeat(20)}\tمرحبا`, "safe [binary data omitted]"],
 ])("sanitizes and collapses %j", (input, expected) => {
   expect(sanitizeRenderableLine(input)).toBe(expected);
+});
+describe("TuiStreamAssembler", () => {
+  const thinking = (value: string) => ({ type: "thinking", thinking: value });
+  const message = (...content: readonly Record<string, unknown>[]) => ({
+    role: "assistant",
+    content,
+  });
+  let assembler: TuiStreamAssembler;
+  beforeEach(() => {
+    assembler = new TuiStreamAssembler();
+  });
+
+  it("keeps thinking before content even when thinking arrives later", () => {
+    expect(assembler.ingestDelta("run-1", message(textBlock("Hello")), true)).toBe("Hello");
+    expect(assembler.ingestDelta("run-1", message(thinking("Brain")), true)).toBe(
+      "[thinking]\nBrain\n\nHello",
+    );
+  });
+
+  it("tracks literal placeholder text as real displayable content until finalization", () => {
+    expect(assembler.hasDisplayText("run-1")).toBe(false);
+    assembler.ingestDelta("run-1", message(textBlock("(no output)")), false);
+    expect(assembler.hasDisplayText("run-1")).toBe(true);
+    expect(assembler.finalize("run-1", message(), false)).toBe("(no output)");
+    expect(assembler.hasDisplayText("run-1")).toBe(false);
+  });
+
+  it("renders sanitized pairing QR terminal text from final content", () => {
+    const prompt = "Scan this QR code with the OpenClaw iOS app:";
+    const qr = { type: "openclaw_pairing_qr", terminalText: "\u001b[47m\u001b[30m█ ▄\u001b[0m" };
+    expect(assembler.finalize("run-1", message(textBlock(prompt), qr), false)).toBe(
+      `${prompt}\n\n█ ▄`,
+    );
+  });
+
+  it("keeps visible thinking ahead of an attachment-only final", () => {
+    const content = message(thinking("Preparing the attachment"), {
+      type: "image",
+      data: "secret-image",
+    });
+    expect(assembler.finalize("run-1", content, true)).toBe(
+      "[thinking]\nPreparing the attachment\n\nAttached image",
+    );
+  });
+
+  it("returns null when delta text is unchanged", () => {
+    expect(assembler.ingestDelta("run-4", message(textBlock("Repeat")), false)).toBe("Repeat");
+    expect(assembler.ingestDelta("run-4", message(textBlock("Repeat")), false)).toBeNull();
+  });
+
+  it("bounds orphaned stream state while preserving recently active runs", () => {
+    for (let index = 0; index < 200; index += 1) {
+      assembler.ingestDelta(`run-${index}`, message(textBlock(`Draft ${index}`)), false);
+    }
+
+    assembler.ingestDelta("run-0", message(textBlock("Recently active")), false);
+    assembler.ingestDelta("run-200", message(textBlock("Newest")), false);
+    expect(assembler.finalize("run-0", message(), false)).toBe("Recently active");
+    expect(assembler.finalize("run-1", message(), false)).toBe("(no output)");
+    expect(assembler.finalize("run-200", message(), false)).toBe("Newest");
+  });
+
+  it("does not evict an active run when an evicted run finalizes late", () => {
+    for (let index = 0; index < 201; index += 1) {
+      assembler.ingestDelta(`run-${index}`, message(textBlock(`Draft ${index}`)), false);
+    }
+
+    expect(assembler.finalize("run-0", message(textBlock("Late final")), false)).toBe("Late final");
+    expect(assembler.finalize("run-1", message(), false)).toBe("Draft 1");
+  });
 });
