@@ -1,4 +1,3 @@
-import { once } from "node:events";
 import { createServer } from "node:http";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import type { ModelsListResult } from "../../../packages/gateway-protocol/src/schema/agents-models-skills.js";
@@ -6,45 +5,18 @@ import type { ModelsListParams } from "../../../packages/gateway-protocol/src/sc
 import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
 import * as tmpDirOwner from "../../infra/tmp-openclaw-dir.js";
 import { createSuiteTempRootTracker } from "../../test-helpers/temp-dir.js";
-import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { disconnectGatewayClient, startGatewayWithClient } from "../test-helpers.e2e.js";
 import { waitForCatalogPublication } from "./models-auth-catalog.test-support.js";
-
-async function closeEndpoint(endpoint: ReturnType<typeof createServer>) {
-  endpoint.closeAllConnections();
-  await new Promise<void>((resolve, reject) => {
-    endpoint.close((error) => (error ? reject(error) : resolve()));
-  });
-}
+import {
+  closeCatalogServer,
+  createCatalogModel as catalogModel,
+} from "./models-catalog-fixture.test-support.js";
+import {
+  createModelsTestState,
+  listenModelsEndpoint as listen,
+  startModelsGateway,
+} from "./models-integration.test-support.js";
 
 const modelRow = (provider: string, id: string) => expect.objectContaining({ provider, id });
-const gatewayEnv = {
-  OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
-  OPENCLAW_SKIP_CHANNELS: "1",
-  OPENCLAW_SKIP_GMAIL_WATCHER: "1",
-  OPENCLAW_SKIP_CRON: "1",
-  OPENCLAW_SKIP_CANVAS_HOST: "1",
-  OPENCLAW_SKIP_BROWSER_CONTROL_SERVER: "1",
-  OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
-};
-const catalogModel = (id: string, name: string) => ({
-  id,
-  name,
-  reasoning: false,
-  input: ["text"],
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  contextWindow: 32768,
-  maxTokens: 4096,
-});
-async function listen(endpoint: ReturnType<typeof createServer>) {
-  endpoint.listen(0, "127.0.0.1");
-  await once(endpoint, "listening");
-  const address = endpoint.address();
-  if (!address || typeof address === "string") {
-    throw new Error("Catalog endpoint has no TCP address");
-  }
-  return `http://127.0.0.1:${address.port}`;
-}
 
 const coordinatorRoots = createSuiteTempRootTracker({ prefix: "native-catalog-coordinator-" });
 beforeAll(() => coordinatorRoots.setup());
@@ -63,11 +35,10 @@ it.for([false, true])(
   "models.list learns native models after cold Gateway startup (provider credentials: %s)",
   { timeout: 120_000 },
   async (withProviderCredentials, { signal }) => {
-    const state = await createOpenClawTestState({
-      label: "native-catalog-lifecycle",
+    const state = await createModelsTestState("native-catalog-lifecycle", {
       layout: "state-only",
       env: {
-        ...gatewayEnv,
+        OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
         OPENCLAW_DISABLE_BUNDLED_PLUGINS: withProviderCredentials ? "1" : undefined,
         OPENCLAW_TEST_TRUST_BUNDLED_PLUGINS_DIR: "1",
       },
@@ -271,12 +242,8 @@ it.for([false, true])(
       if (withProviderCredentials) {
         await saveAccount("native-original");
       }
-      const { client, server } = await startGatewayWithClient({
-        cfg,
-        configPath: state.configPath,
-        token,
-        scopes: ["operator.admin"],
-      });
+      const gateway = await startModelsGateway(state, cfg, token);
+      const { client, server } = gateway;
       try {
         await server.startupSettled;
         const request = (params: ModelsListParams) =>
@@ -477,13 +444,12 @@ it.for([false, true])(
       } finally {
         otherReleased.resolve();
         nativeReleased.resolve();
-        await disconnectGatewayClient(client);
-        await server.close();
+        await gateway.close();
       }
     } finally {
       otherReleased.resolve();
       nativeReleased.resolve();
-      await closeEndpoint(endpoint);
+      await closeCatalogServer(endpoint, true);
       await state.cleanup();
     }
   },
@@ -492,10 +458,9 @@ it.for([false, true])(
 it("models.list discovers credential-free providers at startup and explicitly refreshes once", async ({
   signal,
 }) => {
-  const state = await createOpenClawTestState({
-    label: "credential-free-catalog",
+  const state = await createModelsTestState("credential-free-catalog", {
     layout: "state-only",
-    env: gatewayEnv,
+    env: { OPENCLAW_TEST_MINIMAL_GATEWAY: undefined },
   });
   const provider = "credential-free-fixture";
   let requests = 0;
@@ -548,12 +513,8 @@ it("models.list discovers credential-free providers at startup and explicitly re
       gateway: { mode: "local", auth: { mode: "token", token } },
     };
     await state.writeConfig(cfg);
-    const { client, server } = await startGatewayWithClient({
-      cfg,
-      configPath: state.configPath,
-      token,
-      scopes: ["operator.admin"],
-    });
+    const gateway = await startModelsGateway(state, cfg, token);
+    const { client, server } = gateway;
     try {
       await server.startupSettled;
       const list = (refresh = false) =>
@@ -576,11 +537,10 @@ it("models.list discovers credential-free providers at startup and explicitly re
       expect((await list()).models).toContainEqual(modelRow(provider, "public-model-2"));
       expect(requests).toBe(2);
     } finally {
-      await disconnectGatewayClient(client);
-      await server.close();
+      await gateway.close();
     }
   } finally {
-    await closeEndpoint(endpoint);
+    await closeCatalogServer(endpoint, true);
     await state.cleanup();
   }
 }, 120_000);
