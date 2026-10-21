@@ -90,7 +90,6 @@ export function signBaselineRequest(
     .toString()
     .trim();
   return {
-    oid,
     requestPath,
     requestBytes,
     request,

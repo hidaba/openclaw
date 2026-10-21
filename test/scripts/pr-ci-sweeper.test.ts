@@ -4,7 +4,6 @@ import {
   HOURS,
   MINUTES,
   NOW,
-  autoMergePr,
   context,
   fakeGithub,
   pr,
@@ -155,7 +154,7 @@ describe("runPrCiSweeper", () => {
   });
 
   it("leaves cancelled CI attached to an auto-merge PR without re-executing it", async () => {
-    const generated = autoMergePr(10, "d".repeat(40));
+    const generated = listedPr(10, "d".repeat(40), { auto_merge: { merge_method: "squash" } });
     const { results, calls } = await sweep({
       prs: [generated],
       runsBySha: {
