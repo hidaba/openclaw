@@ -17,15 +17,15 @@ import {
   commitPluginInstallRecordsOnly,
   commitPluginInstallRecordsWithConfig,
 } from "./install-record-commit.js";
-import { writePersistedInstalledPluginIndexInstallRecordsWithLease } from "./installed-plugin-index-records.js";
+import { writePersistedInstalledPluginIndexInstallRecordsWithLease as writeRecords } from "./installed-plugin-index-records.js";
 import {
-  refreshPersistedInstalledPluginIndexWithLeaseSync,
-  restorePersistedInstalledPluginIndexIfCurrent,
-  writePersistedInstalledPluginIndex,
+  refreshPersistedInstalledPluginIndexWithLeaseSync as refreshIndexSync,
+  restorePersistedInstalledPluginIndexIfCurrent as restoreIndex,
+  writePersistedInstalledPluginIndex as writeIndex,
 } from "./installed-plugin-index-store-write.js";
-import { readPersistedInstalledPluginIndex } from "./installed-plugin-index-store.js";
-import { withPluginLifecycleLease } from "./plugin-lifecycle-lease.js";
-import { createInstalledPluginIndex } from "./test-helpers/installed-plugin-index.js";
+import { readPersistedInstalledPluginIndex as readIndex } from "./installed-plugin-index-store.js";
+import { withPluginLifecycleLease as withLease } from "./plugin-lifecycle-lease.js";
+import { createInstalledPluginIndex as createIndex } from "./test-helpers/installed-plugin-index.js";
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   afterEach(async () => {
@@ -164,11 +164,10 @@ describe("installed plugin index mutation receipts", () => {
     "invalidates cached inventory after an acknowledged %s loses caller authority",
     async (operation) => {
       const env = makeEnv();
-      const databasePath = await writePersistedInstalledPluginIndex(
-        createInstalledPluginIndex({ policyHash: "before", plugins: [] }),
-        { env },
-      );
-      expect((await readPersistedInstalledPluginIndex({ env }))?.policyHash).toBe("before");
+      const databasePath = await writeIndex(createIndex({ policyHash: "before", plugins: [] }), {
+        env,
+      });
+      expect((await readIndex({ env }))?.policyHash).toBe("before");
       const before = readRow(databasePath);
       if (!before || typeof before.updated_at_ms !== "number") {
         throw new Error("Expected an initial installed-index revision");
@@ -182,22 +181,19 @@ describe("installed plugin index mutation receipts", () => {
         revoke();
       });
       await expect(
-        withPluginLifecycleLease({ env, assertCurrent }, async (lease) => {
+        withLease({ env, assertCurrent }, async (lease) => {
           if (operation === "restore") {
-            await restorePersistedInstalledPluginIndexIfCurrent(null, revision, {
+            await restoreIndex(null, revision, {
               env,
               lease,
             });
           } else {
-            await writePersistedInstalledPluginIndex(
-              createInstalledPluginIndex({ policyHash: "after", plugins: [] }),
-              { env },
-            );
+            await writeIndex(createIndex({ policyHash: "after", plugins: [] }), { env });
           }
         }),
       ).rejects.toBe(refused);
       expect(acknowledgedWrites).toBe(1);
-      const fresh = await readPersistedInstalledPluginIndex({ env });
+      const fresh = await readIndex({ env });
       if (operation === "restore") {
         expect(fresh).toBeNull();
       } else {
@@ -208,12 +204,12 @@ describe("installed plugin index mutation receipts", () => {
 
   it("discards mutation receipts when the actual outer SQLite transaction rolls back", async () => {
     const env = makeEnv();
-    await withPluginLifecycleLease({ env }, async (lease) => {
+    await withLease({ env }, async (lease) => {
       const failure = new Error("outer transaction rollback");
       expect(() =>
         runOpenClawStateWriteTransaction(
           () => {
-            refreshPersistedInstalledPluginIndexWithLeaseSync({
+            refreshIndexSync({
               reason: "source-changed",
               installRecords: {},
               candidates: [],
@@ -234,7 +230,7 @@ describe("installed plugin index mutation receipts", () => {
     async (valueJson) => {
       const env = makeEnv();
       const otherEnv = makeEnv();
-      await withPluginLifecycleLease({ env }, async (lease) => {
+      await withLease({ env }, async (lease) => {
         if (valueJson !== null) {
           runOpenClawStateWriteTransaction(
             ({ db }) => {
@@ -248,7 +244,7 @@ describe("installed plugin index mutation receipts", () => {
         const before = readRow(lease.databasePath);
         const assertCurrent = vi.fn();
         const receipt = await withoutMainThreadSql(() =>
-          writePersistedInstalledPluginIndexInstallRecordsWithLease(
+          writeRecords(
             {},
             {
               env: otherEnv,
@@ -293,7 +289,7 @@ describe("installed plugin index mutation receipts", () => {
         );
         const foreign = readRow(lease.databasePath);
         const successor = await withoutMainThreadSql(() =>
-          writePersistedInstalledPluginIndexInstallRecordsWithLease(
+          writeRecords(
             {},
             {
               env,
@@ -310,7 +306,7 @@ describe("installed plugin index mutation receipts", () => {
         expect(JSON.stringify(receipt.mutation)).toBe(captured);
         await expect(
           withoutMainThreadSql(() =>
-            restorePersistedInstalledPluginIndexIfCurrent(receipt.previous, receipt.revision, {
+            restoreIndex(receipt.previous, receipt.revision, {
               env,
               lease,
             }),
@@ -318,7 +314,7 @@ describe("installed plugin index mutation receipts", () => {
         ).resolves.toBe(false);
         await expect(
           withoutMainThreadSql(() =>
-            restorePersistedInstalledPluginIndexIfCurrent(successor.previous, successor.revision, {
+            restoreIndex(successor.previous, successor.revision, {
               env,
               lease,
             }),
@@ -342,14 +338,14 @@ describe("installed plugin index mutation receipts", () => {
       let before;
       let databasePath = "";
       await expect(
-        withPluginLifecycleLease(
+        withLease(
           {
             env,
             ...(operation === "restore" ? { assertCurrent } : {}),
           },
           async (lease) => {
             databasePath = lease.databasePath;
-            const receipt = await writePersistedInstalledPluginIndexInstallRecordsWithLease(
+            const receipt = await writeRecords(
               { retained: { source: "npm", spec: "retained@1.0.0" } },
               { env, candidates: [], lease },
             );
@@ -372,12 +368,12 @@ describe("installed plugin index mutation receipts", () => {
               );
             try {
               if (operation === "restore") {
-                await restorePersistedInstalledPluginIndexIfCurrent(null, receipt.revision, {
+                await restoreIndex(null, receipt.revision, {
                   env,
                   lease,
                 });
               } else {
-                await writePersistedInstalledPluginIndexInstallRecordsWithLease(
+                await writeRecords(
                   { replacement: { source: "npm", spec: "replacement@2.0.0" } },
                   { env, candidates: [], lease, assertCurrent },
                 );
@@ -399,7 +395,7 @@ describe("installed plugin index mutation receipts", () => {
       const env = makeEnv();
       const failure = new Error("config no longer current");
       await withEnvAsync(env, async () => {
-        await withPluginLifecycleLease({}, async (lease) => {
+        await withLease({}, async (lease) => {
           let after;
           const pending = commitPluginInstallRecordsOnly({
             nextInstallRecords: {},
@@ -430,7 +426,7 @@ describe("installed plugin index mutation receipts", () => {
 
   it("rejects a failed SQLite commit without returning a receipt or publishing its row", async () => {
     const env = makeEnv();
-    await withPluginLifecycleLease({ env }, async (lease) => {
+    await withLease({ env }, async (lease) => {
       let receipt;
       try {
         runOpenClawStateWriteTransaction(
@@ -448,7 +444,7 @@ describe("installed plugin index mutation receipts", () => {
         );
         // TEMP triggers belong to this connection; exercise the canonical worker kernel here.
         expect(() => {
-          receipt = refreshPersistedInstalledPluginIndexWithLeaseSync({
+          receipt = refreshIndexSync({
             reason: "source-changed",
             installRecords: {},
             env,

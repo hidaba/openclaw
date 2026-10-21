@@ -169,13 +169,17 @@ describe("listOpenClawPluginManifestMetadata", () => {
     const statSpy = vi.spyOn(fs, "statSync");
     const readdirSpy = vi.spyOn(fs, "readdirSync");
 
-    expect(scanPlugin(env, "lifecycle-catalog")?.manifest.generation).toBe("first");
+    const first = scanPlugin(env, "lifecycle-catalog");
+    expect(first?.manifest.generation).toBe("first");
     const firstStatCalls = statSpy.mock.calls.length;
     const firstReaddirCalls = readdirSpy.mock.calls.length;
     expect(firstReaddirCalls).toBeGreaterThan(0);
+    const readFileSpy = vi.spyOn(fs, "readFileSync");
+    const readBytesSpy = vi.spyOn(fs, "readSync");
 
     writeManifest("second");
-    expect(scanPlugin(env, "lifecycle-catalog")?.manifest.generation).toBe("first");
+    expect(scanPlugin(env, "lifecycle-catalog")?.manifest).toBe(first?.manifest);
+    expect([readFileSpy.mock.calls, readBytesSpy.mock.calls]).toEqual([[], []]);
     expect(statSpy).toHaveBeenCalledTimes(firstStatCalls);
     expect(readdirSpy).toHaveBeenCalledTimes(firstReaddirCalls);
 

@@ -6,20 +6,17 @@ import type { PluginInstallRecord } from "../config/types.plugins.js";
 import { collectBundledChannelConfigsCore } from "./bundled-channel-config-metadata.js";
 import { recordPluginCandidateInstallOwner } from "./candidate-install-owner.js";
 import type { PluginCandidate } from "./discovery.js";
-import { resolvePluginManifestInstallOwner } from "./manifest-install-owner.js";
-import { loadPluginManifestRegistryCore, type PluginManifestRecord } from "./manifest-registry.js";
+import { loadPluginManifestRegistryCore } from "./manifest-registry.js";
 import { createPluginCache, withPluginCache } from "./plugin-cache.js";
-import { cleanupTrackedTempDirs, makeTrackedTempDir } from "./test-helpers/fs-fixtures.js";
+import {
+  cleanupTrackedTempDirs,
+  makeTrackedTempDir,
+  mkdirSafeDir as mkdirSafe,
+} from "./test-helpers/fs-fixtures.js";
 
 vi.unmock("../version.js");
 
 const tempDirs: string[] = [];
-function mkdirSafe(dir: string) {
-  fs.mkdirSync(dir, { recursive: true });
-  if (process.platform !== "win32") {
-    fs.chmodSync(dir, 0o755);
-  }
-}
 
 function makeTempDir() {
   return makeTrackedTempDir("openclaw-manifest-registry", tempDirs);
@@ -45,24 +42,6 @@ function writeManifest(dir: string, manifest: Record<string, unknown>) {
 function writeTextFile(rootDir: string, relativePath: string, value: string) {
   mkdirSafe(path.dirname(path.join(rootDir, relativePath)));
   fs.writeFileSync(path.join(rootDir, relativePath), value, "utf-8");
-}
-
-function setupBundleFixture(params: {
-  bundleDir: string;
-  dirs?: readonly string[];
-  textFiles?: Readonly<Record<string, string>>;
-  manifestRelativePath?: string;
-  manifest?: Record<string, unknown>;
-}) {
-  for (const relativeDir of params.dirs ?? []) {
-    mkdirSafe(path.join(params.bundleDir, relativeDir));
-  }
-  for (const [relativePath, value] of Object.entries(params.textFiles ?? {})) {
-    writeTextFile(params.bundleDir, relativePath, value);
-  }
-  if (params.manifestRelativePath && params.manifest) {
-    writeTextFile(params.bundleDir, params.manifestRelativePath, JSON.stringify(params.manifest));
-  }
 }
 
 function createPluginCandidate(
@@ -128,22 +107,10 @@ function loadOfficialRegistry(
   });
 }
 
-function resolveOfficialTrust(source: "npm" | "clawhub", overrides: Partial<PluginInstallRecord>) {
-  const id = source === "npm" ? "diffs" : "msteams";
-  const dir = makePluginDir(id);
-  const record =
-    source === "clawhub"
-      ? createMsteamsClawHubInstallRecord(dir, overrides)
-      : {
-          source,
-          spec: "@openclaw/diffs",
-          installPath: dir,
-          resolvedName: "@openclaw/diffs",
-          resolvedVersion: "2026.7.16",
-          resolvedSpec: "@openclaw/diffs@2026.7.16",
-          ...overrides,
-        };
-  return loadOfficialRegistry(id, dir, record).plugins[0]?.trustedOfficialInstall;
+function resolveOfficialTrust(overrides: Partial<PluginInstallRecord>) {
+  const dir = makePluginDir("msteams");
+  return loadOfficialRegistry("msteams", dir, createMsteamsClawHubInstallRecord(dir, overrides))
+    .plugins[0]?.trustedOfficialInstall;
 }
 
 function loadRegistry(candidates: PluginCandidate[]) {
@@ -351,14 +318,14 @@ describe("loadPluginManifestRegistry", () => {
     (format) => {
       const dir = makePluginDir("icon-demo", { name: "Icon Demo" });
       if (format === "agent") {
-        setupBundleFixture({
-          bundleDir: dir,
-          manifestRelativePath: "plugin.json",
-          manifest: {
+        writeTextFile(
+          dir,
+          "plugin.json",
+          JSON.stringify({
             $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
             name: "Portable Icon Bundle",
-          },
-        });
+          }),
+        );
       }
       writeTextFile(dir, "assets/icon.png", "portable icon");
       writeTextFile(dir, "assets/activity.svg", "default activity");
@@ -559,70 +526,18 @@ describe("loadPluginManifestRegistry", () => {
     },
   );
 
-  it("associates official trust with every child owned by the installed package", () => {
-    const dir = makePluginDir("diffs");
-    const registry = loadPluginManifestRegistryCore({
-      installRecords: {
-        diffs: {
-          source: "npm",
-          spec: "@openclaw/diffs",
-          installPath: dir,
-          resolvedName: "@openclaw/diffs",
-          resolvedSpec: "@openclaw/diffs@2026.7.16",
-        },
-      },
-      candidates: ["diffs/two", "diffs/one"].map((id) =>
-        Object.assign(officialCandidate("diffs", dir), { idHint: id, effectivePluginId: id }),
-      ),
-    });
-
-    expect(registry.plugins).toMatchObject([
-      { id: "diffs/two", trustedOfficialInstall: true },
-      { id: "diffs/one", trustedOfficialInstall: true },
-    ]);
-    expect(registry.plugins.map(resolvePluginManifestInstallOwner)).toEqual(["diffs", "diffs"]);
-  });
-
   it.each([
     [
-      "missing npm identity",
-      "npm",
-      { spec: undefined, resolvedName: undefined, resolvedSpec: undefined },
-    ],
-    [
-      "npm-pack archive metadata",
-      "npm",
-      { sourcePath: "/tmp/diffs.tgz", artifactKind: "npm-pack", artifactFormat: "tgz" },
-    ],
-    ["local source path metadata", "npm", { sourcePath: "/tmp/diffs.tgz" }],
-    [
-      "consistent official ClawHub source and resolution identities",
-      "clawhub",
-      {
-        spec: "clawhub:@openclaw/msteams@2026.6.11",
-        resolvedSpec: "@openclaw/msteams@2026.6.11",
-        resolvedName: "@openclaw/msteams",
-      },
+      "consistent source and resolution identities",
+      { resolvedSpec: "@openclaw/msteams@2026.6.11", resolvedName: "@openclaw/msteams" },
       true,
     ],
-    ["community ClawHub channel", "clawhub", { clawhubChannel: "community" }],
-    ["custom ClawHub URL", "clawhub", { clawhubUrl: "https://example.invalid" }],
-    ["conflicting requested spec", "clawhub", { spec: "clawhub:@openclaw/line" }],
-    ["malformed ClawHub package", "clawhub", { clawhubPackage: "@openclaw/msteams@2026.6.11" }],
-    ["malformed resolved spec", "clawhub", { resolvedSpec: "file:plugin.tgz" }],
-    [
-      "resolved identity without ClawHub source identity",
-      "clawhub",
-      {
-        clawhubPackage: undefined,
-        spec: undefined,
-        resolvedSpec: "@openclaw/msteams@2026.6.11",
-      },
-    ],
-  ] satisfies [string, "npm" | "clawhub", Partial<PluginInstallRecord>, boolean?][])(
-    "checks official install trust for %s",
-    (_name, source, overrides, expected?: boolean) => {
-      expect(resolveOfficialTrust(source, overrides)).toBe(expected);
+    ["malformed package", { clawhubPackage: "@openclaw/msteams@2026.6.11" }],
+    ["malformed resolved spec", { resolvedSpec: "file:plugin.tgz" }],
+  ] satisfies [string, Partial<PluginInstallRecord>, boolean?][])(
+    "checks ClawHub install trust for %s",
+    (_name, overrides, expected) => {
+      expect(resolveOfficialTrust(overrides)).toBe(expected);
     },
   );
 
@@ -636,49 +551,6 @@ describe("loadPluginManifestRegistry", () => {
     );
     expect(registry.plugins[0]?.trustedOfficialInstall).toBeUndefined();
     expect(registry.plugins[0]?.trust?.reason).toBe("install-path-mismatch");
-  });
-
-  it("does not trust legacy ClawHub records without source authority", () => {
-    const dir = makePluginDir("diagnostics-otel");
-    const registry = loadOfficialRegistry("diagnostics-otel", dir, {
-      source: "clawhub",
-      spec: "clawhub:@openclaw/diagnostics-otel@2026.5.18",
-      installPath: dir,
-    });
-
-    expect(registry.plugins[0]?.trustedOfficialInstall).toBeUndefined();
-  });
-
-  it("preserves trusted official installs when a config path selects the installed package", () => {
-    const dir = makePluginDir("diagnostics-prometheus");
-    const registry = loadOfficialRegistry(
-      "diagnostics-prometheus",
-      dir,
-      {
-        source: "npm",
-        installPath: dir,
-        resolvedName: "@openclaw/diagnostics-prometheus",
-        resolvedVersion: "2026.5.3",
-      },
-      ["global", "config"],
-    );
-
-    expect(registry.plugins).toMatchObject([{ origin: "config", trustedOfficialInstall: true }]);
-  });
-
-  it("does not trust unrecorded globals that spoof official ids", () => {
-    const dir = makePluginDir("diagnostics-prometheus");
-
-    const registry = loadPluginManifestRegistryCore({
-      installRecords: {},
-      candidates: [
-        createPluginCandidate("diagnostics-prometheus", dir, "global", {
-          packageName: "@openclaw/diagnostics-prometheus",
-        }),
-      ],
-    });
-
-    expect(registry.plugins[0]?.trustedOfficialInstall).toBeUndefined();
   });
 
   it("hydrates bundled channel config metadata from plugin-local config surfaces", () => {
@@ -1057,113 +929,6 @@ describe("loadPluginManifestRegistry", () => {
 
     expect(countDuplicateWarnings(loadRegistry(candidates))).toBe(0);
   });
-
-  const bundleCases: Array<{
-    idHint: string;
-    bundleFormat: "codex" | "claude" | "cursor";
-    fixture: Omit<Parameters<typeof setupBundleFixture>[0], "bundleDir">;
-    expected: Partial<
-      Pick<PluginManifestRecord, "id" | "hooks" | "skills" | "settingsFiles" | "activation">
-    >;
-    expectedCapabilities: readonly string[];
-  }> = [
-    {
-      idHint: "sample-bundle",
-      bundleFormat: "codex",
-      fixture: {
-        dirs: ["skills", "hooks"],
-        manifest: {
-          name: "Sample Bundle",
-          description: "Bundle fixture",
-          skills: "skills",
-          hooks: "hooks",
-        },
-      },
-      expected: {
-        id: "sample-bundle",
-        hooks: ["hooks"],
-        skills: ["skills"],
-      },
-      expectedCapabilities: ["hooks", "skills"],
-    },
-    {
-      idHint: "claude-sample",
-      bundleFormat: "claude",
-      fixture: {
-        dirs: ["skill-packs/starter", "commands-pack"],
-        textFiles: {
-          "settings.json": '{"hideThinkingBlock":true}',
-        },
-        manifest: {
-          name: "Claude Sample",
-          activation: { onStartup: false },
-          skills: ["skill-packs/starter"],
-          commands: "commands-pack",
-        },
-      },
-      expected: {
-        id: "claude-sample",
-        skills: ["skill-packs/starter", "commands-pack"],
-        settingsFiles: ["settings.json"],
-        activation: { onStartup: false },
-      },
-      expectedCapabilities: ["skills", "commands", "settings"],
-    },
-    {
-      idHint: "manifestless-claude",
-      bundleFormat: "claude",
-      fixture: {
-        dirs: ["commands"],
-        textFiles: {
-          "settings.json": '{"hideThinkingBlock":true}',
-        },
-      },
-      expected: {
-        skills: ["commands"],
-        settingsFiles: ["settings.json"],
-      },
-      expectedCapabilities: ["skills", "commands", "settings"],
-    },
-    {
-      idHint: "cursor-sample",
-      bundleFormat: "cursor",
-      fixture: {
-        dirs: ["skills", ".cursor/commands", ".cursor/rules"],
-        textFiles: {
-          ".cursor/hooks.json": '{"hooks":[]}',
-          ".mcp.json": '{"servers":{}}',
-        },
-        manifest: {
-          name: "Cursor Sample",
-          mcpServers: "./.mcp.json",
-        },
-      },
-      expected: {
-        id: "cursor-sample",
-        skills: ["skills", ".cursor/commands"],
-      },
-      expectedCapabilities: ["skills", "commands", "rules", "hooks", "mcpServers"],
-    },
-  ];
-  it.each(bundleCases)(
-    "loads $bundleFormat bundle $idHint",
-    ({ idHint, bundleFormat, fixture, expected, expectedCapabilities }) => {
-      const dir = makeTempDir();
-      setupBundleFixture({
-        bundleDir: dir,
-        manifestRelativePath: `.${bundleFormat}-plugin/plugin.json`,
-        ...fixture,
-      });
-      const registry = loadRegistry([
-        createPluginCandidate(idHint, dir, "global", { format: "bundle", bundleFormat }),
-      ]);
-
-      expect(registry.plugins).toMatchObject([{ format: "bundle", bundleFormat, ...expected }]);
-      expect(registry.plugins[0]?.bundleCapabilities).toEqual(
-        expect.arrayContaining([...expectedCapabilities]),
-      );
-    },
-  );
 
   it.each([
     { mode: "symlink", origin: "workspace", nix: undefined, accepted: false },

@@ -21,20 +21,19 @@ import {
   resolvePluginNpmGenerationProjectDir,
   resolvePluginNpmProjectDir,
 } from "./install-paths.js";
-import { inspectPersistedInstalledPluginIndexInstallRecordsSync } from "./installed-plugin-index-record-state.js";
+import { inspectPersistedInstalledPluginIndexInstallRecordsSync as inspectRecords } from "./installed-plugin-index-record-state.js";
 import {
-  clearLoadInstalledPluginIndexInstallRecordsCache,
-  loadInstalledPluginIndexInstallRecords,
-  loadInstalledPluginIndexInstallRecordsSync,
-  readPersistedInstalledPluginIndexInstallRecordsAsync,
-  recordPluginInstallInRecords,
-  removePluginInstallRecordFromRecords,
-  withoutPluginInstallRecords,
+  clearLoadInstalledPluginIndexInstallRecordsCache as clearRecordsCache,
+  loadInstalledPluginIndexInstallRecords as loadRecords,
+  loadInstalledPluginIndexInstallRecordsSync as loadRecordsSync,
+  readPersistedInstalledPluginIndexInstallRecordsAsync as readRecords,
+  recordPluginInstallInRecords as recordInstall,
+  removePluginInstallRecordFromRecords as removeRecord,
+  withoutPluginInstallRecords as withoutRecords,
 } from "./installed-plugin-index-records.js";
-import { resolveInstalledPluginIndexStorePath } from "./installed-plugin-index-store-path.js";
-import { readPersistedInstalledPluginIndex } from "./installed-plugin-index-store.js";
+import { resolveRetainedManagedNpmInstallPackageInfo } from "./managed-npm-retention.js";
 import * as metadataWorker from "./plugin-metadata-state-worker.js";
-import { seedInstalledPluginIndex } from "./test-helpers/installed-plugin-index.js";
+import { seedInstalledPluginIndex as seedIndex } from "./test-helpers/installed-plugin-index.js";
 import { writeManagedNpmPlugin } from "./test-helpers/managed-npm-plugin.js";
 
 const tempDirs = createTempDirTracker();
@@ -43,7 +42,7 @@ const seedRecords = (
   stateDir: string,
   records: Record<string, PluginInstallRecord>,
   candidates: PluginCandidate[] = [],
-) => seedInstalledPluginIndex(records, { stateDir, candidates });
+) => seedIndex(records, { stateDir, candidates });
 const managedPlugin = (
   stateDir: string,
   pluginId: string,
@@ -68,25 +67,10 @@ function createPluginCandidate(stateDir: string, pluginId: string): PluginCandid
 }
 
 function managedGeneration(stateDir: string, version = "2026.7.1") {
-  const packageName = "@openclaw/discord";
-  const npmDir = path.join(stateDir, "npm");
-  const packageDir = (generationKey: string) =>
-    path.join(
-      resolvePluginNpmGenerationProjectDir({ npmDir, packageName, generationKey }),
-      "node_modules",
-      ...packageName.split("/"),
-    );
-  managedPlugin(stateDir, "discord", version);
-  const activeProjectRoot = resolvePluginNpmGenerationProjectDir({
-    npmDir,
-    packageName,
-    generationKey: `discord-${version}`,
-  });
-  fs.renameSync(resolvePluginNpmProjectDir({ npmDir, packageName }), activeProjectRoot);
   return {
-    packageName,
-    activePackageDir: packageDir(`discord-${version}`),
-    stalePackageDir: packageDir("discord-2026.6.4"),
+    packageName: GENERATION_PACKAGE,
+    activePackageDir: writeManaged(stateDir, version, `discord-${version}`),
+    stalePackageDir: generationPackagePath(generationProject(stateDir, "discord-2026.6.4")),
   };
 }
 
@@ -105,7 +89,7 @@ afterEach(async () => {
   await closeOpenClawStateDatabaseAsync();
   closeOpenClawStateDatabaseForTest();
   vi.doUnmock("./installed-plugin-index-store.js");
-  clearLoadInstalledPluginIndexInstallRecordsCache();
+  clearRecordsCache();
   tempDirs.cleanup();
 });
 
@@ -122,10 +106,7 @@ describe("plugin index install records store", () => {
     });
     const readSpy = vi.spyOn(stateDbReadOnly, "withExistingOpenClawStateDatabaseReadOnly");
     const scanSpy = vi.spyOn(fs, "readdirSync");
-    for (const read of [
-      inspectPersistedInstalledPluginIndexInstallRecordsSync,
-      loadInstalledPluginIndexInstallRecordsSync,
-    ]) {
+    for (const read of [inspectRecords, loadRecordsSync]) {
       readSpy.mockImplementationOnce(() => {
         throw error;
       });
@@ -137,10 +118,7 @@ describe("plugin index install records store", () => {
         .rejects.toBe(error);
     }
     const asyncReadSpy = vi.spyOn(metadataWorker, "readPluginMetadataStateRow");
-    for (const read of [
-      readPersistedInstalledPluginIndexInstallRecordsAsync,
-      loadInstalledPluginIndexInstallRecords,
-    ]) {
+    for (const read of [readRecords, loadRecords]) {
       asyncReadSpy.mockRejectedValueOnce(error);
       await expect(read({ stateDir })).rejects.toBe(error);
     }
@@ -149,43 +127,10 @@ describe("plugin index install records store", () => {
     readSpy.mockRestore();
     scanSpy.mockRestore();
 
-    const restored = await loadInstalledPluginIndexInstallRecords({ stateDir });
+    const restored = await loadRecords({ stateDir });
     expect(restored.authoritative).toEqual(records.authoritative);
     expect(restored.recoverable).toMatchObject({ source: "npm", spec: "recoverable@1.0.0" });
-    expect(loadInstalledPluginIndexInstallRecordsSync({ stateDir })).toEqual(restored);
-  });
-
-  it("writes machine-managed install records outside config", async () => {
-    const stateDir = makeStateDir();
-    const candidate = createPluginCandidate(stateDir, "twitch");
-
-    const records = {
-      twitch: {
-        source: "npm" as const,
-        spec: "@openclaw/plugin-twitch@1.0.0",
-        installPath: "plugins/npm/@openclaw/plugin-twitch",
-      },
-    };
-    await seedInstalledPluginIndex(records, {
-      stateDir,
-      candidates: [candidate],
-      now: () => new Date(1777118400000),
-    });
-
-    expect(resolveInstalledPluginIndexStorePath({ stateDir })).toBe(
-      path.join(stateDir, "state", "openclaw.sqlite"),
-    );
-    expect(await readPersistedInstalledPluginIndex({ stateDir })).toMatchObject({
-      version: 1,
-      generatedAtMs: 1777118400000,
-      installRecords: { twitch: records.twitch },
-      plugins: [
-        { pluginId: "twitch", installRecordHash: expect.stringMatching(/^[a-f0-9]{64}$/u) },
-      ],
-    });
-    expect(await readPersistedInstalledPluginIndexInstallRecordsAsync({ stateDir })).toEqual(
-      records,
-    );
+    expect(loadRecordsSync({ stateDir })).toEqual(restored);
   });
 
   it("keeps persisted install record metadata over recovered npm records", async () => {
@@ -199,9 +144,7 @@ describe("plugin index install records store", () => {
       integrity: "sha512-persisted",
     };
     await seedRecords(stateDir, { discord: record }, [createPluginCandidate(stateDir, "discord")]);
-    expect((await loadInstalledPluginIndexInstallRecords({ stateDir })).discord).toMatchObject(
-      record,
-    );
+    expect((await loadRecords({ stateDir })).discord).toMatchObject(record);
   });
 
   it("recovers a valid managed generation with an obsolete exact-version selector", async () => {
@@ -215,13 +158,13 @@ describe("plugin index install records store", () => {
       },
     });
 
-    expectObjectFields((await loadInstalledPluginIndexInstallRecords({ stateDir })).discord, {
+    expectObjectFields((await loadRecords({ stateDir })).discord, {
       ...npmRecord(packageName, recoveredVersion, activePackageDir),
       integrity: undefined,
     });
 
-    clearLoadInstalledPluginIndexInstallRecordsCache();
-    expect(loadInstalledPluginIndexInstallRecordsSync({ stateDir }).discord).toMatchObject({
+    clearRecordsCache();
+    expect(loadRecordsSync({ stateDir }).discord).toMatchObject({
       installPath: activePackageDir,
       resolvedVersion: recoveredVersion,
     });
@@ -243,9 +186,7 @@ describe("plugin index install records store", () => {
 
     // Platform spoofing changes the coordinator directory captured by the seeded worker.
     await closeOpenClawStateDatabaseAsync();
-    const loaded = await withMockedWindowsPlatform(() =>
-      loadInstalledPluginIndexInstallRecords({ stateDir }),
-    );
+    const loaded = await withMockedWindowsPlatform(() => loadRecords({ stateDir }));
     expect(loaded.discord).toMatchObject({
       installPath: activePackageDir,
       resolvedVersion: "2026.7.1",
@@ -269,7 +210,7 @@ describe("plugin index install records store", () => {
       [createPluginCandidate(stateDir, "codex")],
     );
 
-    expectObjectFields((await loadInstalledPluginIndexInstallRecords({ stateDir })).codex, {
+    expectObjectFields((await loadRecords({ stateDir })).codex, {
       ...npmRecord("@openclaw/codex", "2026.5.18-beta.1", codexDir),
       integrity: undefined,
       shasum: undefined,
@@ -277,7 +218,7 @@ describe("plugin index install records store", () => {
       resolvedAt: undefined,
     });
 
-    expect(loadInstalledPluginIndexInstallRecordsSync({ stateDir }).codex).toMatchObject({
+    expect(loadRecordsSync({ stateDir }).codex).toMatchObject({
       version: "2026.5.18-beta.1",
       resolvedVersion: "2026.5.18-beta.1",
     });
@@ -295,7 +236,7 @@ describe("plugin index install records store", () => {
     for (const [id, record] of entries) {
       setPluginInstallRecordMapEntry(records, id, record);
     }
-    const withInstall = recordPluginInstallInRecords(records, {
+    const withInstall = recordInstall(records, {
       pluginId: "demo",
       source: "npm",
       spec: "demo@latest",
@@ -309,14 +250,14 @@ describe("plugin index install records store", () => {
       spec: "demo@latest",
       installedAt: "2026-04-25T00:00:00.000Z",
     });
-    const removed = removePluginInstallRecordFromRecords(withInstall, "demo");
+    const removed = removeRecord(withInstall, "demo");
     expect(removed).toEqual(records);
     expect(Object.getPrototypeOf(removed)).toBeNull();
     for (const [id, record] of entries) {
       expect(getPluginInstallRecordMapEntry(withInstall, id)).toBe(record);
       expect(getPluginInstallRecordMapEntry(removed, id)).toBe(record);
     }
-    const withoutProto = removePluginInstallRecordFromRecords(removed, "__proto__");
+    const withoutProto = removeRecord(removed, "__proto__");
     expect(Object.hasOwn(withoutProto, "__proto__")).toBe(false);
     for (const [id, record] of entries.slice(1, 3)) {
       expect(getPluginInstallRecordMapEntry(withoutProto, id)).toBe(record);
@@ -325,7 +266,7 @@ describe("plugin index install records store", () => {
 
   it("preserves an authored empty plugins section while stripping transient install records", () => {
     expect(
-      withoutPluginInstallRecords(
+      withoutRecords(
         { plugins: { installs: { twitch: { source: "npm", spec: "twitch@1.0.0" } } } },
         { preserveEmptyPlugins: true },
       ),
@@ -335,9 +276,222 @@ describe("plugin index install records store", () => {
   it("returns empty records when the persisted plugin index is missing", async () => {
     const stateDir = makeStateDir();
 
-    expect(await readPersistedInstalledPluginIndexInstallRecordsAsync({ stateDir })).toBeNull();
-    const records = await loadInstalledPluginIndexInstallRecords({ stateDir });
+    expect(await readRecords({ stateDir })).toBeNull();
+    const records = await loadRecords({ stateDir });
     expect(Object.keys(records)).toEqual([]);
     expect(Object.getPrototypeOf(records)).toBeNull();
+  });
+});
+
+const GENERATION_PACKAGE = "@openclaw/discord";
+const GENERATION_PLUGIN = "discord";
+function generationPackagePath(projectRoot: string) {
+  return path.join(projectRoot, "node_modules", ...GENERATION_PACKAGE.split("/"));
+}
+
+const generationProject = (stateDir: string, generationKey: string) =>
+  resolvePluginNpmGenerationProjectDir({
+    npmDir: path.join(stateDir, "npm"),
+    packageName: GENERATION_PACKAGE,
+    generationKey,
+  });
+
+function writeManaged(stateDir: string, version: string, generationKey?: string): string {
+  const packageDir = managedPlugin(stateDir, GENERATION_PLUGIN, version);
+  if (!generationKey) {
+    return packageDir;
+  }
+  const flatProjectRoot = resolvePluginNpmProjectDir({
+    npmDir: path.join(stateDir, "npm"),
+    packageName: GENERATION_PACKAGE,
+  });
+  const generationProjectRoot = generationProject(stateDir, generationKey);
+  fs.renameSync(flatProjectRoot, generationProjectRoot);
+  return generationPackagePath(generationProjectRoot);
+}
+
+function seedAuthority(stateDir: string, installPath: string, dangling = false) {
+  return seedIndex(
+    {
+      discord: {
+        source: "npm",
+        installPath,
+        resolvedName: GENERATION_PACKAGE,
+        spec: `${GENERATION_PACKAGE}@${dangling ? "latest" : "1.0.0"}`,
+        resolvedVersion: dangling ? "2.0.0" : "1.0.0",
+        ...(!dangling ? { version: "1.0.0", resolvedSpec: `${GENERATION_PACKAGE}@1.0.0` } : {}),
+      },
+    },
+    { stateDir, candidates: [] },
+  );
+}
+
+function orderInstalls(older: string, newer: string) {
+  setInstallTimestamp(older, Date.UTC(2026, 0, 1));
+  setInstallTimestamp(newer, Date.UTC(2026, 0, 2));
+}
+
+async function expectRecovered(stateDir: string, installPath: string, resolvedVersion = "1.0.0") {
+  const loaded = await loadRecords({ stateDir });
+  expect(loaded.discord).toMatchObject({ installPath, resolvedVersion });
+}
+
+function setInstallTimestamp(packageDir: string, timestampMs: number): void {
+  const packageInfo = resolveRetainedManagedNpmInstallPackageInfo(packageDir);
+  if (!packageInfo) {
+    throw new Error(`Expected managed npm package dir: ${packageDir}`);
+  }
+  const timestamp = new Date(timestampMs);
+  for (const dir of [packageDir, packageInfo.projectRoot]) {
+    fs.utimesSync(path.join(dir, "package.json"), timestamp, timestamp);
+    fs.utimesSync(dir, timestamp, timestamp);
+  }
+}
+
+describe("managed npm generation-dir loader precedence", () => {
+  afterEach(() => vi.restoreAllMocks());
+  it("matches the authoritative generation case-insensitively on Windows", async () => {
+    const stateDir = makeStateDir();
+    const newerPackageDir = writeManaged(stateDir, "3.0.0", "discord-newer-on-windows");
+    const downgradedPackageDir = writeManaged(stateDir, "1.0.0");
+    orderInstalls(downgradedPackageDir, newerPackageDir);
+    const differentlyCasedActivePath = downgradedPackageDir.replace(
+      stateDir,
+      stateDir.toUpperCase(),
+    );
+
+    await seedAuthority(stateDir, differentlyCasedActivePath);
+    // Prepare native storage before simulating Windows path comparisons in the loader.
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    const emitWarning = vi.spyOn(process, "emitWarning").mockImplementation(() => undefined);
+
+    const loaded = await loadRecords({ stateDir });
+    expect(loaded.discord).toMatchObject({ resolvedVersion: "1.0.0" });
+    expect(String(loaded.discord?.installPath).toLowerCase()).toBe(
+      downgradedPackageDir.toLowerCase(),
+    );
+    expect(emitWarning).not.toHaveBeenCalled();
+  });
+
+  it("warns when install recency replaces a dangling managed authority", async () => {
+    const stateDir = makeStateDir();
+    const recentPackageDir = writeManaged(stateDir, "1.0.0", "discord-recent-after-dangling");
+    const olderPackageDir = writeManaged(stateDir, "9.0.0");
+    orderInstalls(olderPackageDir, recentPackageDir);
+    const missingPackageDir = generationPackagePath(generationProject(stateDir, "discord-missing"));
+    await seedAuthority(stateDir, missingPackageDir, true);
+    const emitWarning = vi.spyOn(process, "emitWarning").mockImplementation(() => undefined);
+
+    await expectRecovered(stateDir, recentPackageDir);
+    expect(emitWarning).toHaveBeenCalledWith(
+      expect.stringContaining("without an authoritative active path"),
+      expect.objectContaining({ code: "OPENCLAW_PLUGIN_INSTALL_RECOVERY_FALLBACK" }),
+    );
+  });
+
+  it("does not treat unrelated legacy-root metadata changes as plugin recency", async () => {
+    const stateDir = makeStateDir();
+    const recentPackageDir = writeManaged(stateDir, "1.0.0", "discord-recent-from-legacy");
+    const olderPackageDir = writeManagedNpmPlugin({
+      stateDir,
+      packageName: GENERATION_PACKAGE,
+      pluginId: GENERATION_PLUGIN,
+      version: "9.0.0",
+      layout: "legacy",
+    });
+    orderInstalls(olderPackageDir, recentPackageDir);
+    writeManagedNpmPlugin({
+      stateDir,
+      packageName: "@openclaw/unrelated",
+      pluginId: "unrelated",
+      version: "1.0.0",
+      layout: "legacy",
+    });
+    vi.spyOn(process, "emitWarning").mockImplementation(() => undefined);
+
+    await expectRecovered(stateDir, recentPackageDir);
+  });
+});
+
+type Counts = { opens: number; reads: number };
+describe("managed npm manifest reads", () => {
+  afterEach(() => vi.restoreAllMocks());
+  it.each([
+    ["project", "async"],
+    ["legacy", "sync"],
+  ] as const)("reads managed npm manifests once during %s %s recovery", async (layout, mode) => {
+    const stateDir = tempDirs.make("openclaw-plugin-index-records-");
+    const packageName = "@fixture/install-key";
+    const packageDir = writeManagedNpmPlugin({
+      stateDir,
+      packageName,
+      pluginId: "fixture-plugin",
+      version: "1.2.3",
+      dependencySpec: "latest",
+      layout,
+    });
+    const packagePath = path.join(packageDir, "package.json");
+    fs.writeFileSync(
+      packagePath,
+      JSON.stringify({
+        name: "@fixture/package-name",
+        version: " 1.2.3 ",
+        openclaw: { extensions: ["./dist/index.js"] },
+      }),
+    );
+    const projectRoot =
+      layout === "legacy"
+        ? path.join(stateDir, "npm")
+        : resolvePluginNpmProjectDir({ npmDir: path.join(stateDir, "npm"), packageName });
+    const counts = new Map<string, Counts>(
+      [
+        packagePath,
+        path.join(packageDir, "openclaw.plugin.json"),
+        path.join(projectRoot, "package.json"),
+      ].map((file) => [file, { opens: 0, reads: 0 }]),
+    );
+    const descriptors = new Map<number, { counts: Counts; start: number }>();
+    const originalOpen = fs.openSync;
+    const originalClose = fs.closeSync;
+    clearRecordsCache();
+    const readFile = vi.spyOn(fs, "readFileSync");
+    vi.spyOn(fs, "openSync").mockImplementation((file, flags, permissions) => {
+      const fd = originalOpen(file, flags, permissions);
+      const fileCounts = counts.get(String(file));
+      if (fileCounts) {
+        fileCounts.opens++;
+        descriptors.set(fd, { counts: fileCounts, start: readFile.mock.calls.length });
+      }
+      return fd;
+    });
+    vi.spyOn(fs, "closeSync").mockImplementation((fd) => {
+      const tracked = descriptors.get(fd);
+      if (tracked) {
+        tracked.counts.reads += readFile.mock.calls
+          .slice(tracked.start)
+          .filter(([file]) => file === fd).length;
+        descriptors.delete(fd);
+      }
+      return originalClose(fd);
+    });
+    const read = mode === "async" ? loadRecords : loadRecordsSync;
+    const expected = {
+      "fixture-plugin": {
+        source: "npm",
+        spec: `${packageName}@latest`,
+        installPath: packageDir,
+        version: "1.2.3",
+        resolvedName: packageName,
+        resolvedVersion: "1.2.3",
+        resolvedSpec: `${packageName}@1.2.3`,
+      },
+    };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(await read({ stateDir })).toEqual(expected);
+      expect(descriptors.size).toBe(0);
+      for (const [file, observed] of counts) {
+        expect(observed, file).toEqual({ opens: 1, reads: 1 });
+      }
+    }
   });
 });

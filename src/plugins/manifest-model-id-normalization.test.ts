@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { normalizeConfiguredProviderCatalogModelId } from "@openclaw/model-catalog-core/provider-model-id-normalization";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { normalizeStaticProviderModelId } from "../agents/model-ref-shared.js";
 import { captureEnv, deleteTestEnvValue, setTestEnvValue } from "../test-utils/env.js";
@@ -11,7 +11,6 @@ import {
   setCurrentPluginMetadataSnapshot,
 } from "./current-plugin-metadata.test-support.js";
 import { writePersistedInstalledPluginIndex } from "./installed-plugin-index-store-write.js";
-import { listOpenClawPluginManifestMetadata } from "./manifest-metadata-scan.js";
 import { clearPluginMetadataLifecycleCaches } from "./plugin-metadata-lifecycle.js";
 // Import registers the ESM resolver for Vitest's no-CJS-TS-hook fallback.
 import {
@@ -76,7 +75,6 @@ describe("manifest model id normalization", () => {
   });
 
   afterEach(() => {
-    vi.restoreAllMocks();
     resetPluginRuntimeStateForTest();
     clearPluginMetadataLifecycleCaches();
     testEnvSnapshot.restore();
@@ -121,23 +119,5 @@ describe("manifest model id normalization", () => {
     await installNormalizer("charlie");
     clearPluginMetadataLifecycleCaches();
     expect(normalizeDemoModel()).toBe("charlie/demo-model");
-  });
-
-  it("reuses manifest metadata for the same environment identity", async () => {
-    const pluginDir = await installNormalizer("alpha");
-
-    // Ignore source-checkout extensions returned alongside the fixture.
-    const listNormalizerRecords = () =>
-      listOpenClawPluginManifestMetadata(process.env).filter(
-        (record) => record.pluginDir === pluginDir,
-      );
-    const firstRecords = listNormalizerRecords();
-    const readFile = vi.spyOn(fs, "readFileSync");
-    const readBytes = vi.spyOn(fs, "readSync");
-    const secondRecords = listNormalizerRecords();
-    expect(firstRecords).toHaveLength(1);
-    expect(secondRecords).toEqual(firstRecords);
-    expect(secondRecords[0]?.manifest).toBe(firstRecords[0]?.manifest);
-    expect([readFile.mock.calls, readBytes.mock.calls]).toEqual([[], []]);
   });
 });

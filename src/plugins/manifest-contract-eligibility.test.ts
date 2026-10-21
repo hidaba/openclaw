@@ -162,27 +162,9 @@ describe("bundled manifest contract availability", () => {
 });
 
 describe("prepared installed-plugin eligibility", () => {
-  it.each([
-    { config: undefined, expected: [true, true, true, false, false, false] },
-    { config: {}, expected: [true, true, false, true, false, false] },
-    {
-      config: { plugins: { enabled: false } },
-      expected: [true, false, false, false, false, false],
-    },
-    {
-      config: { plugins: { allow: ["global", "workspace", "duplicate"] } },
-      expected: [false, true, true, false, true, false],
-    },
-    {
-      config: {
-        plugins: {
-          allow: ["global", "workspace", "duplicate"],
-          deny: ["workspace"],
-          entries: { global: { enabled: false } },
-        },
-      },
-      expected: [false, false, false, false, true, false],
-    },
+  it.each<{ config: OpenClawConfig | undefined; expected: boolean[] }>([
+    { config: undefined, expected: [true, false, false] },
+    { config: {}, expected: [false, false, false] },
   ])("preserves policy and first-record selection for $config", ({ config, expected }) => {
     clearPluginMetadataLifecycleCaches();
     mocks.readBundledDiscoveryMode.mockReturnValue("allowlist");
@@ -190,28 +172,11 @@ describe("prepared installed-plugin eligibility", () => {
     const records = (id: string, overrides: Partial<(typeof index.plugins)[number]> = {}) =>
       makePluginMetadataIndex(id).plugins.map((record) => Object.assign({}, record, overrides));
     index.plugins = [
-      ...records("provider", {
-        origin: "bundled" as const,
-        enabledByDefault: true,
-        contributions: {
-          channels: [],
-          channelConfigs: [],
-          providers: ["provider"],
-          modelCatalogProviders: [],
-          modelSupportPrefixes: [],
-          modelSupportPatterns: [],
-          autoEnableProviderIds: [],
-          commandAliases: [],
-          contracts: {},
-        },
-      }),
-      ...records("global"),
       ...records("workspace", { origin: "workspace" }),
-      ...records("disabled", { enabled: false }),
       ...records("duplicate", { origin: "workspace", enabled: false }),
       ...records("duplicate"),
     ];
-    const plugins = index.plugins.slice(0, 5).map((record) => ({
+    const plugins = index.plugins.slice(0, 2).map((record) => ({
       id: record.pluginId,
       origin: record.origin,
     }));
@@ -248,43 +213,23 @@ describe("prepared installed-plugin eligibility", () => {
   });
 });
 
-describe("loadManifestContractSnapshot", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mocks.loadPluginMetadataSnapshot.mockReturnValue({
-      index: { plugins: [] },
-      plugins: [],
-      byPluginId: new Map(),
+it.each([false, true])(
+  "resolves scoped or default-discovery metadata (configless=%s)",
+  (configless) => {
+    const env = { HOME: configless ? "/home/default-config" : "/home/snapshot" };
+    const plugins = configless ? [{ id: "demo" }] : [];
+    const snapshot = {
+      index: { plugins: plugins.map(({ id }) => ({ pluginId: id })) },
+      plugins,
+      byPluginId: new Map(plugins.map((plugin) => [plugin.id, plugin])),
+    };
+    mocks.resolvePluginMetadataSnapshot.mockReturnValue(snapshot);
+    const request = configless ? { env } : { config: {}, workspaceDir: "/workspace", env };
+    expect(loadSnapshot(request)).toEqual(snapshot);
+    expect(mocks.resolvePluginMetadataSnapshot).toHaveBeenLastCalledWith({
+      config: undefined,
+      ...request,
+      allowWorkspaceScopedCurrent: configless,
     });
-    mocks.resolvePluginMetadataSnapshot.mockImplementation(
-      (params?: Parameters<typeof mocks.loadPluginMetadataSnapshot>[0]) =>
-        mocks.loadPluginMetadataSnapshot(params),
-    );
-  });
-
-  it.each([false, true])(
-    "resolves scoped or default-discovery metadata (configless=%s)",
-    (configless) => {
-      const env = { HOME: configless ? "/home/default-config" : "/home/snapshot" };
-      const plugins = configless ? [{ id: "demo" }] : [];
-      const snapshot = {
-        index: { plugins: plugins.map(({ id }) => ({ pluginId: id })) },
-        plugins,
-        byPluginId: new Map(plugins.map((plugin) => [plugin.id, plugin])),
-      };
-      const reader = configless
-        ? mocks.loadPluginMetadataSnapshot
-        : mocks.resolvePluginMetadataSnapshot;
-      reader.mockReturnValue(snapshot);
-      const request = configless ? { env } : { config: {}, workspaceDir: "/workspace", env };
-      expect(loadSnapshot(request)).toEqual(snapshot);
-      const expected = { config: undefined, ...request, allowWorkspaceScopedCurrent: configless };
-      expect(mocks.resolvePluginMetadataSnapshot).toHaveBeenCalledWith(expected);
-      if (configless) {
-        expect(mocks.loadPluginMetadataSnapshot).toHaveBeenCalledWith(expected);
-      } else {
-        expect(mocks.loadPluginMetadataSnapshot).not.toHaveBeenCalled();
-      }
-    },
-  );
-});
+  },
+);

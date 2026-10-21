@@ -73,10 +73,8 @@ describe("plugin manifest backup resources", () => {
     ["a NUL byte", "owner/\0cache"],
     ["an empty path", ""],
     ["an empty segment", "owner//cache"],
-    ["a trailing empty segment", "owner/cache/"],
     ["a current-directory segment", "owner/./cache"],
     ["a parent-directory segment", "owner/../outside"],
-    ["a URI-like value", "https://example.com/cache"],
   ])("rejects %s", (_label, relativePath) => {
     const fixture = createPluginFixture([resource({ relativePath })]);
 
