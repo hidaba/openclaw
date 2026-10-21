@@ -34,6 +34,20 @@ import { claimRpcSourceForTest, createRpcSourceForTest } from "./test-helpers.rp
 
 type ConnectionIdReads = { count: number };
 
+function humanEntry(
+  sessionId: string,
+  visibility: "suggest" | "draft" | "shared",
+  id: string,
+  updatedAt = 1,
+) {
+  return {
+    sessionId,
+    updatedAt,
+    visibility,
+    createdActor: { type: "human" as const, source: "profile" as const, id },
+  };
+}
+
 function makeState(
   bootId: string,
   cfg: OpenClawConfig = {},
@@ -247,12 +261,7 @@ describe("gateway connection state", () => {
       ] as const) {
         await upsertSessionEntryCore(
           { agentId: "main", sessionKey },
-          {
-            sessionId: sessionKey,
-            updatedAt: 1,
-            visibility: "shared",
-            createdActor: { type: "human", source: "profile", id: profileId },
-          },
+          humanEntry(sessionKey, "shared", profileId),
         );
       }
       await using state = makeState("committed-event-policy", restricted, () => runtimeConfig);
@@ -440,12 +449,7 @@ describe("gateway connection state", () => {
       const cfg: OpenClawConfig = {};
       setRuntimeConfigSnapshot(cfg);
       const scope = { agentId: "main", sessionKey: "agent:main:broadcast-members" };
-      await upsertSessionEntryCore(scope, {
-        sessionId: "broadcast-members",
-        updatedAt: 1,
-        visibility: "suggest",
-        createdActor: { type: "human", source: "profile", id: "owner" },
-      });
+      await upsertSessionEntryCore(scope, humanEntry("broadcast-members", "suggest", "owner"));
       addSessionMember(scope, { identityId: "member", addedBy: "owner", addedAt: 1 });
       let broadcastDuringPublication: (() => void) | undefined;
       const stopPublication = sessionChanges.subscribe((change) => {
@@ -493,12 +497,10 @@ describe("gateway connection state", () => {
         broadcast();
         expect(peers.every((peer) => peer.send.mock.calls.length === 2)).toBe(true);
         const replace = (visibility: "suggest" | "draft" | "shared", updatedAt: number) =>
-          replaceSessionEntrySync(scope, {
-            sessionId: "broadcast-replacement",
-            updatedAt,
-            visibility,
-            createdActor: { type: "human", source: "profile", id: "owner" },
-          });
+          replaceSessionEntrySync(
+            scope,
+            humanEntry("broadcast-replacement", visibility, "owner", updatedAt),
+          );
         replace("suggest", 2);
         expectDeliveryWithoutSql(2);
         await projection.ensureMaterialized();
@@ -561,10 +563,7 @@ describe("gateway connection state", () => {
         await upsertSessionEntryCore(
           { agentId: "main", sessionKey },
           {
-            sessionId: sessionKey,
-            updatedAt: 1,
-            visibility,
-            createdActor: { type: "human", source: "profile", id: "other-owner" },
+            ...humanEntry(sessionKey, visibility, "other-owner"),
             ...(sessionKey === incognitoKey ? { incognito: true } : {}),
           },
         );
@@ -638,12 +637,7 @@ describe("gateway connection state", () => {
           }
         };
         verify(true);
-        replaceSessionEntrySync(scope, {
-          sessionId: sharedKey,
-          updatedAt: 2,
-          visibility: "draft",
-          createdActor: { type: "human", source: "profile", id: "other-owner" },
-        });
+        replaceSessionEntrySync(scope, humanEntry(sharedKey, "draft", "other-owner", 2));
         verify(false);
         replaceSessionEntrySync(scope, {
           sessionId: sharedKey,

@@ -1,28 +1,21 @@
 import assert from "node:assert/strict";
 import { expect, it, vi } from "vitest";
-import { createDeferred, withinTest } from "../../test/helpers/promise.js";
+import { withinTest } from "../../test/helpers/promise.js";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.sqlite-entry.js";
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { makeClient } from "./server-broadcast.test-helpers.js";
-import { createTestGate, readClosedDatabase } from "./server-close.lifecycle.test-support.js";
-import { createGatewayMetadataCloseFixture } from "./server-close.metadata.test-support.js";
+import { readClosedDatabase } from "./server-close.lifecycle.test-support.js";
+import { createGatewayCloseRace } from "./server-close.race.test-support.js";
 import * as sessionObserverModel from "./session-observer-model.js";
 
 it("drains an accepted observer digest before closing its database", async ({ signal }) => {
-  const gate = createTestGate(signal);
-  const fixture = await createGatewayMetadataCloseFixture("gateway-session-observer-close");
-  const persistEntered = createDeferred();
-  const releasePersist = createDeferred();
-  const disposalEntered = createDeferred();
+  const race = await createGatewayCloseRace("gateway-session-observer-close", signal);
+  const { fixture, kernel } = race;
+  const disposalEntered = new AbortController();
   let handling: Promise<void> | undefined;
   let persisting: Promise<boolean | null> | undefined;
-  let closing: Promise<void> | undefined;
   let removeClient: (() => void) | undefined;
   try {
-    const port = await fixture.reservePort();
-    const server = await withinTest(fixture.start(port), signal);
-    const kernel = fixture.kernels.get(port);
-    assert(kernel, "Gateway kernel");
     const context = kernel.resolvePluginGatewayContext();
     assert(context, "Gateway context");
     const observer = context.sessionObserver;
@@ -53,8 +46,7 @@ it("drains an accepted observer digest before closing its database", async ({ si
         return persist(params);
       }
       persisting = (async () => {
-        persistEntered.resolve();
-        await releasePersist.promise;
+        await race.block();
         const result = await persist(params);
         settledBeforeDatabaseClose = agent.db.isOpen;
         return result;
@@ -72,20 +64,20 @@ it("drains an accepted observer digest before closing its database", async ({ si
       data: { kind: "preamble", progressText: headline },
     };
     handling = observer.handleEventAsync(event);
-    await gate(persistEntered.promise, handling, "Observer skipped digest persistence");
+    await race.waitForEntry(handling, "Observer skipped digest persistence");
     await withinTest(handling, signal);
     const dispose = observer.disposeAsync.bind(observer);
     vi.spyOn(observer, "disposeAsync").mockImplementation(() => {
       const pending = dispose();
-      disposalEntered.resolve();
+      disposalEntered.abort();
       return pending;
     });
-    const closed = vi.fn<() => void>();
-    closing = server.close({ reason: "session observer close regression" }).then(closed);
-    await gate(disposalEntered.promise, closing, "Gateway closed without joining the observer");
+    await race.close(disposalEntered.signal, undefined, {
+      reason: "session observer close regression",
+    });
     expect(kernel.scheduler.signal.aborted).toBe(true);
     expect(kernel.connectionWork.signal.aborted).toBe(true);
-    expect(closed).not.toHaveBeenCalled();
+    expect(race.closed).toBe(false);
     expect(agent.db.isOpen).toBe(true);
     await expect(
       observer.handleEventAsync({
@@ -95,8 +87,7 @@ it("drains an accepted observer digest before closing its database", async ({ si
       }),
     ).rejects.toThrow("Session observer is closed");
 
-    releasePersist.resolve();
-    const [accepted] = await withinTest(Promise.all([persisting, closing]), signal);
+    const accepted = await race.finish(persisting);
     expect(accepted).toBe(true);
     expect(settledBeforeDatabaseClose).toBe(true);
     expect(agent.db.isOpen).toBe(false);
@@ -107,10 +98,11 @@ it("drains an accepted observer digest before closing its database", async ({ si
     );
     expect(JSON.parse(String(row?.digest))).toMatchObject({ headline, runId, revision: 1 });
   } finally {
-    releasePersist.resolve();
-    await Promise.allSettled([handling, persisting, closing]);
-    vi.restoreAllMocks();
-    removeClient?.();
-    await fixture.cleanup();
+    race.onCleanup(async () => {
+      await Promise.allSettled([handling, persisting]);
+      vi.restoreAllMocks();
+      removeClient?.();
+    });
+    await race.dispose();
   }
 });

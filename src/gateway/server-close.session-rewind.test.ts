@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import type {
   SessionsForkResult,
   SessionsRewindResult,
@@ -18,6 +18,7 @@ import * as sessionController from "../sessions/session-controller.lifecycle.js"
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import * as agentExecution from "../state/openclaw-agent-execution.js";
 import { createGatewayMetadataCloseFixture } from "./server-close.metadata.test-support.js";
+import { createGatewayCloseRace } from "./server-close.race.test-support.js";
 import { dispatchGatewayRequestInProcess } from "./server-in-process-dispatch.js";
 import { createSyntheticPluginRuntimeClient } from "./server-plugin-runtime-client.js";
 
@@ -27,15 +28,9 @@ const scope = {
   sessionKey: "agent:main:dashboard:accepted-close-rewind",
   sessionId: "rewind-close-source",
 };
-let fixture: Awaited<ReturnType<typeof createGatewayMetadataCloseFixture>> | undefined;
-let prepared: Awaited<ReturnType<typeof prepareFixture>> | undefined;
-
-async function prepareFixture() {
-  fixture = await createGatewayMetadataCloseFixture("gateway-session-rewind-close");
-  const port = await fixture.reservePort();
-  const server = await fixture.start(port);
-  const kernel = fixture.kernels.get(port);
-  assert(kernel, "Gateway kernel");
+async function seedTranscript(
+  fixture: Awaited<ReturnType<typeof createGatewayMetadataCloseFixture>>,
+) {
   replaceSessionEntrySync(scope, {
     sessionId: scope.sessionId,
     lifecycleRevision: "rewind-close-generation",
@@ -61,31 +56,21 @@ async function prepareFixture() {
     ]),
   );
   await waitForSessionTranscriptIndexReconcile({ agentId: scope.agentId });
-  return { server, kernel, database: openOpenClawAgentDatabase({ agentId: scope.agentId }) };
+  return openOpenClawAgentDatabase({ agentId: scope.agentId });
 }
-
-beforeAll(async () => {
-  prepared = await prepareFixture();
-});
-afterAll(async () => {
-  await fixture?.cleanup();
-});
 
 it("persists an accepted fork and queued rewind across the close prelude before retiring their database", async ({
   signal,
 }) => {
-  assert(prepared && fixture, "Seeded Gateway close fixture");
-  const { server, kernel, database } = prepared;
+  const race = await createGatewayCloseRace("gateway-session-rewind-close", signal);
+  const { fixture, kernel } = race;
   const waitForGate = (gate: PromiseLike<unknown>, work: PromiseLike<unknown>, message: string) =>
     withinTest(awaitGateBeforeSettlement(gate, work, message), signal);
-  const accepted = createDeferred();
-  const releasePersistence = createDeferred();
-  const preludeEntered = createDeferred();
   const rewindQueued = createDeferred();
   let forking: Promise<SessionsForkResult> | undefined;
   let rewinding: Promise<SessionsRewindResult> | undefined;
-  let closing: Promise<void> | undefined;
   try {
+    const database = await seedTranscript(fixture);
     let executions = 0;
     const wrapExecution = (owner: DatabaseExecution): DatabaseExecution => ({
       ...owner,
@@ -103,8 +88,7 @@ it("persists an accepted fork and queued rewind across the close prelude before 
                   command.type === "database.domain.publish"
                 ) {
                   executions++;
-                  accepted.resolve();
-                  await releasePersistence.promise;
+                  await race.block();
                 }
                 return await worker.execute(command, commandOptions);
               },
@@ -131,11 +115,7 @@ it("persists an accepted fork and queued rewind across the close prelude before 
       params,
       dispatchOptions,
     );
-    await waitForGate(
-      accepted.promise,
-      forking,
-      "Fork settled before its accepted persistence could be held",
-    );
+    await race.waitForEntry(forking, "Fork settled before its accepted persistence could be held");
     const mutate = sessionController.runSessionMutation;
     vi.spyOn(sessionController, "runSessionMutation").mockImplementation(
       <T>(mutationParams: Parameters<typeof mutate<T>>[0]): Promise<T> => {
@@ -154,27 +134,15 @@ it("persists an accepted fork and queued rewind across the close prelude before 
       rewinding,
       "Rewind settled before entering the lifecycle queue",
     );
-    kernel.requestEntryLifetime.signal.addEventListener("abort", () => preludeEntered.resolve(), {
-      once: true,
-    });
-    let closed = false;
-    closing = server.close({ reason: "session rewind close regression" }).then(() => {
-      closed = true;
-    });
-    await waitForGate(
-      preludeEntered.promise,
-      closing,
-      "Gateway closed before fencing request admission",
-    );
+    await race.close(undefined, undefined, { reason: "session rewind close regression" });
     expect(kernel.scheduler.signal.aborted).toBe(true);
-    expect(closed).toBe(false);
+    expect(race.closed).toBe(false);
     expect(database.db.isOpen).toBe(true);
     await expect(
       dispatchGatewayRequestInProcess("sessions.rewind", params, dispatchOptions),
     ).rejects.toThrow("Gateway request entry is closed");
 
-    releasePersistence.resolve();
-    const [fork, result] = await withinTest(Promise.all([forking, rewinding, closing]), signal);
+    const [fork, result] = (await race.finish(Promise.all([forking, rewinding])))!;
     expect(fork).toMatchObject({
       editorText: "Edit this question.",
       sessionKey: expect.any(String),
@@ -204,10 +172,10 @@ it("persists an accepted fork and queued rewind across the close prelude before 
     expect(row.previous_session_id).toBe(scope.sessionId);
     expect(activeEvents.all(row.session_id)).toEqual(retainedEvents);
   } finally {
-    releasePersistence.resolve();
-    await Promise.allSettled([forking, rewinding, closing]);
-    vi.restoreAllMocks();
-    await fixture.cleanup();
-    fixture = undefined;
+    race.onCleanup(async () => {
+      await Promise.allSettled([forking, rewinding]);
+      vi.restoreAllMocks();
+    });
+    await race.dispose();
   }
 });

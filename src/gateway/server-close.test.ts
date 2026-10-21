@@ -117,6 +117,22 @@ function createHttpServer(
   return { close, closeIdleConnections: vi.fn() };
 }
 
+function recoveryRun(
+  runId: string,
+  sessionKey: string,
+  sessionId: string,
+  lifecycleGeneration = getAgentEventLifecycleGeneration(),
+) {
+  return {
+    storePath: "/synthetic/gateway-close/sessions.sqlite",
+    agentId: "main",
+    runId,
+    lifecycleGeneration,
+    sessionKey,
+    sessionId,
+  };
+}
+
 describe("createGatewayCloseHandler", () => {
   beforeEach(() => {
     sharedStateLifecycle.set("open", true);
@@ -1330,36 +1346,14 @@ describe("createGatewayCloseHandler", () => {
     ).toContain("restart-reply-drain");
     expect(events[0]).toBe("marker");
     expect(markMainSessionsAbortedForRestart).toHaveBeenCalledOnce();
-    expect(firstMockCall(markMainSessionsAbortedForRestart)?.[0]?.activeRuns).toEqual([
-      {
-        storePath: "/synthetic/gateway-close/sessions.sqlite",
-        agentId: "main",
-        runId: "run-1",
-        lifecycleGeneration: generation,
-        sessionKey: "agent:main:main",
-        sessionId: "session-id-1",
-        observedAt: expect.any(Number),
-      },
-      {
-        storePath: "/synthetic/gateway-close/sessions.sqlite",
-        agentId: "main",
-        runId: "agent-run-1",
-        lifecycleGeneration: generation,
-        sessionKey: "agent:main:test:direct:source",
-        sessionId: "session-id-2",
-        observedAt: expect.any(Number),
-      },
-      {
+    expect(firstMockCall(markMainSessionsAbortedForRestart)?.[0]?.activeRuns).toEqual(
+      [
+        recoveryRun("run-1", "agent:main:main", "session-id-1", generation),
+        recoveryRun("agent-run-1", "agent:main:test:direct:source", "session-id-2", generation),
         // A terminal write does not settle the caller's retained controller custody.
-        storePath: "/synthetic/gateway-close/sessions.sqlite",
-        agentId: "main",
-        runId: "completed-run",
-        lifecycleGeneration: generation,
-        sessionKey: "agent:main:completed",
-        sessionId: "completed-session-id",
-        observedAt: expect.any(Number),
-      },
-    ]);
+        recoveryRun("completed-run", "agent:main:completed", "completed-session-id", generation),
+      ].map((run) => Object.assign(run, { observedAt: expect.any(Number) })),
+    );
     expect(chat.input.abortSignal.aborted).toBe(true);
     expect(agent.input.abortSignal.aborted).toBe(true);
     expect(hidden.input.abortSignal.aborted).toBe(true);
@@ -1453,17 +1447,7 @@ describe("createGatewayCloseHandler", () => {
         expect(firstMockCall(markMainSessionsAbortedForRestart)?.[0]?.activeRuns).toEqual(
           persistence === "settled"
             ? []
-            : [
-                {
-                  storePath: "/synthetic/gateway-close/sessions.sqlite",
-                  agentId: "main",
-                  runId,
-                  lifecycleGeneration: getAgentEventLifecycleGeneration(),
-                  sessionKey,
-                  sessionId,
-                  observedAt: expect.any(Number),
-                },
-              ],
+            : [{ ...recoveryRun(runId, sessionKey, sessionId), observedAt: expect.any(Number) }],
         );
         if (persistence === "untracked") {
           expect(vi.mocked(deps.broadcast).mock.calls.some(([event]) => event === "chat")).toBe(
@@ -1510,20 +1494,13 @@ describe("createGatewayCloseHandler", () => {
       const run = params.activeRuns[0];
       activeDuringMark = run ? params.isActiveRun(run) : false;
     });
-    const generation = getAgentEventLifecycleGeneration();
-    const restartRecoveryCandidates = new Map([
-      [
-        "failed-persistence-run",
-        {
-          storePath: "/synthetic/gateway-close/sessions.sqlite",
-          agentId: "main",
-          runId: "failed-persistence-run",
-          lifecycleGeneration: generation,
-          sessionKey: "agent:main:failed-persistence",
-          sessionId: "failed-persistence-session",
-        },
-      ],
-    ]);
+    const failed = recoveryRun(
+      "failed-persistence-run",
+      "agent:main:failed-persistence",
+      "failed-persistence-session",
+    );
+    const expectedFailed = { ...failed, observedAt: expect.any(Number) };
+    const restartRecoveryCandidates = new Map([[failed.runId, failed]]);
     await createGatewayCloseHandler({
       markMainSessionsAbortedForRestart,
       restartRecoveryCandidates,
@@ -1533,15 +1510,7 @@ describe("createGatewayCloseHandler", () => {
       drainTimeoutMs: 0,
     });
     expect(firstMockCall(markMainSessionsAbortedForRestart)?.[0]?.activeRuns).toEqual([
-      {
-        storePath: "/synthetic/gateway-close/sessions.sqlite",
-        agentId: "main",
-        runId: "failed-persistence-run",
-        lifecycleGeneration: generation,
-        sessionKey: "agent:main:failed-persistence",
-        sessionId: "failed-persistence-session",
-        observedAt: expect.any(Number),
-      },
+      expectedFailed,
     ]);
     expect(activeDuringMark).toBe(true);
     expect(restartRecoveryCandidates.size).toBe(0);
