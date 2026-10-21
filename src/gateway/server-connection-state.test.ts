@@ -667,17 +667,20 @@ describe("gateway connection state", () => {
     });
   });
 
-  it("bounds targeted delivery and connection lookups to the requested connection", () => {
+  it("bounds ordered targeted delivery and connection lookups to requested connections", () => {
     const state = makeState("targeted-delivery");
     onTestFinished(() => state.mentionInbox.dispose());
     const reads = { count: 0 };
+    const sendOrder: string[] = [];
+    state.clients.add(makeClient("first", reads, sendOrder).client);
     for (let index = 0; index < 256; index += 1) {
       state.clients.add(makeClient(`other-${index}`, reads).client);
     }
-    const target = makeClient("target", reads);
+    const target = makeClient("target", reads, sendOrder);
     state.clients.add(target.client);
     reads.count = 0;
-    state.broadcastToConnIds("tick", { ts: 1 }, new Set(["target"]));
+    state.broadcastToConnIds("tick", { ts: 1 }, new Set(["target", "first"]));
+    expect(sendOrder).toEqual(["first", "target"]);
     expect(target.send).toHaveBeenCalledTimes(1);
     expect([state.getBufferedAmount("target"), reads.count]).toEqual([0, 0]);
 
@@ -717,19 +720,5 @@ describe("gateway connection state", () => {
     reads.count = 0;
 
     expectConnection(false);
-  });
-
-  it("preserves connection insertion order for targeted fanout", () => {
-    const state = makeState("ordered-delivery");
-    onTestFinished(() => state.mentionInbox.dispose());
-    const reads = { count: 0 };
-    const sendOrder: string[] = [];
-    state.clients.add(makeClient("first", reads, sendOrder).client);
-    state.clients.add(makeClient("unrelated", reads, sendOrder).client);
-    state.clients.add(makeClient("last", reads, sendOrder).client);
-
-    state.broadcastToConnIds("tick", { ts: 1 }, new Set(["last", "first"]));
-
-    expect(sendOrder).toEqual(["first", "last"]);
   });
 });

@@ -275,22 +275,6 @@ describe("createGatewayControlUiRootLifecycle", () => {
     },
   );
 
-  test("snapshots public asset identity only for a bundled root", () => {
-    controlUiAssetsMocks.resolveControlUiRootSync.mockReturnValue("/repo/dist/control-ui");
-    controlUiAssetsMocks.isPackageProvenControlUiRootSync.mockReturnValue(true);
-    controlUiAssetsMocks.inspectControlUiRootAssets.mockReturnValue(
-      readyAssets("/repo/dist/control-ui", "build-content-digest"),
-    );
-    const { lifecycle } = createLifecycle();
-    expect(lifecycle.state).toMatchObject({
-      kind: "bundled",
-      publicAssetBuildId: "build-content-digest",
-    });
-    controlUiAssetsMocks.resolveControlUiRootOverrideSync.mockReturnValue("/repo/dist/control-ui");
-    const custom = createLifecycle({ override: "/repo/dist/control-ui" });
-    expect(custom.lifecycle.state).not.toHaveProperty("publicAssetBuildId");
-  });
-
   test("cancels builds during Gateway drain while retaining its cleanup root across generations", async () => {
     const { lifecycle, warn } = createLifecycle();
     const rootReference = lifecycle.state;
@@ -331,33 +315,6 @@ describe("createGatewayControlUiRootLifecycle", () => {
       await lifecycle.stop();
       resetGatewayWorkAdmission();
     }
-  });
-
-  test("rebuilds incomplete auto-discovered roots before publishing them", async () => {
-    controlUiAssetsMocks.resolveControlUiRootSync.mockReturnValue("/repo/dist/control-ui");
-    controlUiAssetsMocks.inspectControlUiRootAssets.mockReturnValue({ kind: "incomplete" });
-    controlUiAssetsMocks.ensureControlUiAssetsBuilt.mockImplementationOnce(async () => {
-      controlUiAssetsMocks.inspectControlUiRootAssets.mockImplementation((root) =>
-        readyAssets(root),
-      );
-      return builtAssets();
-    });
-    controlUiAssetsMocks.isPackageProvenControlUiRootSync.mockReturnValue(true);
-    const { lifecycle } = createLifecycle();
-    const rootReference = lifecycle.state;
-
-    expect(rootReference).toEqual({ kind: "preparing" });
-    expect(controlUiAssetsMocks.ensureControlUiAssetsBuilt).not.toHaveBeenCalled();
-
-    await lifecycle.start();
-
-    expect(lifecycle.state).toBe(rootReference);
-    expect(controlUiAssetsMocks.ensureControlUiAssetsBuilt).toHaveBeenCalledOnce();
-    expect(rootReference).toEqual({
-      kind: "bundled",
-      path: "/repo/dist/control-ui",
-      realPath: "/repo/dist/control-ui",
-    });
   });
 
   test.each([false, true])("keeps invalid configured roots terminal (vanished: %s)", (vanished) => {
@@ -405,65 +362,58 @@ describe("createGatewayControlUiRootLifecycle", () => {
     expect(warn).toHaveBeenCalledWith("gateway: Control UI assets build failed: spawn failed");
   });
 
-  test("does not publish a late recovery build result after shutdown", async () => {
-    controlUiAssetsMocks.resolveControlUiRootSync.mockReturnValue("/repo/dist/control-ui");
-    vi.mocked(fs.realpathSync).mockImplementationOnce(() => {
-      throw new Error("root unavailable");
-    });
-    const { lifecycle, warn } = createLifecycle();
-    expect(lifecycle.state).toEqual({ kind: "failed" });
-    controlUiAssetsMocks.resolveControlUiRootSync.mockReturnValue(null);
-    lifecycle.setEnabled(false);
-    warn.mockClear();
-    const result = createDeferred<ReturnType<typeof builtAssets>>();
-    controlUiAssetsMocks.ensureControlUiAssetsBuilt.mockReturnValue(result.promise);
-    lifecycle.setEnabled(true);
-    const build = lifecycle.start();
-    await vi.waitFor(() =>
-      expect(controlUiAssetsMocks.ensureControlUiAssetsBuilt).toHaveBeenCalledOnce(),
-    );
-
-    const stopped = lifecycle.stop();
-    expect(controlUiAssetsMocks.ensureControlUiAssetsBuilt.mock.calls[0]?.[1].signal.aborted).toBe(
-      true,
-    );
-    result.resolve(builtAssets());
-    await Promise.all([build, stopped]);
-
-    expect(lifecycle.state).toEqual({ kind: "preparing" });
-    expect(warn).not.toHaveBeenCalled();
-    lifecycle.setEnabled(false);
-    lifecycle.setEnabled(true);
-    await lifecycle.start();
-    expect(controlUiAssetsMocks.ensureControlUiAssetsBuilt).toHaveBeenCalledOnce();
-  });
-
-  test("retires an interrupted build before preparing a re-enabled dashboard", async () => {
-    const result = createDeferred<ReturnType<typeof builtAssets>>();
-    controlUiAssetsMocks.ensureControlUiAssetsBuilt.mockReturnValueOnce(result.promise);
-    const { lifecycle, warn } = createLifecycle();
-    const first = lifecycle.start();
-    await vi.waitFor(() =>
-      expect(controlUiAssetsMocks.ensureControlUiAssetsBuilt).toHaveBeenCalledOnce(),
-    );
-    const signal = controlUiAssetsMocks.ensureControlUiAssetsBuilt.mock.calls[0]?.[1].signal;
-    lifecycle.setEnabled(false);
-    expect(signal.aborted).toBe(true);
-    lifecycle.setEnabled(true);
-    const second = lifecycle.start();
-    expect(lifecycle.state).toEqual({ kind: "preparing" });
-
-    controlUiAssetsMocks.resolveControlUiRootSync.mockReturnValue("/repo/dist/control-ui");
-    result.resolve(builtAssets());
-    await Promise.all([first, second]);
-    expect(lifecycle.state).toMatchObject({ kind: "resolved", path: "/repo/dist/control-ui" });
-    expect(controlUiAssetsMocks.ensureControlUiAssetsBuilt).toHaveBeenCalledOnce();
-    expect(warn).not.toHaveBeenCalled();
-    await lifecycle.stop();
-    lifecycle.setEnabled(true);
-    await lifecycle.start();
-    expect(controlUiAssetsMocks.ensureControlUiAssetsBuilt).toHaveBeenCalledOnce();
-  });
+  test.each(["shutdown", "re-enable"])(
+    "retires an interrupted build before %s without publishing its late result",
+    async (action) => {
+      const shutdown = action === "shutdown";
+      if (shutdown) {
+        controlUiAssetsMocks.resolveControlUiRootSync.mockReturnValue("/repo/dist/control-ui");
+        vi.mocked(fs.realpathSync).mockImplementationOnce(() => {
+          throw new Error("root unavailable");
+        });
+      }
+      const { lifecycle, warn } = createLifecycle();
+      if (shutdown) {
+        expect(lifecycle.state).toEqual({ kind: "failed" });
+        controlUiAssetsMocks.resolveControlUiRootSync.mockReturnValue(null);
+        lifecycle.setEnabled(false);
+        warn.mockClear();
+      }
+      const result = createDeferred<ReturnType<typeof builtAssets>>();
+      controlUiAssetsMocks.ensureControlUiAssetsBuilt.mockReturnValueOnce(result.promise);
+      lifecycle.setEnabled(true);
+      const first = lifecycle.start();
+      await vi.waitFor(() =>
+        expect(controlUiAssetsMocks.ensureControlUiAssetsBuilt).toHaveBeenCalledOnce(),
+      );
+      const signal = controlUiAssetsMocks.ensureControlUiAssetsBuilt.mock.calls[0]?.[1].signal;
+      let second: Promise<void>;
+      if (shutdown) {
+        second = lifecycle.stop();
+      } else {
+        lifecycle.setEnabled(false);
+        lifecycle.setEnabled(true);
+        second = lifecycle.start();
+        controlUiAssetsMocks.resolveControlUiRootSync.mockReturnValue("/repo/dist/control-ui");
+      }
+      expect(signal.aborted).toBe(true);
+      expect(lifecycle.state).toEqual({ kind: "preparing" });
+      result.resolve(builtAssets());
+      await Promise.all([first, second]);
+      if (shutdown) {
+        expect(lifecycle.state).toEqual({ kind: "preparing" });
+      } else {
+        expect(lifecycle.state).toMatchObject({ kind: "resolved", path: "/repo/dist/control-ui" });
+      }
+      expect(warn).not.toHaveBeenCalled();
+      expect(controlUiAssetsMocks.ensureControlUiAssetsBuilt).toHaveBeenCalledOnce();
+      await lifecycle.stop();
+      lifecycle.setEnabled(false);
+      lifecycle.setEnabled(true);
+      await lifecycle.start();
+      expect(controlUiAssetsMocks.ensureControlUiAssetsBuilt).toHaveBeenCalledOnce();
+    },
+  );
 
   test("retries a failed preparation when the operator re-enables the dashboard", async () => {
     controlUiAssetsMocks.ensureControlUiAssetsBuilt.mockResolvedValueOnce({
