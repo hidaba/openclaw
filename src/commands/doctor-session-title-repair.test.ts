@@ -1,6 +1,7 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { buildSubagentTaskMessage } from "../agents/subagents/spawn/subagent-system-prompt.js";
+import { INTERNAL_WAKE_TRANSCRIPT_PROMPTS } from "../auto-reply/heartbeat.js";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import * as sessionAccessor from "../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../config/sessions/types.js";
@@ -24,13 +25,14 @@ afterEach(() => vi.restoreAllMocks());
 async function withSession(
   run: (params: sessionAccessor.SessionTranscriptRuntimeScope) => Promise<void>,
   transcript: Array<{ role: string; content: string; provenance?: unknown }> = messages,
+  sessionKey = "agent:main:dashboard:legacy",
 ) {
   await withOpenClawTestState({ scenario: "minimal", label: "doctor-title" }, async (state) => {
     setRuntimeConfigSnapshot(cfg);
     const params = {
       agentId: "main",
       storePath: state.statePath("agents", "main", "sessions", "sessions.json"),
-      sessionKey: "agent:main:dashboard:legacy",
+      sessionKey,
       sessionId: "legacy-session",
       lifecycleRevision: "legacy-lifecycle",
     };
@@ -129,6 +131,21 @@ it("preserves native child names while repairing ordinary sessions in the same s
     [user("[Subagent Context] Explain this phrase")],
   );
 });
+
+it.each(Object.entries(INTERNAL_WAKE_TRANSCRIPT_PROMPTS))(
+  "preserves the main session name after a %s wake",
+  async (sourceTool, content) => {
+    await withSession(
+      async (params) => {
+        const before = sessionAccessor.loadSessionEntry(params);
+        await repair();
+        expect(sessionAccessor.loadSessionEntry(params)).toEqual(before);
+      },
+      [{ role: "user", content, provenance: { kind: "internal_system", sourceTool } }],
+      "agent:main:main",
+    );
+  },
+);
 
 const relay = { ...user("Internal relay"), provenance: { kind: "inter_session" } };
 const later = user("A later task must not become the title");
