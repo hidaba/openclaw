@@ -195,6 +195,8 @@ it("retains search and Retry controls through admitted core error feedback", asy
   const page = appendPage(context);
   await waitForProviders(page);
   const row = page.querySelector('[data-provider-id="openai"]');
+  const primary = modelPicker(page, "primary");
+  const refresh = page.querySelector<HTMLButtonElement>(".model-providers__refresh-button")!;
   const search = page.querySelector<HTMLInputElement>(".model-providers__search input")!;
   search.value = "openai";
   search.dispatchEvent(new Event("input", { bubbles: true }));
@@ -211,13 +213,16 @@ it("retains search and Retry controls through admitted core error feedback", asy
   });
   page.view.props.onRefresh();
   await waitForSolid(() => expect(reads).toBe(1));
+  await waitForSolid(() => expect(refresh.disabled).toBe(true));
   expect(page.querySelector('[data-provider-id="openai"]')).toBe(row);
+  expect(modelPicker(page, "primary")).toBe(primary);
   expect(page.querySelector(".model-providers__search input")).toBe(search);
   expect(document.activeElement).toBe(search);
   first.reject(new Error("Core status unavailable"));
   await waitForSolid(() =>
     expect(page.renderRoot.textContent).toContain("Core status unavailable"),
   );
+  expect(refresh.disabled).toBe(false);
   const receipt = page.view.props.coreReceipt;
   search.dispatchEvent(new Event("input", { bubbles: true }));
   await page.updateComplete;
@@ -231,6 +236,7 @@ it("retains search and Retry controls through admitted core error feedback", asy
   button.focus();
   button.click();
   await waitForSolid(() => expect(reads).toBe(2));
+  await waitForSolid(() => expect(refresh.disabled).toBe(true));
   expect(button.isConnected).toBe(true);
   expect(document.activeElement).toBe(button);
   expect(page.renderRoot.textContent).toContain("Core status unavailable");
@@ -240,6 +246,8 @@ it("retains search and Retry controls through admitted core error feedback", asy
   await waitForSolid(() =>
     expect(page.renderRoot.textContent).not.toContain("Core status unavailable"),
   );
+  expect(refresh.disabled).toBe(false);
+  expect(modelPicker(page, "primary")).toBe(primary);
   expect(page.querySelector('[data-provider-id="openai"]')).not.toBeNull();
   expect(page.querySelector(".model-providers__search input")).toBe(search);
 });

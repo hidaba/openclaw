@@ -1,4 +1,4 @@
-import { createMemo, Errored, For, Loading, Show } from "solid-js";
+import { createMemo, Errored, For, isPending, latest, Loading, Show } from "solid-js";
 import type { ModelsProbeResult } from "../../api/types.ts";
 import { ShellLayoutBoundary } from "../../app/shell-layout-traits-solid.tsx";
 import { Icon } from "../../components/solid/icon.tsx";
@@ -26,7 +26,6 @@ import { MODEL_SETTINGS_TARGET_IDS } from "../config/route-data.ts";
 import "../../styles/model-providers.css";
 import "../../styles/usage.css";
 import type { ModelProviderRowMessage } from "./config-mutation.ts";
-import type { ModelProviderCoreReceipt } from "./core-load.ts";
 import type { DefaultModelSelection, ModelProviderCard } from "./data.ts";
 import { DefaultModels, type DefaultModelsViewProps } from "./default-models-view.tsx";
 import { MODEL_PROVIDERS_COST_DAYS } from "./load.ts";
@@ -477,8 +476,14 @@ function renderProviderNoticeRow(text: string) {
 }
 
 export function ModelProviders(props: ModelProvidersViewProps) {
+  const receipt = createMemo(() => props.coreReceipt);
+  // Observe core refreshes without holding edits; initial loading stays router-owned.
+  const coreReady = createMemo(() => receipt()?.promise.then(() => null) ?? null, {
+    loadingValue: null,
+  });
   return (
     <>
+      <Loading fallback={null}>{latest(coreReady)}</Loading>
       <SettingsPage>
         <>
           <Show when={props.connected || !props.loading}>
@@ -503,7 +508,7 @@ export function ModelProviders(props: ModelProvidersViewProps) {
             }
           >
             {props.installedAgents}
-            <ProviderAccess {...props} />
+            <ProviderAccess {...props} refreshing={isPending(coreReady)} />
             {props.providerUsageStalled ? (
               <div class="callout warning" role="status">
                 {t("usage.providerUsage.stalled")}
@@ -517,11 +522,8 @@ export function ModelProviders(props: ModelProvidersViewProps) {
   );
 }
 
-function CoreReadFeedback(props: {
-  receipt: ModelProviderCoreReceipt | null;
-  error: string | null;
-}) {
-  const result = createMemo(() => props.receipt?.promise);
+function CoreReadFeedback(props: Pick<ModelProvidersViewProps, "coreReceipt" | "error">) {
+  const result = createMemo(() => props.coreReceipt?.promise);
   const feedback = createMemo(() => {
     result();
     if (props.error) {
@@ -532,7 +534,7 @@ function CoreReadFeedback(props: {
   return <>{feedback()}</>;
 }
 
-function ProviderReadFeedback(props: ModelProvidersViewProps) {
+function ProviderReadFeedback(props: ModelProvidersViewProps & { refreshing: boolean }) {
   // Data rollback can clear an accepted error without starting another core read.
   const feedback = createMemo(() => ({ receipt: props.coreReceipt, error: props.error }), {
     equals: (before, after) => before.receipt === after.receipt && before.error === after.error,
@@ -549,7 +551,7 @@ function ProviderReadFeedback(props: ModelProvidersViewProps) {
                   <Loading
                     fallback={current.error ? renderProviderNoticeRow(current.error) : undefined}
                   >
-                    <CoreReadFeedback {...current} />
+                    <CoreReadFeedback coreReceipt={current.receipt} error={current.error} />
                   </Loading>
                 </Errored>
               )}
@@ -571,7 +573,7 @@ function ProviderReadFeedback(props: ModelProvidersViewProps) {
   );
 }
 
-function ProviderAccess(props: ModelProvidersViewProps) {
+function ProviderAccess(props: ModelProvidersViewProps & { refreshing: boolean }) {
   const query = () => (props.providerQuery ?? "").trim().toLocaleLowerCase();
   const matchingCards = createMemo(() =>
     props.cards.filter((card) =>

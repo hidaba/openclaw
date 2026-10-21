@@ -328,7 +328,7 @@ describe("ModelProvidersPage agent scope", () => {
       );
       await drainPageUpdates(page);
       expect(page.view.props.authStatus).toBeNull();
-      expect(page.view.props.refreshing).toBe(false);
+      expect(page.view.props.coreReceipt).toBeNull();
       expect(page.renderRoot.textContent).not.toContain("retired@example.test");
 
       request.mockImplementation(originalRequest);

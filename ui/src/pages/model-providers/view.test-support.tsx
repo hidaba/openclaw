@@ -30,7 +30,6 @@ export function props(overrides: Partial<ModelProvidersViewProps> = {}): ModelPr
   return {
     connected: true,
     loading: false,
-    refreshing: false,
     coreReceipt: null,
     scopeError: null,
     error: null,
