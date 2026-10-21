@@ -85,7 +85,7 @@ it("reuses runtime resolution until model inputs change, including mutable defau
 });
 
 it("does not borrow a provider for an ambiguous draft target", async () => {
-  const { control, context, find, changed } = setup([
+  const { control, context, changed } = setup([
     testModel("openai", "model", {
       reasoning: true,
       thinkingLevels: levels(["high"]),
@@ -100,7 +100,7 @@ it("does not borrow a provider for an ambiguous draft target", async () => {
   const agent = { id: "main", model: { primary: "model" } };
   control.load(context, "main", true, { agent });
   const { find: agentOption } = controlQueries(control, context, "main", agent);
-  await vi.waitFor(() => expect(find("model-option", "openai/model")).not.toBeNull());
+  await vi.waitFor(() => expect(agentOption("model-option", "openai/model")).not.toBeNull());
   expect(agentOption("thinking-option", "high")).toBeNull();
   expect(agentOption("thinking-slider")).toBeNull();
   expect(changed).not.toHaveBeenCalled();
