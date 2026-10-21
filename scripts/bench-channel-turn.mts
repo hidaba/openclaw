@@ -43,6 +43,7 @@ import {
   writeGatewayBenchConfig,
 } from "./lib/gateway-bench-runtime.ts";
 const EXEC_POLICY_MARKER = "synthetic-exec-policy";
+const STEADY_TURNS_PER_SESSION = 20;
 const { values } = parseArgs({
   options: {
     entry: { type: "string", default: "dist/entry.js" },
@@ -423,19 +424,35 @@ function assertExecToolCompleted(turn: number, marker: string) {
   }
   const records = appended.toString("utf8").trim().split("\n");
   const expectedHash = createHash("sha256").update(marker.trim()).digest("hex");
+  const firstSessionTurn = Math.floor(turn / STEADY_TURNS_PER_SESSION) * STEADY_TURNS_PER_SESSION;
+  let completed = false;
   for (const record of records) {
     const logged = JSON.parse(record);
+    if (logged.contentFactsTruncated) {
+      throw new Error(`Provider history facts were truncated for turn ${turn}`);
+    }
     for (const fact of logged.contentFacts ?? []) {
+      const execTurn = /^call_exec_(\d+)$/.exec(fact.callId ?? "");
+      if (
+        steadyDurationMs &&
+        fact.type === "function_call_output" &&
+        execTurn &&
+        (Number(execTurn[1]) < firstSessionTurn || Number(execTurn[1]) > turn)
+      ) {
+        throw new Error(`Exec tool history escaped its session for turn ${turn}: ${fact.callId}`);
+      }
       if (
         fact.type === "function_call_output" &&
         fact.callId === `call_exec_${turn}` &&
         fact.outputSha256 === expectedHash
       ) {
-        return;
+        completed = true;
       }
     }
   }
-  throw new Error(`Missing successful exec tool output for turn ${turn}`);
+  if (!completed) {
+    throw new Error(`Missing successful exec tool output for turn ${turn}`);
+  }
 }
 type TurnIdentity = { phase: string; turnId: string };
 type TurnEvidence = TurnIdentity & {
@@ -586,6 +603,7 @@ try {
   const busPort = await benchmarkPort();
   const configPath = path.join(fixture, "openclaw.json");
   const cfg: OpenClawConfig = structuredClone(BASE_GATEWAY_BENCH_CONFIG);
+  cfg.session = { dmScope: "per-channel-peer" };
   cfg.tools = {
     codeMode: false,
     ...(ruleCount ? { exec: { host: "gateway", mode: "allowlist" } } : {}),
@@ -729,7 +747,7 @@ try {
     const messageId = `sqlmeasure-${i}`;
     // Keep long captures comparable without compaction or unbounded provider history.
     const conversationId = steadyDurationMs
-      ? `sqlmeasure-peer-${Math.floor(i / 20)}`
+      ? `sqlmeasure-peer-${Math.floor(i / STEADY_TURNS_PER_SESSION)}`
       : "sqlmeasure-peer";
     traces[turnId] = { phase, turnId };
     messages[messageId] = { phase, turnId };

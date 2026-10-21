@@ -382,8 +382,10 @@ Add `--warmup-ms 120000 --steady-duration-ms 480000 --steady-turns 100
 --allocations` for a combined allocation, GC and latency capture. After at least
 eleven warm-up turns and the requested warm-up duration, it runs until both the
 measurement duration and minimum turn count are met. Steady mode starts a new
-conversation every 20 turns and retains previous sessions, bounding provider
-history without invoking compaction. `evidence.json` includes sampled allocated
+conversation every 20 turns with `session.dmScope: "per-channel-peer"` and retains
+previous sessions, bounding provider history without invoking compaction. Exec
+verification rejects truncated request facts and tool outputs from another
+conversation's turn group. `evidence.json` includes sampled allocated
 MB per completed turn, main-isolate promoted MB per turn, minor/major GC seconds
 per minute, Gateway event-loop p99, and first-outbound/settled-turn distributions.
 The shared diagnostics preload identifies the main isolate before Gateway
