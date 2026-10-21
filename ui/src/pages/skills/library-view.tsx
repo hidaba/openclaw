@@ -1,5 +1,5 @@
 import type { JSX } from "@solidjs/web";
-import { createMemo, For, Show } from "solid-js";
+import { createMemo, Errored, For, latest, Loading, Show } from "solid-js";
 import type { SkillsLibraryMutateParams } from "../../../../packages/gateway-protocol/src/index.ts";
 import "../../components/modal-dialog.ts";
 import { Icon } from "../../components/solid/icon.tsx";
@@ -20,7 +20,18 @@ export function SkillLibrary(props: {
 }) {
   const current = () => props.library.state;
   // List receipts replace the snapshot; mutable editor drafts and feedback do not.
-  const list = createMemo(() => current().list);
+  const acceptedList = createMemo(() => current().list);
+  const completion = createMemo(() => current().listRead);
+  const read = createMemo(() => completion()?.completion ?? { list: acceptedList(), error: null });
+  const list = createMemo(() => (acceptedList() ? latest(read) : read()).list);
+  // Failed refreshes retain row identity; the shared feedback owns the alert.
+  const readError = () => {
+    const error = latest(read).error;
+    if (error) {
+      throw new Error(error);
+    }
+    return null;
+  };
   const query = createMemo(() => props.library.local.query.toLowerCase().trim());
   const scope = createMemo(() => current().view);
   const entries = createMemo(() => {
@@ -75,10 +86,11 @@ export function SkillLibrary(props: {
             }
           />
         </label>
-        <Show
-          when={Boolean(list()) || !current().loading}
+        <Loading
+          on={acceptedList() ? null : completion()}
           fallback={<p role="status">{t("common.loading")}</p>}
         >
+          <Errored fallback={() => null}>{readError()}</Errored>
           <SettingsSection title={t(`skillLibrary.${current().view}`)} count={entries().length}>
             <Show
               when={entries().length > 0}
@@ -112,7 +124,7 @@ export function SkillLibrary(props: {
               </For>
             </Show>
           </SettingsSection>
-        </Show>
+        </Loading>
       </Show>
       <SkillLibraryDialogs library={props.library} />
     </>
