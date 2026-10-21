@@ -26,8 +26,13 @@ const blockedVideo =
   "⚠️ video attachment: Rejected by the local attachment allowlist. Send a supported file type.";
 const failedFile = "⚠️ file attachment: Delivery failed. Try sending this file again.";
 function privateAttachment(kind: string, code: string) {
-  const attachment = { kind, code, ...privateMetadata };
-  return assistant([{ type: "attachment_error", attachment }]);
+  return assistant([{ type: "attachment_error", attachment: { kind, code, ...privateMetadata } }]);
+}
+function expectHistoryAndFinal(message: unknown, expected: string) {
+  expect(extractTextFromMessage(message)).toBe(expected);
+  expect(new TuiStreamAssembler().finalize("run-1", message, false)).toBe(
+    expected || "(no output)",
+  );
 }
 
 function createDisplayHarness() {
@@ -73,10 +78,7 @@ describe("TUI attachment failure presentation", () => {
     ["private failed file", privateAttachment("document", "delivery-failed"), failedFile],
   ] as const)(
     "renders %s in history and final output without source metadata",
-    (_name, message, expected) => {
-      expect(extractTextFromMessage(message)).toBe(expected);
-      expect(new TuiStreamAssembler().finalize("run-1", message, false)).toBe(expected);
-    },
+    (_name, message, expected) => expectHistoryAndFinal(message, expected),
   );
 
   it.each([false, true])(
@@ -101,14 +103,13 @@ describe("TUI attachment failure presentation", () => {
       errorMessage: "generation stopped",
     };
     expect(extractTextFromMessage(message)).toBe(`generation stopped\n${audioReceipt}`);
-    expect(
-      new TuiStreamAssembler().finalize(
-        "run-1",
-        assistant([image, audioFailure]),
-        false,
-        "generation stopped",
-      ),
-    ).toBe(`generation stopped\n${audioReceipt}`);
+    const final = new TuiStreamAssembler().finalize(
+      "run-1",
+      assistant([image, audioFailure]),
+      false,
+      "generation stopped",
+    );
+    expect(final).toBe(`generation stopped\n${audioReceipt}`);
   });
 
   it.each([
@@ -171,9 +172,7 @@ describe("TUI attachment failure presentation", () => {
       [{ type: "tool_use", name: "search" }],
       [{ type: "attachment_error", attachment: { code: "unknown", kind: "audio" } }],
     ]) {
-      const message = assistant(content);
-      expect(extractTextFromMessage(message)).toBe("");
-      expect(new TuiStreamAssembler().finalize("run-1", message, false)).toBe("(no output)");
+      expectHistoryAndFinal(assistant(content), "");
     }
   });
 });

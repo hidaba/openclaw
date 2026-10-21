@@ -3,9 +3,6 @@ import { TuiStreamAssembler } from "./tui-stream-assembler.js";
 
 const text = (value: string) => ({ type: "text", text: value }) as const;
 const thinking = (value: string) => ({ type: "thinking", thinking: value }) as const;
-const pairingQr = (terminalText: string) =>
-  ({ type: "openclaw_pairing_qr", terminalText }) as const;
-
 const message = (...content: readonly Record<string, unknown>[]) =>
   ({ role: "assistant", content }) as const;
 
@@ -30,34 +27,27 @@ describe("TuiStreamAssembler", () => {
     expect(assembler.hasDisplayText("run-1")).toBe(false);
   });
 
-  it("renders pairing QR terminal text from final assistant content", () => {
+  it("renders sanitized pairing QR terminal text from final content", () => {
     const prompt = "Scan this QR code with the OpenClaw iOS app:";
-    const content = message(text(prompt), pairingQr("\u001b[47m\u001b[30m█ ▄\u001b[0m"));
-    const finalText = assembler.finalize("run-pair-qr", content, false);
-    expect(finalText).toContain(prompt);
-    expect(finalText).toContain("█ ▄");
-    expect(finalText).not.toContain("\u001b[47m");
-    expect(finalText).not.toBe("(no output)");
+    const qr = { type: "openclaw_pairing_qr", terminalText: "\u001b[47m\u001b[30m█ ▄\u001b[0m" };
+    expect(assembler.finalize("run-1", message(text(prompt), qr), false)).toBe(`${prompt}\n\n█ ▄`);
   });
 
   it("keeps visible thinking ahead of an attachment-only final", () => {
-    const finalText = assembler.finalize(
-      "run-media-thinking",
-      message(thinking("Preparing the attachment"), { type: "image", data: "secret-image" }),
-      true,
+    const content = message(thinking("Preparing the attachment"), {
+      type: "image",
+      data: "secret-image",
+    });
+    expect(assembler.finalize("run-1", content, true)).toBe(
+      "[thinking]\nPreparing the attachment\n\nAttached image",
     );
-    expect(finalText).toBe("[thinking]\nPreparing the attachment\n\nAttached image");
   });
 
   it("keeps an error ahead of an attachment summary", () => {
-    const finalText = assembler.finalize(
-      "run-media-error",
-      message({ type: "video", url: "file:///private/clip.mp4" }),
-      false,
+    const content = message({ type: "video", url: "file:///private/clip.mp4" });
+    expect(assembler.finalize("run-1", content, false, "media generation failed")).toBe(
       "media generation failed",
     );
-    expect(finalText).toContain("media generation failed");
-    expect(finalText).not.toContain("Attached video");
   });
 
   it("returns null when delta text is unchanged", () => {

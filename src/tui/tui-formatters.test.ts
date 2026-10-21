@@ -36,6 +36,12 @@ const footer = (
   });
 const metadata = (label: string, json: string) =>
   `${markInboundContextLabel(label)}\n\`\`\`json\n${json}\n\`\`\`\n\n`;
+const textBlock = (text: string) => ({ type: "text", text });
+const includes = (actual: string, expected: readonly string[]) => {
+  for (const fragment of expected) {
+    expect(actual).toContain(fragment);
+  }
+};
 
 it("hides complete HTML error pages after an HTTP reason phrase", () => {
   const rendered = resolveFinalAssistantText({
@@ -44,31 +50,25 @@ it("hides complete HTML error pages after an HTTP reason phrase", () => {
   expect(rendered).toBe(
     "Couldn't reach the AI service. Try again in a moment. If it continues, open Settings → Logs in the Control UI or run `openclaw logs --follow`.",
   );
-  expect(rendered).not.toContain("<html>");
 });
 
 describe("formatTuiFooter", () => {
   it.each(["auto", "ultrafast"] as const)(
     "shows %s and session modes in one compact summary",
     (fastMode) => {
-      expect(
-        footer(
-          {
-            model: "gpt-5.6-luna@openai:setup-64cddea3-938c-431e-be3b-aa47090577c7",
-            fastMode,
-            verboseLevel: "full",
-            traceLevel: "raw",
-            reasoningLevel: "stream",
-            totalTokens: 1_200,
-            contextTokens: 128_000,
-          },
-          {
-            sessionLabel: "work",
-            thinkingLevel: "high",
-            deliver: true,
-          },
-        ),
-      ).toBe(
+      const rendered = footer(
+        {
+          model: "gpt-5.6-luna@openai:setup-64cddea3-938c-431e-be3b-aa47090577c7",
+          fastMode,
+          verboseLevel: "full",
+          traceLevel: "raw",
+          reasoningLevel: "stream",
+          totalTokens: 1_200,
+          contextTokens: 128_000,
+        },
+        { sessionLabel: "work", thinkingLevel: "high", deliver: true },
+      );
+      expect(rendered).toBe(
         `agent Main | session work | gpt-5.6-luna high | fast:${fastMode} | verbose full | trace:raw | reasoning:stream | deliver:on | tokens 1.2k/128k (1%)`,
       );
     },
@@ -100,13 +100,15 @@ describe("formatTuiFooter", () => {
       },
     );
 
-    expect(rendered).toContain("agent-startagent-end");
-    expect(rendered).toContain("مرحبا");
-    expect(rendered).toContain("session-startsession-end");
-    expect(rendered).toContain("שלום");
-    expect(rendered).toContain("model-startmiddlemodel-end Unicode");
-    expect(rendered).toContain("\u2067");
-    expect(rendered).toContain("\u2069");
+    includes(rendered, [
+      "agent-startagent-end",
+      "مرحبا",
+      "session-startsession-end",
+      "שלום",
+      "model-startmiddlemodel-end Unicode",
+      "\u2067",
+      "\u2069",
+    ]);
     expect(rendered).not.toMatch(/[\r\n\t]/u);
     for (const attack of attacks) {
       expect(rendered).not.toContain(attack);
@@ -117,22 +119,19 @@ describe("formatTuiFooter", () => {
     ["active", 12_000, 30_000, "Pursuing goal (12k/30k)"],
     ["blocked", 0, undefined, "Goal blocked (/goal resume)"],
   ] as const)("renders %s goals", (status, tokensUsed, tokenBudget, expected) => {
-    expect(
-      footer({
-        goal: {
-          schemaVersion: 1,
-          id: "goal-1",
-          objective: "land PR",
-          status,
-          createdAt: 1,
-          updatedAt: 1,
-          tokenStart: 0,
-          tokensUsed,
-          tokenBudget,
-          continuationTurns: 0,
-        },
-      }),
-    ).toContain(expected);
+    const goal = {
+      schemaVersion: 1 as const,
+      id: "goal-1",
+      objective: "land PR",
+      status,
+      createdAt: 1,
+      updatedAt: 1,
+      tokenStart: 0,
+      tokensUsed,
+      tokenBudget,
+      continuationTurns: 0,
+    };
+    expect(footer({ goal })).toContain(expected);
   });
 });
 
@@ -180,30 +179,24 @@ describe("extractTextFromMessage", () => {
       "Attached image",
     ],
   ] as const)("renders a terminal-safe assistant summary for %j", (block, expected) => {
-    const text = assistantText([block]);
-    expect(text).toBe(expected);
-    expect(text).not.toMatch(/secret|file:|operator|passwd|private/i);
+    expect(assistantText([block])).toBe(expected);
   });
 
   it("renders canonical and legacy assistant media without exposing references", () => {
-    expect(
-      assistantText([], {
-        __openclaw: {
-          media: [
-            { kind: "image", path: "/private/generated.png" },
-            { kind: "audio", url: "https://secret.test/voice.ogg?ticket=secret" },
-            { kind: "video", fileName: "private.mov" },
-            { kind: "document", path: "/etc/passwd" },
-          ],
-        },
-      }),
-    ).toBe("Attached image\nAttached audio\nAttached video\nAttached file");
-    expect(
-      assistantText([], {
-        mediaUrl: "file:///private/one.png",
-        mediaUrls: ["https://secret.test/two.mp3?ticket=secret"],
-      }),
-    ).toBe("Attached media\nAttached media");
+    const media = [
+      { kind: "image", path: "/private/generated.png" },
+      { kind: "audio", url: "https://secret.test/voice.ogg?ticket=secret" },
+      { kind: "video", fileName: "private.mov" },
+      { kind: "document", path: "/etc/passwd" },
+    ];
+    expect(assistantText([], { __openclaw: { media } })).toBe(
+      "Attached image\nAttached audio\nAttached video\nAttached file",
+    );
+    const legacy = {
+      mediaUrl: "file:///private/one.png",
+      mediaUrls: ["https://secret.test/two.mp3?ticket=secret"],
+    };
+    expect(assistantText([], legacy)).toBe("Attached media\nAttached media");
   });
 
   it("prefers final_answer text over commentary text for assistant messages", () => {
@@ -222,20 +215,13 @@ describe("extractTextFromMessage", () => {
     ],
     ["", ["unknown error"]],
   ] as const)("renders an empty assistant error turn: %s", (errorMessage, expected) => {
-    const text = assistantText([], { stopReason: "error", errorMessage });
-
-    for (const fragment of expected) {
-      expect(text).toContain(fragment);
-    }
+    includes(assistantText([], { stopReason: "error", errorMessage }), expected);
   });
 
   it("joins multiple text blocks with single newlines", () => {
-    const text = assistantText([
-      { type: "text", text: "first\ncontinued" },
-      { type: "text", text: "second" },
-    ]);
-
-    expect(text).toBe("first\ncontinued\nsecond");
+    expect(assistantText([textBlock("first\ncontinued"), textBlock("second")])).toBe(
+      "first\ncontinued\nsecond",
+    );
   });
 
   it.each([
@@ -253,7 +239,7 @@ describe("extractTextFromMessage", () => {
         {
           role: "assistant",
           content: [
-            { type: "text", text: ` \n${content}\t ` },
+            textBlock(` \n${content}\t `),
             { type: "thinking", thinking: ` \t${thought}\n ` },
           ],
         },
@@ -287,12 +273,10 @@ describe("extractTextFromMessage", () => {
   });
 
   it("keeps metadata-like blocks for non-user messages", () => {
-    const text = assistantText(
-      metadata("Conversation info:", '{"message_id":"abc123"}') + "Assistant body",
+    includes(
+      assistantText(metadata("Conversation info:", '{"message_id":"abc123"}') + "Assistant body"),
+      [markInboundContextLabel("Conversation info:"), "Assistant body"],
     );
-
-    expect(text).toContain(markInboundContextLabel("Conversation info:"));
-    expect(text).toContain("Assistant body");
   });
 
   it("strips trailing untrusted context metadata suffix blocks for user messages", () => {
@@ -333,8 +317,7 @@ it("redacts and sanitizes terminal escapes in nested error causes", () => {
 
   const formatted = formatTuiErrorMessage(new Error("gateway down", { cause }));
 
-  expect(formatted).toContain("gateway down");
-  expect(formatted).toContain("Authorization: Bearer");
+  includes(formatted, ["gateway down", "Authorization: Bearer"]);
   expect(formatted).not.toContain(secret);
   expect(formatted).not.toContain("\u001b");
 });
@@ -372,7 +355,6 @@ describe("Markdown display safety", () => {
     const sanitized = sanitizeTerminalControlsAndBinary(input);
 
     expect(sanitized).toBe("# مرحبا\n> שלום");
-    expect(sanitized).not.toMatch(/[\u2066-\u2069]/u);
   });
 
   it("keeps rendered padding outside RTL isolates", () => {
