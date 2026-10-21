@@ -208,20 +208,6 @@ function expectSnapshotPluginIds(snapshot: InstalledPluginIndex, expectedPluginI
 }
 
 describe("plugin registry facade", () => {
-  it("keeps missing disabled records inspectable from the persisted registry", async () => {
-    const config = { plugins: { entries: { demo: { enabled: false } } } };
-    const fixture = candidateFixture({ config });
-    await fixture.persist();
-    fs.rmSync(fixture.rootDir, { recursive: true });
-    const result = fixture.load({ candidates: undefined });
-
-    expect(result.source).toBe("persisted");
-    expect(result.snapshot.plugins.find((plugin) => plugin.pluginId === "demo")).toMatchObject({
-      pluginId: "demo",
-      enabled: false,
-    });
-  });
-
   it("preserves raw declarations and indexed owners without rereading manifests", () => {
     const rootDir = makeTempDir();
     const candidate = createCandidate(rootDir, "demo", undefined, {

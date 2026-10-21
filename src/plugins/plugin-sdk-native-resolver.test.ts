@@ -149,7 +149,7 @@ function expectSdk(parent: string, root: string, subpath = "agent-runtime", exte
 
 describe("installOpenClawInternalCorePackageNativeResolver", () => {
   afterEach(() => vi.restoreAllMocks());
-  it("keeps internal core alias registration isolated between host modules", () => {
+  it("isolates host aliases and rescans them only after metadata lifecycle invalidation", () => {
     const first = createInternalCoreAliasFixture("openclaw-sdk-native-core-host-a-");
     const second = createInternalCoreAliasFixture("openclaw-sdk-native-core-host-b-");
     const existsSync = vi.spyOn(fs, "existsSync");
@@ -161,20 +161,13 @@ describe("installOpenClawInternalCorePackageNativeResolver", () => {
     for (const host of [first, second]) {
       expectResolved(host.coreSourceParent, "@openclaw/markdown-core/code-spans", host.sourcePath);
     }
-  });
-
-  it("rescans internal core aliases after plugin metadata lifecycle invalidation", () => {
-    const fixture = createInternalCoreAliasFixture("openclaw-sdk-native-core-invalidation-");
-    const existsSync = vi.spyOn(fs, "existsSync");
-
-    installOpenClawInternalCorePackageNativeResolver({ moduleUrl: fixture.moduleUrl });
     existsSync.mockClear();
-    installOpenClawInternalCorePackageNativeResolver({ moduleUrl: fixture.moduleUrl });
+    installOpenClawInternalCorePackageNativeResolver({ moduleUrl: first.moduleUrl });
     expect(existsSync).not.toHaveBeenCalled();
     clearPluginMetadataLifecycleCaches();
     existsSync.mockClear();
-    installOpenClawInternalCorePackageNativeResolver({ moduleUrl: fixture.moduleUrl });
-    expect(existsSync).toHaveBeenCalledWith(fixture.sourcePath);
+    installOpenClawInternalCorePackageNativeResolver({ moduleUrl: first.moduleUrl });
+    expect(existsSync).toHaveBeenCalledWith(first.sourcePath);
   });
 });
 
