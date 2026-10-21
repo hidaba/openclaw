@@ -1,6 +1,6 @@
 import { createSignal, onSettled } from "solid-js";
 import { cronRunEntryMatchesLink } from "../../../../src/cron/run-link.js";
-import type { CronJob, CronRunLogEntry, CronScratchGetResult } from "../../api/types.ts";
+import type { CronJob, CronRunLogEntry } from "../../api/types.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { hasOperatorReadAccess, readGatewayOperatorAccess } from "../../app/operator-access.ts";
 import { showConfirmDialog } from "../../components/confirm-dialog.ts";
@@ -26,7 +26,6 @@ import {
 } from "../../lib/cron/index.ts";
 import { loadCronRuns, loadCronRunsForJob, updateCronRunsFilter } from "../../lib/cron/runs.ts";
 import type { CronFormState, CronState } from "../../lib/cron/types.ts";
-import { formatUiError } from "../../lib/format-error.ts";
 import { isGatewayAvailable } from "../../lib/gateway-availability.ts";
 import { createGatewayConnectionLifecycle } from "../../lib/gateway-connection-lifecycle.ts";
 import { formatMissingOperatorReadScopeMessage } from "../../lib/gateway-errors.ts";
@@ -55,7 +54,6 @@ export function createCronPage(context: () => ApplicationContext, host: () => HT
   let cron = createInitialCronState();
   const [listTab, setListTab] = createSignal<CronListTab>("tasks");
   const [detailTab, setDetailTab] = createSignal<CronDetailTab>("settings");
-  const [heartbeatScratch, setHeartbeatScratch] = createSignal("");
   let active = false;
   const cleanups: Array<() => void> = [];
   const gateway = createGatewayConnectionLifecycle({ client: null, phase: "stopped" });
@@ -102,7 +100,6 @@ export function createCronPage(context: () => ApplicationContext, host: () => HT
     isCurrentConnection: (scope) => gateway.isCurrent(scope),
     notify: publish,
   });
-  let heartbeatScratchRequest = 0;
   const safetyRefresh = useVisiblePoll(600_000, () => ensureInitialData(true));
   const observeAgentScope = watchAgentScope((scopeId, intentChanged) => {
     if (!intentChanged) {
@@ -164,13 +161,11 @@ export function createCronPage(context: () => ApplicationContext, host: () => HT
         cron.client = snapshot.client;
         cron.connected = snapshot.phase === "connected";
         runTranscript.reconnect();
-        heartbeatScratchRequest += 1;
         if (!cron.cronEditingJob && !cron.cronCreateOpen) {
           routeSelection.requested = false;
         }
       }
       if (snapshot.phase === "connected" && !readGatewayOperatorAccess(snapshot).canAdmin) {
-        clearHeartbeatScratch();
         deliveryDirectory.clear();
       }
       if (snapshot.phase === "connected" && !hasOperatorReadAccess(snapshot.hello?.auth ?? null)) {
@@ -220,7 +215,6 @@ export function createCronPage(context: () => ApplicationContext, host: () => HT
       safetyRefresh.stop();
       cleanups.splice(0).forEach((stop) => stop());
       gateway.dispose();
-      heartbeatScratchRequest += 1;
       invalidateCronRefresh(cron);
     };
   });
@@ -247,7 +241,6 @@ export function createCronPage(context: () => ApplicationContext, host: () => HT
     presentation.retire();
     presentation.resetModels();
     runTranscript.close();
-    clearHeartbeatScratch();
     eventSource.reset();
     invalidateCronRefresh(cron);
     const connected = snapshot.phase === "connected";
@@ -444,7 +437,6 @@ export function createCronPage(context: () => ApplicationContext, host: () => HT
   }
 
   function selectJob(job: CronJob, runId: string | null = null) {
-    clearHeartbeatScratch();
     routeSelection.select(job.id, runId);
     pendingRunScroll = Boolean(runId);
     if (runId) {
@@ -455,49 +447,9 @@ export function createCronPage(context: () => ApplicationContext, host: () => HT
     // Claim the run pane before awaiting to retire the previous job's history.
     void presentation.runTask((cronState) => loadCronRunsForJob(cronState, job.id, runId));
     deliveryDirectory.openEditor();
-    if (job.payload?.kind === "heartbeat") {
-      void loadHeartbeatScratch(cron, job.id, heartbeatScratchRequest);
-    }
-  }
-
-  function clearHeartbeatScratch() {
-    heartbeatScratchRequest += 1;
-    setHeartbeatScratch("");
-  }
-
-  async function loadHeartbeatScratch(cronState: CronState, jobId: string, requestId: number) {
-    const client = cronState.client;
-    if (!canManageCron() || !client || !cronState.connected) {
-      return;
-    }
-    const connectionScope = gateway.capture();
-    if (!connectionScope) {
-      return;
-    }
-    // Revalidate scratch access, connection, and selection after the request.
-    const isCurrent = () =>
-      cron === cronState &&
-      heartbeatScratchRequest === requestId &&
-      gateway.isCurrent(connectionScope) &&
-      canManageCron() &&
-      cronState.cronEditingJob?.id === jobId &&
-      cronState.cronForm.payloadKind === "heartbeat";
-    try {
-      const result = await client.request<CronScratchGetResult>("cron.scratch.get", { id: jobId });
-      if (isCurrent()) {
-        setHeartbeatScratch(result.scratch?.content ?? "");
-        publishCronState(cronState);
-      }
-    } catch (error) {
-      if (isCurrent()) {
-        cronState.cronError = formatUiError(error);
-        publishCronState(cronState);
-      }
-    }
   }
 
   function resetEditor(createOpen: boolean) {
-    clearHeartbeatScratch();
     routeSelection.target = null;
     // Retire discovery before resetting its editor's form.
     eventSource.reset();
@@ -522,7 +474,6 @@ export function createCronPage(context: () => ApplicationContext, host: () => HT
     if (!canManageCron()) {
       return;
     }
-    clearHeartbeatScratch();
     routeSelection.target = null;
     // A clone is a prefilled create: the editor submits cron.add, not update.
     startCronClone(cron, job);
@@ -700,7 +651,6 @@ export function createCronPage(context: () => ApplicationContext, host: () => HT
     modelSuggestionsError: presentation.modelError,
     listTab,
     detailTab,
-    heartbeatScratch,
     actions,
     runTranscript,
     deliveryDirectory,

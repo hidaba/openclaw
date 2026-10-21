@@ -1,5 +1,4 @@
 import { createMemo, Show } from "solid-js";
-import { isSystemMonitorDeclaration } from "../../../../src/cron/system-owned-declaration.js";
 import type { CronJob } from "../../api/types.ts";
 import { HubTabs } from "../../components/solid/hub-tabs.tsx";
 import { Icon } from "../../components/solid/icon.tsx";
@@ -83,7 +82,6 @@ function DetailHeader(
       : t("cron.detail.newTitle");
   const description = () =>
     props.mode === "job" ? props.selectedJob?.description?.trim() : undefined;
-  const systemOwned = () => isSystemMonitorDeclaration(props.selectedJob?.declarationKey);
   // Header describes the SAVED job (schedule + next run); the form's live
   // summary describes unsaved edits, so the two never contradict each other.
   const nextRunAtMs = () => props.selectedJob?.state?.nextRunAtMs;
@@ -107,11 +105,7 @@ function DetailHeader(
         ) : undefined}
         <div class="cron-detail-meta">
           <Show
-            when={
-              props.mode === "job" && props.canManage && !systemOwned()
-                ? props.selectedJob
-                : undefined
-            }
+            when={props.mode === "job" && props.canManage ? props.selectedJob : undefined}
             keyed
           >
             {(job) => <EnabledSwitch {...props} job={job} />}
