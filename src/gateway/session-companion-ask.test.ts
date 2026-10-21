@@ -127,6 +127,38 @@ const question = {
   connId: "conn-1",
 };
 
+function expectAnswer(respond: ReturnType<typeof vi.fn>, answer: unknown = expect.any(String)) {
+  expect(respond).toHaveBeenCalledWith(true, expect.objectContaining({ answer }));
+}
+
+function operatorFor(cfg: OpenClawConfig, allow: string[], deny?: string[]) {
+  return createAdmittedRunOperatorAuthority({
+    profileId: "companion-reader",
+    scopes: ["operator.read"],
+    assertCurrent() {},
+    modelPolicy: prepareOperatorModelPolicy({
+      cfg,
+      policy: { sourceAgent: "main", allow, ...(deny ? { deny } : {}) },
+      manifestPlugins: [],
+    }),
+  });
+}
+
+function useClaudeCli() {
+  cliBackendsTesting.setDepsForTest({
+    resolvePluginSetupCliBackend: () => undefined,
+    resolveRuntimeCliBackends: () => [
+      {
+        id: "claude-cli",
+        modelProvider: "anthropic",
+        pluginId: "anthropic",
+        config: { command: "claude" },
+      },
+    ],
+  });
+  onTestFinished(() => cliBackendsTesting.resetDepsForTest());
+}
+
 async function invokeAsk(
   companion: ReturnType<typeof createSessionCompanion>,
   params: Record<string, unknown>,
@@ -202,17 +234,7 @@ describe("session companion embedded invocation", () => {
         throw new Error("Synthetic cleanup failure");
       });
       if (isCli) {
-        cliBackendsTesting.setDepsForTest({
-          resolvePluginSetupCliBackend: () => undefined,
-          resolveRuntimeCliBackends: () => [
-            {
-              id: "claude-cli",
-              modelProvider: "anthropic",
-              pluginId: "anthropic",
-              config: { command: "claude" },
-            },
-          ],
-        });
+        useClaudeCli();
         if (cleanupFails) {
           prepareCliRunContext.mockImplementationOnce(async (params) => ({
             params,
@@ -230,18 +252,7 @@ describe("session companion embedded invocation", () => {
         });
       }
       const operatorAuthority =
-        runtime === "denied-primary"
-          ? createAdmittedRunOperatorAuthority({
-              profileId: "companion-reader",
-              scopes: ["operator.read"],
-              assertCurrent() {},
-              modelPolicy: prepareOperatorModelPolicy({
-                cfg,
-                policy: { sourceAgent: "main", allow: ["test/*"], deny: ["test/model-a"] },
-                manifestPlugins: [],
-              }),
-            })
-          : undefined;
+        runtime === "denied-primary" ? operatorFor(cfg, ["test/*"], ["test/model-a"]) : undefined;
       const companion = createCompanion(cfg);
       const answer =
         runtime === "cli-cleanup"
@@ -249,40 +260,37 @@ describe("session companion embedded invocation", () => {
           : runtime === "embedded-cleanup"
             ? "The original answer is preserved."
             : "The session is reading a file.";
-      try {
-        await expect(companion.ask({ ...question, operatorAuthority })).resolves.toMatchObject({
-          answer,
+      await expect(companion.ask({ ...question, operatorAuthority })).resolves.toMatchObject({
+        answer,
+      });
+      expect(runEmbeddedAgent.mock.calls.map(([params]) => params.model)).toEqual(
+        cleanupFails
+          ? isCli
+            ? []
+            : ["model-a"]
+          : runtime === "embedded"
+            ? ["model-a", "model-b"]
+            : ["model-b"],
+      );
+      for (const [params] of runEmbeddedAgent.mock.calls) {
+        expect(params).toMatchObject({
+          modelFallbacksOverride: [],
+          toolsAllow: ["read", "sessions_history", "sessions_search"],
+          requireWorkspaceOnly: true,
         });
-        expect(runEmbeddedAgent.mock.calls.map(([params]) => params.model)).toEqual(
-          cleanupFails
-            ? isCli
-              ? []
-              : ["model-a"]
-            : runtime === "embedded"
-              ? ["model-a", "model-b"]
-              : ["model-b"],
-        );
-        for (const [params] of runEmbeddedAgent.mock.calls) {
-          expect(params.modelFallbacksOverride).toEqual([]);
-          expect(params.toolsAllow).toEqual(["read", "sessions_history", "sessions_search"]);
-          expect(params.requireWorkspaceOnly).toBe(true);
-        }
-        expect(executePreparedCliRun).toHaveBeenCalledTimes(isCli ? 1 : 0);
-        if (cleanupFails) {
-          expect(cleanup).toHaveBeenCalledOnce();
-          expect(removeSession).toHaveBeenCalledOnce();
-        }
-        expect(companion.state(question).exchanges).toEqual([
-          {
-            question: question.question,
-            answer,
-            ts: expect.any(Number),
-          },
-        ]);
-      } finally {
-        cliBackendsTesting.resetDepsForTest();
-        companion.dispose();
       }
+      expect(executePreparedCliRun).toHaveBeenCalledTimes(isCli ? 1 : 0);
+      if (cleanupFails) {
+        expect(cleanup).toHaveBeenCalledOnce();
+        expect(removeSession).toHaveBeenCalledOnce();
+      }
+      expect(companion.state(question).exchanges).toEqual([
+        {
+          question: question.question,
+          answer,
+          ts: expect.any(Number),
+        },
+      ]);
     },
   );
 
@@ -299,31 +307,18 @@ describe("session companion embedded invocation", () => {
       provider: "test",
       modelId: modelRef?.split("/")[1] ?? "model-a",
     }));
-    const operatorAuthority = createAdmittedRunOperatorAuthority({
-      profileId: "companion-reader",
-      scopes: ["operator.read"],
-      assertCurrent() {},
-      modelPolicy: prepareOperatorModelPolicy({
-        cfg,
-        policy: { sourceAgent: "main", allow: ["test/main"] },
-        manifestPlugins: [],
-      }),
-    });
+    const operatorAuthority = operatorFor(cfg, ["test/main"]);
     const companion = createCompanion(cfg);
-    try {
-      await expect(companion.ask({ ...question, operatorAuthority })).resolves.toMatchObject({
+    await expect(companion.ask({ ...question, operatorAuthority })).resolves.toMatchObject({
+      answer: "The session is reading a file.",
+    });
+    expect(runEmbeddedAgent.mock.calls.map(([params]) => params.model)).toEqual(["main"]);
+    expect(companion.state(question).exchanges).toEqual([
+      expect.objectContaining({
+        question: question.question,
         answer: "The session is reading a file.",
-      });
-      expect(runEmbeddedAgent.mock.calls.map(([params]) => params.model)).toEqual(["main"]);
-      expect(companion.state(question).exchanges).toEqual([
-        expect.objectContaining({
-          question: question.question,
-          answer: "The session is reading a file.",
-        }),
-      ]);
-    } finally {
-      companion.dispose();
-    }
+      }),
+    ]);
   });
 
   it("answers with the question's chosen model, reasoning, and speed instead of the utility route", async () => {
@@ -348,10 +343,7 @@ describe("session companion embedded invocation", () => {
       "chosen-model-connection",
       cfg,
     );
-    expect(chosen).toHaveBeenCalledWith(
-      true,
-      expect.objectContaining({ answer: expect.any(String) }),
-    );
+    expectAnswer(chosen);
     expect(runEmbeddedAgent).toHaveBeenCalledOnce();
     expect(runEmbeddedAgent.mock.calls[0]?.[0]).toMatchObject({
       model: "model-c",
@@ -387,10 +379,7 @@ describe("session companion embedded invocation", () => {
       },
       "selection-connection",
     );
-    expect(respond).toHaveBeenCalledWith(
-      true,
-      expect.objectContaining({ answer: expect.any(String) }),
-    );
+    expectAnswer(respond);
     expect(runEmbeddedAgent).toHaveBeenCalledWith(
       expect.objectContaining({
         prompt: expect.stringContaining("&lt;untrusted passage&gt;"),
@@ -422,10 +411,7 @@ describe("session companion embedded invocation", () => {
         },
         "image-connection",
       );
-      expect(respond).toHaveBeenCalledWith(
-        true,
-        expect.objectContaining({ answer: expect.any(String) }),
-      );
+      expectAnswer(respond);
       expect(runEmbeddedAgent).toHaveBeenCalledWith(
         expect.objectContaining({
           prompt: "What does this show?",
@@ -479,10 +465,7 @@ describe("session companion embedded invocation", () => {
         );
         if (phase === "accepted") {
           expect(runEmbeddedAgent).toHaveBeenCalledOnce();
-          expect(respond).toHaveBeenCalledWith(
-            true,
-            expect.objectContaining({ answer: "Accepted image answer" }),
-          );
+          expectAnswer(respond, "Accepted image answer");
         } else {
           expect(runEmbeddedAgent).not.toHaveBeenCalled();
           expect(respond).toHaveBeenCalledWith(
@@ -497,7 +480,6 @@ describe("session companion embedded invocation", () => {
         }
       } finally {
         preparation.mockRestore();
-        companion.dispose();
       }
     },
   );
@@ -535,10 +517,7 @@ describe("session companion embedded invocation", () => {
         },
         "catalog-image-connection",
       );
-      expect(respond).toHaveBeenCalledWith(
-        true,
-        expect.objectContaining({ answer: "The image is visible." }),
-      );
+      expectAnswer(respond, "The image is visible.");
       expect(modelIo).toHaveBeenCalledOnce();
       expect(resolveModelAsync).not.toHaveBeenCalled();
     },
@@ -632,8 +611,6 @@ describe("session companion embedded invocation", () => {
   });
 
   it("answers through the primary model's CLI runtime when no provider API key exists", async () => {
-    // Subscription-only install: the primary runs on claude-cli and the
-    // automatic utility model is derived from the same provider.
     const cfg: OpenClawConfig = {
       agents: {
         defaults: {
@@ -665,28 +642,9 @@ describe("session companion embedded invocation", () => {
           provider: "anthropic",
           modelId: "claude-haiku-4-5",
         });
-        cliBackendsTesting.setDepsForTest({
-          resolvePluginSetupCliBackend: () => undefined,
-          resolveRuntimeCliBackends: () => [
-            {
-              id: "claude-cli",
-              modelProvider: "anthropic",
-              pluginId: "anthropic",
-              config: { command: "claude" },
-            },
-          ],
-        });
+        useClaudeCli();
         const companion = createCompanion(cfg);
-        const operatorAuthority = createAdmittedRunOperatorAuthority({
-          profileId: "companion-reader",
-          scopes: ["operator.read"],
-          assertCurrent: () => {},
-          modelPolicy: prepareOperatorModelPolicy({
-            cfg,
-            policy: { sourceAgent: "main", allow: ["anthropic/claude-haiku-4-5"] },
-            manifestPlugins: [],
-          }),
-        });
+        const operatorAuthority = operatorFor(cfg, ["anthropic/claude-haiku-4-5"]);
         prepareCliRunContext.mockImplementationOnce(async (params) => ({
           params: prepareCliRunModelAuthority(params),
           preparedBackend: {},
@@ -764,7 +722,6 @@ describe("session companion embedded invocation", () => {
     } finally {
       resume.resolve();
       await pending.catch(() => undefined);
-      companion.dispose();
     }
   });
 
@@ -797,7 +754,6 @@ describe("session companion embedded invocation", () => {
     } finally {
       resume.resolve();
       await pending.catch(() => undefined);
-      companion.dispose();
     }
   });
 });

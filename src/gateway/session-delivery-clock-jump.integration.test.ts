@@ -12,6 +12,7 @@ import { SESSION_DELIVERY_QUEUE_NAME } from "../infra/session-delivery-queue.rec
 import { getActiveGatewayRootWorkCount } from "../process/gateway-work-admission.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
+import { listenProvider } from "./gateway-provider-fixture.test-support.js";
 import {
   createGatewayConfigPath,
   removeGatewayTempHome,
@@ -27,7 +28,7 @@ vi.mock("./server-idle-task.js", () => ({
   scheduleGatewayIdleTask: () => ({ stop: vi.fn() }),
 }));
 
-async function startProofProvider(requests: string[]): Promise<http.Server> {
+async function startProofProvider(requests: string[]) {
   const server = http.createServer((request, response) => {
     let body = "";
     request.setEncoding("utf8");
@@ -64,11 +65,7 @@ async function startProofProvider(requests: string[]): Promise<http.Server> {
       );
     });
   });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  return server;
+  return { server, baseUrl: await listenProvider(server) };
 }
 
 afterEach(() => {
@@ -98,20 +95,14 @@ it(
       const chatEvents: string[] = [];
 
       try {
-        const providerServer = await startProofProvider(providerRequests);
+        const { server: providerServer, baseUrl } = await startProofProvider(providerRequests);
         cleanup.defer(
           () =>
             new Promise<void>((resolve, reject) => {
               providerServer.close((error) => (error ? reject(error) : resolve()));
             }),
         );
-        const providerAddress = providerServer.address();
-        if (!providerAddress || typeof providerAddress === "string") {
-          throw new Error("proof provider did not bind a loopback port");
-        }
-        const provider = buildMockOpenAiResponsesProvider(
-          `http://127.0.0.1:${providerAddress.port}/v1`,
-        );
+        const provider = buildMockOpenAiResponsesProvider(baseUrl);
         const token = "clock-jump-proof-token";
         const configPath = await createGatewayConfigPath(tempHome);
         const sessionKey = "agent:main:clock-jump-proof";

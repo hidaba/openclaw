@@ -94,18 +94,18 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
     });
     return target;
   };
-  const appendWork = async (target: ActivitySummaryTarget) => {
-    await persistSessionTranscriptTurn(scope(target), {
-      messages: [
-        {
-          eventId: "new-work",
-          parentId: "message-1",
-          message: { role: "assistant", content: "Verified additional work." },
-        },
-      ],
+  const appendMessage = (
+    target: ActivitySummaryTarget,
+    eventId: string,
+    parentId: string,
+    content: string,
+  ) =>
+    persistSessionTranscriptTurn(scope(target), {
+      messages: [{ eventId, parentId, message: { role: "assistant", content } }],
       touchSessionEntry: false,
     });
-  };
+  const appendWork = (target: ActivitySummaryTarget) =>
+    appendMessage(target, "new-work", "message-1", "Verified additional work.");
   const fakeTime = () => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     vi.spyOn(Math, "random").mockReturnValue(0);
@@ -416,16 +416,7 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
           reads.restore();
         }
       }
-      await persistSessionTranscriptTurn(scope(target), {
-        messages: [
-          {
-            eventId: "message-3",
-            parentId: "message-2",
-            message: { role: "assistant", content: "Outcome 3" },
-          },
-        ],
-        touchSessionEntry: false,
-      });
+      await appendMessage(target, "message-3", "message-2", "Outcome 3");
       await refresh();
       expect(JSON.parse(complete.mock.calls[0]![0].prompt)).toMatchObject({
         previousRecap: recap,
@@ -539,16 +530,7 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
           completion.resolve(result);
           await Promise.all([stop, disposal]);
         } else if (outcome === "continuation") {
-          await persistSessionTranscriptTurn(scope(target), {
-            messages: [
-              {
-                eventId: "continued-work",
-                parentId: "new-work",
-                message: { role: "assistant", content: "Verified the follow-on work." },
-              },
-            ],
-            touchSessionEntry: false,
-          });
+          await appendMessage(target, "continued-work", "new-work", "Verified the follow-on work.");
           const continued = createDeferred();
           complete.mockImplementationOnce(() => {
             continued.resolve();
@@ -778,16 +760,12 @@ describe("Activity recap admission, refresh, and provider recovery", () => {
         ],
       });
       expect(view(overflow)?.state).toBe("current");
-      await persistSessionTranscriptTurn(scope(overflow), {
-        messages: [
-          {
-            eventId: "overflow-new-work",
-            parentId: "message-256",
-            message: { role: "assistant", content: "Verified additional work." },
-          },
-        ],
-        touchSessionEntry: false,
-      });
+      await appendMessage(
+        overflow,
+        "overflow-new-work",
+        "message-256",
+        "Verified additional work.",
+      );
       await ensure([overflow]);
       expect(respond.mock.calls.at(-1)?.[1]).toMatchObject({
         sessions: [
