@@ -57,7 +57,10 @@ it.each([
   // A paged list refresh can remove the originating row before the reply arrives.
   state.cronJobs = [beta];
   response.reject(new Error("Synthetic action unavailable"));
-  await mutation;
+  const outcome = await mutation;
+  if (action === "run") {
+    expect(outcome).toBe(state.cronError);
+  }
   expect(state.cronError).toBe(
     selection === "same"
       ? "Synthetic action unavailable"
@@ -110,7 +113,7 @@ it.each([
       return {};
     });
     const state = createStateWithRequest(request, { cronRunsScope: "job", cronRunsJobId: "job" });
-    await runCronJob(state, "job", mode);
+    expect(await runCronJob(state, "job", mode)).toBeUndefined();
     expect(state.cronError).toBe(`job: ${message}`);
     expect(request).toHaveBeenCalledWith("cron.run", { id: "job", mode });
     if (refresh) {
