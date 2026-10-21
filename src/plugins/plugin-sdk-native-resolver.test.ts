@@ -190,21 +190,14 @@ describe("installOpenClawPluginSdkNativeResolver", () => {
     }
   });
 
-  it("updates native SDK aliases when the same plugin parent switches dev source roots", () => {
-    const { root, options, externalPluginEntry, devRoot } = devFixture();
-    installOpenClawPluginSdkNativeResolver(options);
-    expectSdk(externalPluginEntry, root);
-    installOpenClawPluginSdkNativeResolver({ ...options, devSourceRoot: devRoot });
-    expectSdk(externalPluginEntry, devRoot);
-  });
-
-  it("removes stale native SDK aliases when a later dev root omits a subpath", () => {
+  it("replaces native SDK aliases and removes stale subpaths when a plugin switches dev roots", () => {
     const { root, options, externalPluginEntry, requireFromPlugin, devRoot } = devFixture();
     const stableExtraPath = addFakePluginSdkDistExport(root, "stable-extra");
     installOpenClawPluginSdkNativeResolver(options);
+    expectSdk(externalPluginEntry, root);
     expectResolved(externalPluginEntry, "openclaw/plugin-sdk/stable-extra", stableExtraPath);
     installOpenClawPluginSdkNativeResolver({ ...options, devSourceRoot: devRoot });
-
+    expectSdk(externalPluginEntry, devRoot);
     expect(() => requireFromPlugin.resolve("openclaw/plugin-sdk/stable-extra")).toThrow();
   });
 

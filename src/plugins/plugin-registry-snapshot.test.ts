@@ -212,6 +212,22 @@ function persistFirstPlugin(
   );
 }
 
+function expectPersisted(result: ReturnType<typeof loadPluginRegistrySnapshotWithMetadata>) {
+  expect(result.source).toBe("persisted");
+  expect(result.diagnostics).toStrictEqual([]);
+}
+
+function expectStale(result: ReturnType<typeof loadPluginRegistrySnapshotWithMetadata>) {
+  expect(result.source).toBe("derived");
+  expectDiagnosticsContainCode(result.diagnostics, "persisted-registry-stale-source");
+}
+
+function packageRegistry(disabled = false) {
+  const params = configuredRegistry(disabled);
+  writeRegistryPackagePlugin(params.rootDir);
+  return { ...params, index: loadInstalledPluginIndex({ config: params.config, env: params.env }) };
+}
+
 function dropStartupConfigPaths(
   plugin: InstalledPluginIndex["plugins"][number],
 ): InstalledPluginIndex["plugins"][number] {
@@ -350,8 +366,7 @@ describe("loadPluginRegistrySnapshotWithMetadata", () => {
 
     const result = loadPluginRegistrySnapshotWithMetadata({ config, env, stateDir });
 
-    expect(result.source).toBe("derived");
-    expectDiagnosticsContainCode(result.diagnostics, "persisted-registry-stale-source");
+    expectStale(result);
     expect(result.snapshot.installRecords.whatsapp).toEqual({
       source: "npm",
       spec: "@openclaw/whatsapp@2026.5.2",
@@ -461,8 +476,7 @@ describe("loadPluginRegistrySnapshotWithMetadata", () => {
 
     const result = loadPluginRegistrySnapshotWithMetadata({ config, env, stateDir });
 
-    expect(result.source).toBe("persisted");
-    expect(result.diagnostics).toStrictEqual([]);
+    expectPersisted(result);
   });
 
   it("derives a complete index when a configured load-path plugin is missing", async () => {
@@ -479,8 +493,7 @@ describe("loadPluginRegistrySnapshotWithMetadata", () => {
 
     const result = loadPluginRegistrySnapshotWithMetadata({ config, env, stateDir });
 
-    expect(result.source).toBe("derived");
-    expectDiagnosticsContainCode(result.diagnostics, "persisted-registry-stale-source");
+    expectStale(result);
     expect(result.snapshot.plugins.map((plugin) => plugin.pluginId)).toEqual(["first", "second"]);
     expect(result.snapshot.plugins.map((plugin) => plugin.origin)).toEqual(["config", "config"]);
     const scopedRegistry = loadPluginManifestRegistryForInstalledIndex({
@@ -511,8 +524,7 @@ describe("loadPluginRegistrySnapshotWithMetadata", () => {
 
     const result = loadPluginRegistrySnapshotWithMetadata({ config, env, stateDir });
 
-    expect(result.source).toBe("derived");
-    expectDiagnosticsContainCode(result.diagnostics, "persisted-registry-stale-source");
+    expectStale(result);
     expect(result.snapshot.plugins[0]?.startup.configPaths).toEqual(["browser"]);
   });
 
@@ -544,8 +556,7 @@ describe("loadPluginRegistrySnapshotWithMetadata", () => {
 
     const result = loadPluginRegistrySnapshotWithMetadata({ config, env, stateDir });
 
-    expect(result.source).toBe("persisted");
-    expect(result.diagnostics).toStrictEqual([]);
+    expectPersisted(result);
     expect(result.manifestRegistry).toBeUndefined();
     const registry = loadPluginManifestRegistryForInstalledIndex({
       index: result.snapshot,
@@ -612,23 +623,18 @@ describe("loadPluginRegistrySnapshotWithMetadata", () => {
   );
 
   it("rejects escaped missing package metadata for disabled records", async () => {
-    const { rootDir, stateDir, env, config } = configuredRegistry(true);
-    writeRegistryPackagePlugin(rootDir);
-    const index = loadInstalledPluginIndex({ config, env });
+    const { stateDir, env, config, index } = packageRegistry(true);
     await persistFirstPlugin(index, stateDir, {
       packageJson: { path: "../gone/package.json", hash: "missing" },
     });
 
     const result = loadPluginRegistrySnapshotWithMetadata({ config, env, stateDir });
 
-    expect(result.source).toBe("derived");
-    expectDiagnosticsContainCode(result.diagnostics, "persisted-registry-stale-source");
+    expectStale(result);
   });
 
   it("detects same-size same-mtime manifest replacements", async () => {
-    const { rootDir, stateDir, env, config } = configuredRegistry();
-    writeRegistryPackagePlugin(rootDir);
-    const index = loadInstalledPluginIndex({ config, env });
+    const { rootDir, stateDir, env, config, index } = packageRegistry();
     await writePersistedInstalledPluginIndex(index, { stateDir });
 
     replaceFilePreservingSizeAndMtime(
@@ -643,8 +649,7 @@ describe("loadPluginRegistrySnapshotWithMetadata", () => {
 
     const result = loadPluginRegistrySnapshotWithMetadata({ config, env, stateDir });
 
-    expect(result.source).toBe("derived");
-    expectDiagnosticsContainCode(result.diagnostics, "persisted-registry-stale-source");
+    expectStale(result);
   });
 
   it("trusts unchanged Doctor contract signatures without rehashing", async () => {
@@ -689,15 +694,12 @@ describe("loadPluginRegistrySnapshotWithMetadata", () => {
 
     const result = loadPluginRegistrySnapshotWithMetadata({ config, env, stateDir });
 
-    expect(result.source).toBe("derived");
-    expectDiagnosticsContainCode(result.diagnostics, "persisted-registry-stale-source");
+    expectStale(result);
     expect(result.snapshot.plugins[0]?.doctorContractHash).not.toBe("stale-contract-hash");
   });
 
   it("detects package.json replacements even when stored stat fields still match", async () => {
-    const { rootDir, stateDir, env, config } = configuredRegistry();
-    writeRegistryPackagePlugin(rootDir);
-    const index = loadInstalledPluginIndex({ config, env });
+    const { rootDir, stateDir, env, config, index } = packageRegistry();
 
     replaceFilePreservingSizeAndMtime(
       path.join(rootDir, "package.json"),
@@ -723,8 +725,7 @@ describe("loadPluginRegistrySnapshotWithMetadata", () => {
 
     const result = loadPluginRegistrySnapshotWithMetadata({ config, env, stateDir });
 
-    expect(result.source).toBe("derived");
-    expectDiagnosticsContainCode(result.diagnostics, "persisted-registry-stale-source");
+    expectStale(result);
   });
 
   it("keeps mixed source-checkout bundled roots from the same checkout", async () => {
@@ -758,8 +759,7 @@ describe("loadPluginRegistrySnapshotWithMetadata", () => {
 
     const result = loadPluginRegistrySnapshotWithMetadata({ config: {}, env, stateDir });
 
-    expect(result.source).toBe("persisted");
-    expect(result.diagnostics).toStrictEqual([]);
+    expectPersisted(result);
     expect(result.snapshot.plugins.map((plugin) => plugin.pluginId)).toEqual(["codex", "whatsapp"]);
     expect(requirePluginRecord(result.snapshot.plugins, "codex").packageBuild).toEqual({
       bundledDist: true,
@@ -778,8 +778,7 @@ describe("loadPluginRegistrySnapshotWithMetadata", () => {
 
     const result = loadPluginRegistrySnapshotWithMetadata({ config, env, stateDir });
 
-    expect(result.source).toBe("persisted");
-    expect(result.diagnostics).toEqual([]);
+    expectPersisted(result);
     expect(result.snapshot.plugins.map((plugin) => plugin.pluginId)).toEqual(["whatsapp"]);
     expect(result.snapshot.plugins[0]?.enabled).toBe(false);
     expect(result.snapshot.plugins[0]?.doctorContractHash).toBe(persistedPlugin.doctorContractHash);
@@ -793,8 +792,7 @@ describe("loadPluginRegistrySnapshotWithMetadata", () => {
 
     const result = loadPluginRegistrySnapshotWithMetadata({ config, env, stateDir });
 
-    expect(result.source).toBe("derived");
-    expectDiagnosticsContainCode(result.diagnostics, "persisted-registry-stale-source");
+    expectStale(result);
   });
 
   it("keeps missing disabled inventory beside unchanged configured plugins", async () => {
@@ -819,56 +817,47 @@ describe("loadPluginRegistrySnapshotWithMetadata", () => {
     expect(result.snapshot.plugins.map((plugin) => plugin.pluginId)).toEqual(["live", "missing"]);
   });
 
-  it("treats a persisted source bundled root as stale once its built peer appears", async () => {
-    const { packageRoot, bundledRoot, sourceRoot, stateDir, env } = bundledRegistry();
-
-    writeCheckout(packageRoot);
-    fs.mkdirSync(bundledRoot, { recursive: true });
-    writeBundledPlugin(path.join(sourceRoot, "whatsapp"), "whatsapp", "index.ts");
-
-    const sourceIndex = loadInstalledPluginIndex({ config: {}, env, stateDir });
-    expect(sourceIndex.plugins.map((plugin) => plugin.rootDir)).toEqual([
-      fs.realpathSync(path.join(sourceRoot, "whatsapp")),
-    ]);
-    await writePersistedInstalledPluginIndex(sourceIndex, { stateDir });
-    writeBundledPlugin(path.join(bundledRoot, "whatsapp"), "whatsapp", "index.js");
-
-    const result = loadPluginRegistrySnapshotWithMetadata({ config: {}, env, stateDir });
-
-    expect(result.source).toBe("derived");
-    expectDiagnosticsContainCode(result.diagnostics, "persisted-registry-stale-source");
-    expect(result.snapshot.plugins.map((plugin) => plugin.rootDir)).toEqual([
-      fs.realpathSync(path.join(bundledRoot, "whatsapp")),
-    ]);
-  });
-
-  it("replaces a persisted built root when its source plugin opts out of bundled output", async () => {
-    const { packageRoot, bundledRoot, stateDir, env } = bundledRegistry();
-    const sourcePluginDir = path.join(packageRoot, "extensions", "whatsapp");
-
-    writeCheckout(packageRoot);
-    writeBundledPlugin(sourcePluginDir, "whatsapp", "index.ts");
-    writeBundledPlugin(path.join(bundledRoot, "whatsapp"), "whatsapp", "index.js");
-
-    const builtIndex = loadInstalledPluginIndex({ config: {}, env, stateDir });
-    expect(builtIndex.plugins.map((plugin) => plugin.rootDir)).toEqual([
-      fs.realpathSync(path.join(bundledRoot, "whatsapp")),
-    ]);
-    await writePersistedInstalledPluginIndex(builtIndex, { stateDir });
-    writeJson(path.join(sourcePluginDir, "package.json"), {
-      name: "@openclaw/whatsapp",
-      version: "1.0.0",
-      openclaw: { extensions: ["./index.ts"], build: { bundledDist: false } },
-    });
-
-    const result = loadPluginRegistrySnapshotWithMetadata({ config: {}, env, stateDir });
-
-    expect(result.source).toBe("derived");
-    expectDiagnosticsContainCode(result.diagnostics, "persisted-registry-stale-source");
-    expect(result.snapshot.plugins.map((plugin) => plugin.rootDir)).toEqual([
-      fs.realpathSync(sourcePluginDir),
-    ]);
-  });
+  it.each(["built peer appears", "source opts out", "source mounted"] as const)(
+    "reselects the persisted bundled owner when %s",
+    async (change) => {
+      const { packageRoot, bundledRoot, sourceRoot, stateDir, env } = bundledRegistry();
+      const source = path.join(sourceRoot, "whatsapp");
+      const built = path.join(bundledRoot, "whatsapp");
+      writeCheckout(packageRoot);
+      fs.mkdirSync(bundledRoot, { recursive: true });
+      writeBundledPlugin(source, "whatsapp", "index.ts");
+      if (change === "source opts out") {
+        writeBundledPlugin(built, "whatsapp", "index.js");
+      }
+      const params = { config: {}, env, stateDir };
+      const index = loadInstalledPluginIndex(params);
+      expect(index.plugins.map((plugin) => plugin.rootDir)).toEqual([
+        fs.realpathSync(change === "source opts out" ? built : source),
+      ]);
+      await writePersistedInstalledPluginIndex(index, { stateDir });
+      if (change === "source opts out") {
+        writeJson(path.join(source, "package.json"), {
+          name: "@openclaw/whatsapp",
+          version: "1.0.0",
+          openclaw: { extensions: ["./index.ts"], build: { bundledDist: false } },
+        });
+      } else {
+        writeBundledPlugin(built, "whatsapp", "index.js");
+        if (change === "source mounted") {
+          mockLinuxMountInfo([source]);
+        }
+      }
+      const result = loadPluginRegistrySnapshotWithMetadata(params);
+      if (change === "source mounted") {
+        expectPersisted(result);
+      } else {
+        expectStale(result);
+      }
+      expect(result.snapshot.plugins.map((plugin) => plugin.rootDir)).toEqual([
+        fs.realpathSync(change === "built peer appears" ? built : source),
+      ]);
+    },
+  );
 
   it.each(["plugin", "parent", "disabled"] as const)(
     "respects %s source mounts after restarting with a persisted built registry",
@@ -904,28 +893,6 @@ describe("loadPluginRegistrySnapshotWithMetadata", () => {
       ]);
     },
   );
-
-  it("keeps a persisted bind-mounted source overlay when its built peer exists", async () => {
-    const { packageRoot, bundledRoot, stateDir, env } = bundledRegistry();
-    const sourcePluginDir = path.join(packageRoot, "extensions", "whatsapp");
-
-    writeCheckout(packageRoot);
-    fs.mkdirSync(bundledRoot, { recursive: true });
-    writeBundledPlugin(sourcePluginDir, "whatsapp", "index.ts");
-
-    const sourceIndex = loadInstalledPluginIndex({ config: {}, env, stateDir });
-    await writePersistedInstalledPluginIndex(sourceIndex, { stateDir });
-    writeBundledPlugin(path.join(bundledRoot, "whatsapp"), "whatsapp", "index.js");
-    mockLinuxMountInfo([sourcePluginDir]);
-
-    const result = loadPluginRegistrySnapshotWithMetadata({ config: {}, env, stateDir });
-
-    expect(result.source).toBe("persisted");
-    expect(result.diagnostics).toStrictEqual([]);
-    expect(result.snapshot.plugins.map((plugin) => plugin.rootDir)).toEqual([
-      fs.realpathSync(sourcePluginDir),
-    ]);
-  });
 
   it("treats persisted registry as stale when a plugin diagnostic source path no longer exists", async () => {
     const { tempRoot, stateDir, env } = isolatedRegistry();
