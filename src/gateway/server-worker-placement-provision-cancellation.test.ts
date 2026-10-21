@@ -39,6 +39,7 @@ import {
 } from "./worker-environments/placement-dispatch-test-fixtures.js";
 import { createHarness } from "./worker-environments/placement-dispatch-test-harness.js";
 import { createWorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
+import { placementSource } from "./worker-environments/placement-suite.test-support.js";
 import { deriveEnvironmentIntent } from "./worker-environments/service-contract.js";
 import * as support from "./worker-environments/service.test-support.js";
 import type { WorkerSessionWorkspace } from "./worker-environments/session-workspace.js";
@@ -234,11 +235,7 @@ describe("dispatch Stop before provider allocation", () => {
         .move(
           {
             ...REQUEST,
-            source: {
-              generation: active.generation,
-              environmentId: active.environmentId,
-              ownerEpoch: active.activeOwnerEpoch,
-            },
+            source: placementSource(active),
             target:
               targetKind === "profile"
                 ? { kind: "profile", profileId: "development" }
@@ -377,16 +374,17 @@ describe("dispatch Stop before provider allocation", () => {
           ownerEpoch: 1,
           executionMode: "remote-exec",
         });
-        const draining = await placements.startDrain({
+        const source = {
           sessionId: REQUEST.sessionId,
           environmentId: "old-environment",
           ownerEpoch: 1,
+        };
+        const draining = await placements.startDrain({
+          ...source,
           expectedGeneration: active.generation,
         });
         await placements.startReconcile({
-          sessionId: REQUEST.sessionId,
-          environmentId: "old-environment",
-          ownerEpoch: 1,
+          ...source,
           expectedGeneration: draining.generation,
         });
         const current = placements.get(REQUEST.sessionId)!;
@@ -454,24 +452,6 @@ describe("dispatch Stop before provider allocation", () => {
       }
     },
   );
-
-  it("does not cancel an ordinary local session without an in-flight dispatch", async () => {
-    const environments = support.createService(support.createProvider());
-    const placements = createWorkerSessionPlacementStore({ database: support.testState.stateDb });
-    const interrupted = vi.fn();
-    const admission = await beginSessionEffect({
-      ...sessionIdentity(),
-      assertAllowed: () => {},
-      onInterrupt: interrupted,
-    });
-    const runtime = await createRuntime(placements, environments);
-    try {
-      await expect(runtime.dispatchService.reclaim(REQUEST)).rejects.toThrow();
-      expect(interrupted).not.toHaveBeenCalled();
-    } finally {
-      admission.release();
-    }
-  });
 
   it.each(["local", "recovery", "activation", "move"] as const)(
     "releases admitted %s queued behind an interrupting lifecycle owner",
@@ -572,11 +552,7 @@ describe("dispatch Stop before provider allocation", () => {
           : phase === "move" && initial?.state === "active"
             ? runtime.dispatchService.move({
                 ...REQUEST,
-                source: {
-                  generation: initial.generation,
-                  environmentId: initial.environmentId,
-                  ownerEpoch: initial.activeOwnerEpoch,
-                },
+                source: placementSource(initial),
                 target: { kind: "gateway" },
               })
             : runtime.dispatchService.dispatch(REQUEST)

@@ -1,7 +1,9 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 
-const prepareModelRuntimeSnapshotMock = vi.fn(async (_params: unknown) => ({}));
+const cfg: OpenClawConfig = {
+  agents: { defaults: { model: { primary: "openai/gpt-5.4" } } },
+};
 const collectConfiguredRefs = vi.fn((_config: OpenClawConfig, agentId: string) => [
   { value: agentId === "main" ? "openai/gpt-5.4" : "anthropic/sonnet-4.6" },
 ]);
@@ -29,7 +31,6 @@ vi.mock("../agents/auth-profiles/store-runtime.js", async (importOriginal) => ({
 }));
 
 vi.mock("../agents/prepared-model-runtime.js", () => ({
-  publishPreparedModelRuntimeSnapshot: (params: unknown) => prepareModelRuntimeSnapshotMock(params),
   refreshPreparedModelRuntimeSnapshots: refreshPreparedModelRuntimeSnapshotsMock,
 }));
 
@@ -43,7 +44,6 @@ describe("gateway startup model runtime publication", () => {
   });
 
   beforeEach(() => {
-    prepareModelRuntimeSnapshotMock.mockClear();
     refreshPreparedModelRuntimeSnapshotsMock.mockClear();
     collectConfiguredRefs.mockClear();
     hydrate.mockClear();
@@ -52,9 +52,6 @@ describe("gateway startup model runtime publication", () => {
   it.each([undefined, "/tmp/explicit-workspace"])(
     "publishes startup lifecycle owners with workspace %s",
     async (workspaceDir) => {
-      const cfg: OpenClawConfig = {
-        agents: { defaults: { model: { primary: "openai/gpt-5.4" } } },
-      };
       await publishConfiguredModelRuntimeSnapshots({ cfg, workspaceDir });
       expect(refreshPreparedModelRuntimeSnapshotsMock).toHaveBeenCalledWith(cfg, {
         allowGatewaySubagentBinding: true,
@@ -71,19 +68,7 @@ describe("gateway startup model runtime publication", () => {
     const error = new Error("models write failed");
     refreshPreparedModelRuntimeSnapshotsMock.mockRejectedValueOnce(error);
 
-    await expect(
-      publishConfiguredModelRuntimeSnapshots({
-        cfg: {
-          agents: {
-            defaults: {
-              model: {
-                primary: "codex/gpt-5.4",
-              },
-            },
-          },
-        } as OpenClawConfig,
-      }),
-    ).rejects.toBe(error);
+    await expect(publishConfiguredModelRuntimeSnapshots({ cfg })).rejects.toBe(error);
   });
   it("passes a current-config supplier after loading the prepared runtime", async () => {
     const initialConfig = { ui: { theme: "light" } } as never;

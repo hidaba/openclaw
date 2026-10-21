@@ -51,6 +51,7 @@ import {
   resolveGatewaySessionStoreTargetInWorker,
 } from "./session-utils.js";
 import type { WorkerPlacementMoveBarrier } from "./worker-environments/placement-move-service.js";
+import { localPlacement } from "./worker-environments/placement-suite.test-support.js";
 
 const session = {
   sessionId: "session-move-source",
@@ -89,6 +90,25 @@ async function withMoveSession(run: (target: MoveTarget) => Promise<void>) {
   });
 }
 
+function enqueueFixtureFollowup(
+  identity: { agentId: string; sessionId: string; sessionKey: string },
+  storePath: string,
+  prompt: string,
+) {
+  const { agentId, sessionId, sessionKey } = identity;
+  const followup = createQueueTestRun({ prompt });
+  followup.run = { ...followup.run, agentId, sessionId, config: { session: { store: storePath } } };
+  enqueueFollowupRun(
+    sessionKey,
+    followup,
+    { mode: "collect", debounceMs: 0, cap: 20, dropPolicy: "summarize" },
+    "none",
+    undefined,
+    false,
+  );
+  return getExistingFollowupQueue(sessionKey, followup.controllerInput!.target);
+}
+
 function createMoveBarrierBeginFixture(sessionId: string, sessionKey: string, agentId = "main") {
   const source = { generation: 4, environmentId: "environment-source", ownerEpoch: 2 };
   return {
@@ -103,10 +123,9 @@ function createMoveBarrierBeginFixture(sessionId: string, sessionKey: string, ag
       updatedAtMs: 1,
     },
     placement: {
-      sessionId,
+      ...localPlacement(sessionId),
       sessionKey,
       agentId,
-      executionMode: "worker-turn",
       state: "draining",
       generation: 5,
       environmentId: source.environmentId,
@@ -114,13 +133,6 @@ function createMoveBarrierBeginFixture(sessionId: string, sessionKey: string, ag
       workspaceBaseManifestRef: "manifest-source",
       remoteWorkspaceDir: "/worker/session-source",
       workerBundleHash: "c".repeat(64),
-      lastTranscriptAckCursor: null,
-      lastLiveEventAckCursor: null,
-      recoveryError: null,
-      terminalReason: null,
-      terminalAtMs: null,
-      turnClaim: null,
-      createdAtMs: 1,
       updatedAtMs: 2,
       stateChangedAtMs: 2,
     },
@@ -173,43 +185,15 @@ describe("worker placement move destination", () => {
             effects.push("main interrupt");
           },
         });
-        const mainFollowup = createQueueTestRun({ prompt: "keep main follow-up" });
-        mainFollowup.run = {
-          ...mainFollowup.run,
-          agentId: "main",
-          sessionId: "main-global",
-          config: { session: { store: mainStorePath } },
-        };
-        enqueueFollowupRun(
-          sessionKey,
-          mainFollowup,
-          { mode: "collect", debounceMs: 0, cap: 20, dropPolicy: "summarize" },
-          "none",
-          undefined,
-          false,
+        const mainQueue = enqueueFixtureFollowup(
+          { sessionKey, agentId: "main", sessionId: "main-global" },
+          mainStorePath,
+          "keep main follow-up",
         );
-        const mainQueue = getExistingFollowupQueue(
-          sessionKey,
-          mainFollowup.controllerInput!.target,
-        );
-        const researchFollowup = createQueueTestRun({ prompt: "keep required first input" });
-        researchFollowup.run = {
-          ...researchFollowup.run,
-          agentId,
-          sessionId,
-          config: { session: { store: target.storePath } },
-        };
-        enqueueFollowupRun(
-          sessionKey,
-          researchFollowup,
-          { mode: "collect", debounceMs: 0, cap: 20, dropPolicy: "summarize" },
-          "none",
-          undefined,
-          false,
-        );
-        const researchQueue = getExistingFollowupQueue(
-          sessionKey,
-          researchFollowup.controllerInput!.target,
+        const researchQueue = enqueueFixtureFollowup(
+          researchSession,
+          target.storePath,
+          "keep required first input",
         );
         let releaseAdmission = () => {};
         const admission =

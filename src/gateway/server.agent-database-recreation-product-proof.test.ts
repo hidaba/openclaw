@@ -60,20 +60,48 @@ const EXTERNAL_STATE_AGENT_ID = "external-state-agent";
 const SESSION_KEY = `agent:${AGENT_ID}:product-proof`;
 const SESSION_KEYS = [SESSION_KEY, `${SESSION_KEY}-second`];
 
+async function withProductGateway(token: string, run: (client: GatewayClient) => Promise<void>) {
+  const portClaim = await acquireTestPortBlock({ offsets: [0, 1, 2, 3, 4] });
+  const server = await startTestGatewayServer(portClaim, {
+    bind: "loopback",
+    auth: { mode: "token", token },
+    controlUiEnabled: false,
+  });
+  let client: GatewayClient | undefined;
+  try {
+    client = await connectGatewayClient({
+      url: `ws://127.0.0.1:${portClaim.port}`,
+      token,
+      role: "operator",
+      scopes: ["operator.admin", "operator.read", "operator.write"],
+    });
+    await run(client);
+  } finally {
+    if (client) {
+      await disconnectGatewayClient(client);
+    }
+    await server.close({ reason: "agent database product proof complete" });
+  }
+}
+
+async function createAgentSessions(client: GatewayClient, workspace: string) {
+  await expect(
+    client.request("agents.create", { name: "Recreated Agent", workspace }),
+  ).resolves.toMatchObject({ agentId: AGENT_ID, ok: true });
+  for (const key of SESSION_KEYS) {
+    await expect(
+      client.request("sessions.create", { agentId: AGENT_ID, key }),
+    ).resolves.toMatchObject({ key });
+  }
+  await expectSessionListPages(client);
+}
+
 async function expectSessionListPages(client: GatewayClient) {
-  const first = await client.request<SessionsListResult>("sessions.list", {
-    agentId: AGENT_ID,
-    limit: 1,
-  });
-  const full = await client.request<SessionsListResult>("sessions.list", {
-    agentId: AGENT_ID,
-    limit: 100,
-  });
-  const next = await client.request<SessionsListResult>("sessions.list", {
-    agentId: AGENT_ID,
-    limit: 1,
-    offset: 1,
-  });
+  const page = (limit: number, offset = 0) =>
+    client.request<SessionsListResult>("sessions.list", { agentId: AGENT_ID, limit, offset });
+  const first = await page(1);
+  const full = await page(100);
+  const next = await page(1, 1);
   expect(first).toMatchObject({ count: 1, totalCount: 2 });
   expect(full).toMatchObject({ count: 2, totalCount: 2 });
   expect(next).toMatchObject({ count: 1, totalCount: 2 });
@@ -100,256 +128,225 @@ describe("agent database recreation product proof", () => {
         "openclaw-agent.sqlite",
       );
       await writeConfigFile({ ...loadConfig(), session: { store: testState.sessionStorePath } });
-      const portClaim = await acquireTestPortBlock({ offsets: [0, 1, 2, 3, 4] });
-      const url = `ws://127.0.0.1:${portClaim.port}`;
-      const server = await startTestGatewayServer(portClaim, {
-        bind: "loopback",
-        auth: { mode: "token", token },
-        controlUiEnabled: false,
-      });
-      let client: GatewayClient | undefined;
       try {
-        client = await connectGatewayClient({
-          url,
-          token,
-          role: "operator",
-          scopes: ["operator.admin", "operator.read", "operator.write"],
-        });
-
-        const workspace = path.join(
-          process.env.OPENCLAW_STATE_DIR ?? process.cwd(),
-          "workspace-recreated-agent",
-        );
-        const created = await client.request<{ agentId: string; ok: true }>("agents.create", {
-          name: "Recreated Agent",
-          workspace,
-        });
-        expect(created).toMatchObject({ agentId: AGENT_ID, ok: true });
-        for (const key of SESSION_KEYS) {
-          await expect(
-            client.request("sessions.create", { agentId: AGENT_ID, key }),
-          ).resolves.toMatchObject({ key });
-        }
-        await expectSessionListPages(client);
-        expect(listOpenClawRegisteredAgentDatabases({ env: process.env })).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              agentId: AGENT_ID,
-              path: testState.sessionStorePath.replace("{agentId}", AGENT_ID),
-            }),
-          ]),
-        );
-
-        const databasePath = testState.sessionStorePath.replace("{agentId}", AGENT_ID);
-        const originalIdentity = await fs.stat(databasePath, { bigint: true });
-
-        const readers = createOwnedWorkerTaskPool<ResourceFixtureInput, ResourceFixtureReply>({
-          workerUrl: new URL(
-            "../infra/worker-task-pool.resources.test-support.ts",
-            import.meta.url,
-          ),
-          maxWorkers: 1,
-        });
-        const prepared = createDeferred();
-        const releaseRead = createDeferred();
-        const input = { database: { agentId: AGENT_ID, path: databasePath } };
-        const pendingRead = readers.run(async () => {
-          prepared.resolve();
-          await releaseRead.promise;
-          return input;
-        }, {});
-        try {
-          await prepared.promise;
-          await expect(
-            client.request("agents.delete", { agentId: AGENT_ID, deleteFiles: false }),
-          ).resolves.toMatchObject({ agentId: AGENT_ID, ok: true });
-          expect((await fs.stat(databasePath, { bigint: true })).ino).toBe(originalIdentity.ino);
-          releaseRead.resolve();
-          const first = await pendingRead;
-          expect(first.databaseFound).toBe(false);
-          await readers.rotate();
-          const replacement = await readers.run(input, {});
-          expect(replacement.databaseFound).toBe(false);
-          expect(replacement.threadId).not.toBe(first.threadId);
-          let refusedRevival = false;
-          const send: unknown = Object.getOwnPropertyDescriptor(
-            Worker.prototype,
-            "postMessage",
-          )?.value;
-          if (typeof send !== "function") {
-            throw new Error("Worker postMessage implementation is unavailable");
-          }
-          const delivery = vi.spyOn(Worker.prototype, "postMessage").mockImplementation(function (
-            this: Worker,
-            ...args: Parameters<Worker["postMessage"]>
-          ) {
-            if (
-              this.threadId === replacement.threadId &&
-              isRecord(args[0]) &&
-              args[0].closeResource === true &&
-              typeof args[0].key === "string" &&
-              decodeAgentDatabaseReaderRequest(args[0].key)?.kind === "revive"
-            ) {
-              refusedRevival = true;
-              throw new Error("worker revival delivery failed");
-            }
-            return send.apply(this, args);
-          });
-          try {
-            await expect(
-              client.request("agents.create", { name: "Recreated Agent", workspace }),
-            ).resolves.toMatchObject({ agentId: AGENT_ID, ok: true });
-            expect(refusedRevival).toBe(true);
-          } finally {
-            delivery.mockRestore();
-          }
-          expect((await readers.run(input, {})).databaseFound).toBe(true);
-
-          const staleAgentId = "shared-path-retired-agent";
-          const survivorDir = resolveAgentDir(loadConfig(), AGENT_ID);
-          const survivorPath = path.join(survivorDir, "openclaw-agent.sqlite");
-          const survivorStore = createAuthProfileStoreFixture({
-            "fixture:survivor": createApiKeyCredential(
-              "fixture",
-              "synthetic-shared-path-survivor-key",
-            ),
-          });
-          saveAuthProfileStore(survivorStore, survivorDir);
-          const survivorSession = {
-            agentId: AGENT_ID,
-            storePath: survivorPath,
-            sessionKey: `agent:${AGENT_ID}:shared-path-survivor`,
-            readConsistency: "latest" as const,
-          };
-          const survivorSessionId = "shared-path-survivor-session";
-          replaceSessionEntrySync(survivorSession, {
-            sessionId: survivorSessionId,
-            updatedAt: 1,
-          });
-          // Recovery retains readers, but a live foreign writer must still block deletion.
-          await closeOpenClawAgentDatabaseByPathAsync(survivorPath, AGENT_ID);
-          const survivorIdentity = await fs.stat(survivorPath, { bigint: true });
-          const survivorInput = {
-            database: { agentId: AGENT_ID, path: survivorPath, readAuthStore: true },
-          };
-          const parentReader = acquireAuthProfileReadDatabase(
-            survivorPath,
-            openSqliteReadOnlyDatabase,
+        await withProductGateway(token, async (client) => {
+          const workspace = path.join(
+            process.env.OPENCLAW_STATE_DIR ?? process.cwd(),
+            "workspace-recreated-agent",
           );
-          expect(parentReader.status).toBe("readable");
-          if (parentReader.status !== "readable") {
-            throw new Error("Expected the surviving agent's retained auth reader");
-          }
+          await createAgentSessions(client, workspace);
+          expect(listOpenClawRegisteredAgentDatabases({ env: process.env })).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                agentId: AGENT_ID,
+                path: testState.sessionStorePath.replace("{agentId}", AGENT_ID),
+              }),
+            ]),
+          );
+
+          const databasePath = testState.sessionStorePath.replace("{agentId}", AGENT_ID);
+          const originalIdentity = await fs.stat(databasePath, { bigint: true });
+
+          const readers = createOwnedWorkerTaskPool<ResourceFixtureInput, ResourceFixtureReply>({
+            workerUrl: new URL(
+              "../infra/worker-task-pool.resources.test-support.ts",
+              import.meta.url,
+            ),
+            maxWorkers: 1,
+          });
+          const prepared = createDeferred();
+          const releaseRead = createDeferred();
+          const input = { database: { agentId: AGENT_ID, path: databasePath } };
+          const pendingRead = readers.run(async () => {
+            prepared.resolve();
+            await releaseRead.promise;
+            return input;
+          }, {});
           try {
-            const readParentStore = () =>
-              JSON.parse(readAuthProfileJsonCellText(parentReader.db, "store", "agent") ?? "null");
-            expect(readParentStore()).toEqual(survivorStore);
-            expect(loadSessionEntryReadOnly(survivorSession)?.sessionId).toBe(survivorSessionId);
-            // Recovery must remove this historical registration without fencing its new owner.
-            registerOpenClawAgentDatabase({ agentId: staleAgentId, path: survivorPath });
-            expect(listOpenClawRegisteredAgentDatabases()).toEqual(
-              expect.arrayContaining([
-                expect.objectContaining({ agentId: AGENT_ID, path: survivorPath }),
-                expect.objectContaining({ agentId: staleAgentId, path: survivorPath }),
-              ]),
-            );
-            beginAgentDeletionJournal({
-              agentId: staleAgentId,
-              operationId: "shared-path-recovery",
-              agentDir: survivorDir,
-              workspaceDir: workspace,
-              sessionsDir: path.join(
-                process.env.OPENCLAW_STATE_DIR!,
-                "agents",
-                staleAgentId,
-                "sessions",
-              ),
-              deleteFiles: true,
-            });
-            expect(parentReader.db.isOpen).toBe(true);
-            expect(readParentStore()).toEqual(survivorStore);
-            const beforeRecovery = await readers.run(survivorInput, {});
-            expect(beforeRecovery.databaseFound).toBe(true);
-            expect(JSON.parse(beforeRecovery.authStore ?? "null")).toEqual(survivorStore);
+            await prepared.promise;
             await expect(
-              client.request("agents.delete", { agentId: staleAgentId, deleteFiles: true }),
-            ).resolves.toMatchObject({ agentId: staleAgentId, ok: true, failed: [] });
-
-            expect(parentReader.db.isOpen).toBe(true);
-            expect(readParentStore()).toEqual(survivorStore);
-            const afterRecovery = await readers.run(survivorInput, {});
-            expect(afterRecovery.threadId).toBe(beforeRecovery.threadId);
-            expect(afterRecovery.databaseFound).toBe(true);
-            expect(JSON.parse(afterRecovery.authStore ?? "null")).toEqual(survivorStore);
+              client.request("agents.delete", { agentId: AGENT_ID, deleteFiles: false }),
+            ).resolves.toMatchObject({ agentId: AGENT_ID, ok: true });
+            expect((await fs.stat(databasePath, { bigint: true })).ino).toBe(originalIdentity.ino);
+            releaseRead.resolve();
+            const first = await pendingRead;
+            expect(first.databaseFound).toBe(false);
             await readers.rotate();
-            const survivorReplacement = await readers.run(survivorInput, {});
-            expect(survivorReplacement.threadId).not.toBe(afterRecovery.threadId);
-            expect(survivorReplacement.databaseFound).toBe(true);
-            expect(JSON.parse(survivorReplacement.authStore ?? "null")).toEqual(survivorStore);
-            expect(loadSessionEntryReadOnly(survivorSession)?.sessionId).toBe(survivorSessionId);
-            expect((await fs.stat(survivorPath, { bigint: true })).ino).toBe(survivorIdentity.ino);
-            expect(inspectOpenClawAgentDatabaseOwner(survivorPath)).toEqual({
+            const replacement = await readers.run(input, {});
+            expect(replacement.databaseFound).toBe(false);
+            expect(replacement.threadId).not.toBe(first.threadId);
+            let refusedRevival = false;
+            const send: unknown = Object.getOwnPropertyDescriptor(
+              Worker.prototype,
+              "postMessage",
+            )?.value;
+            if (typeof send !== "function") {
+              throw new Error("Worker postMessage implementation is unavailable");
+            }
+            const delivery = vi.spyOn(Worker.prototype, "postMessage").mockImplementation(function (
+              this: Worker,
+              ...args: Parameters<Worker["postMessage"]>
+            ) {
+              if (
+                this.threadId === replacement.threadId &&
+                isRecord(args[0]) &&
+                args[0].closeResource === true &&
+                typeof args[0].key === "string" &&
+                decodeAgentDatabaseReaderRequest(args[0].key)?.kind === "revive"
+              ) {
+                refusedRevival = true;
+                throw new Error("worker revival delivery failed");
+              }
+              return send.apply(this, args);
+            });
+            try {
+              await expect(
+                client.request("agents.create", { name: "Recreated Agent", workspace }),
+              ).resolves.toMatchObject({ agentId: AGENT_ID, ok: true });
+              expect(refusedRevival).toBe(true);
+            } finally {
+              delivery.mockRestore();
+            }
+            expect((await readers.run(input, {})).databaseFound).toBe(true);
+
+            const staleAgentId = "shared-path-retired-agent";
+            const survivorDir = resolveAgentDir(loadConfig(), AGENT_ID);
+            const survivorPath = path.join(survivorDir, "openclaw-agent.sqlite");
+            const survivorStore = createAuthProfileStoreFixture({
+              "fixture:survivor": createApiKeyCredential(
+                "fixture",
+                "synthetic-shared-path-survivor-key",
+              ),
+            });
+            saveAuthProfileStore(survivorStore, survivorDir);
+            const survivorSession = {
               agentId: AGENT_ID,
-              status: "owned",
+              storePath: survivorPath,
+              sessionKey: `agent:${AGENT_ID}:shared-path-survivor`,
+              readConsistency: "latest" as const,
+            };
+            const survivorSessionId = "shared-path-survivor-session";
+            replaceSessionEntrySync(survivorSession, {
+              sessionId: survivorSessionId,
+              updatedAt: 1,
             });
-            expect(
-              listOpenClawRegisteredAgentDatabases().filter((entry) => entry.path === survivorPath),
-            ).toEqual([expect.objectContaining({ agentId: AGENT_ID, path: survivorPath })]);
-            expect(readAgentDeletionJournal(staleAgentId)).toMatchObject({
-              cleanupCompleted: true,
-            });
+            // Recovery retains readers, but a live foreign writer must still block deletion.
+            await closeOpenClawAgentDatabaseByPathAsync(survivorPath, AGENT_ID);
+            const survivorIdentity = await fs.stat(survivorPath, { bigint: true });
+            const survivorInput = {
+              database: { agentId: AGENT_ID, path: survivorPath, readAuthStore: true },
+            };
+            const expectSurvivorRead = async () => {
+              const result = await readers.run(survivorInput, {});
+              expect(result.databaseFound).toBe(true);
+              expect(JSON.parse(result.authStore ?? "null")).toEqual(survivorStore);
+              return result;
+            };
+            const parentReader = acquireAuthProfileReadDatabase(
+              survivorPath,
+              openSqliteReadOnlyDatabase,
+            );
+            expect(parentReader.status).toBe("readable");
+            if (parentReader.status !== "readable") {
+              throw new Error("Expected the surviving agent's retained auth reader");
+            }
+            try {
+              const readParentStore = () =>
+                JSON.parse(
+                  readAuthProfileJsonCellText(parentReader.db, "store", "agent") ?? "null",
+                );
+              expect(readParentStore()).toEqual(survivorStore);
+              expect(loadSessionEntryReadOnly(survivorSession)?.sessionId).toBe(survivorSessionId);
+              // Recovery must remove this historical registration without fencing its new owner.
+              registerOpenClawAgentDatabase({ agentId: staleAgentId, path: survivorPath });
+              expect(listOpenClawRegisteredAgentDatabases()).toEqual(
+                expect.arrayContaining([
+                  expect.objectContaining({ agentId: AGENT_ID, path: survivorPath }),
+                  expect.objectContaining({ agentId: staleAgentId, path: survivorPath }),
+                ]),
+              );
+              beginAgentDeletionJournal({
+                agentId: staleAgentId,
+                operationId: "shared-path-recovery",
+                agentDir: survivorDir,
+                workspaceDir: workspace,
+                sessionsDir: path.join(
+                  process.env.OPENCLAW_STATE_DIR!,
+                  "agents",
+                  staleAgentId,
+                  "sessions",
+                ),
+                deleteFiles: true,
+              });
+              expect(parentReader.db.isOpen).toBe(true);
+              expect(readParentStore()).toEqual(survivorStore);
+              const beforeRecovery = await expectSurvivorRead();
+              await expect(
+                client.request("agents.delete", { agentId: staleAgentId, deleteFiles: true }),
+              ).resolves.toMatchObject({ agentId: staleAgentId, ok: true, failed: [] });
+
+              expect(parentReader.db.isOpen).toBe(true);
+              expect(readParentStore()).toEqual(survivorStore);
+              const afterRecovery = await expectSurvivorRead();
+              expect(afterRecovery.threadId).toBe(beforeRecovery.threadId);
+              await readers.rotate();
+              const survivorReplacement = await expectSurvivorRead();
+              expect(survivorReplacement.threadId).not.toBe(afterRecovery.threadId);
+              expect(loadSessionEntryReadOnly(survivorSession)?.sessionId).toBe(survivorSessionId);
+              expect((await fs.stat(survivorPath, { bigint: true })).ino).toBe(
+                survivorIdentity.ino,
+              );
+              expect(inspectOpenClawAgentDatabaseOwner(survivorPath)).toEqual({
+                agentId: AGENT_ID,
+                status: "owned",
+              });
+              expect(
+                listOpenClawRegisteredAgentDatabases().filter(
+                  (entry) => entry.path === survivorPath,
+                ),
+              ).toEqual([expect.objectContaining({ agentId: AGENT_ID, path: survivorPath })]);
+              expect(readAgentDeletionJournal(staleAgentId)).toMatchObject({
+                cleanupCompleted: true,
+              });
+            } finally {
+              closeAuthProfileReadPool({ kind: "database", databasePath: survivorPath });
+            }
           } finally {
-            closeAuthProfileReadPool({ kind: "database", databasePath: survivorPath });
+            releaseRead.resolve();
+            // The body observes read failures; cleanup must preserve an earlier failure.
+            await pendingRead.catch(() => {});
+            await readers.close();
           }
-        } finally {
-          releaseRead.resolve();
-          // The body observes read failures; cleanup must preserve an earlier failure.
-          await pendingRead.catch(() => {});
-          await readers.close();
-        }
 
-        await expect(
-          client.request("agents.delete", { agentId: AGENT_ID, deleteFiles: true }),
-        ).resolves.toMatchObject({ agentId: AGENT_ID, ok: true });
-        await expect(fs.stat(databasePath)).rejects.toMatchObject({ code: "ENOENT" });
-
-        const recreated = await client.request<{ agentId: string; ok: true }>("agents.create", {
-          name: "Recreated Agent",
-          workspace,
-        });
-        expect(recreated).toMatchObject({ agentId: AGENT_ID, ok: true });
-        for (const key of SESSION_KEYS) {
           await expect(
-            client.request("sessions.create", { agentId: AGENT_ID, key }),
-          ).resolves.toMatchObject({ key });
-        }
-        await expectSessionListPages(client);
-        await expect(client.request("health", { probe: true })).resolves.toBeDefined();
+            client.request("agents.delete", { agentId: AGENT_ID, deleteFiles: true }),
+          ).resolves.toMatchObject({ agentId: AGENT_ID, ok: true });
+          await expect(fs.stat(databasePath)).rejects.toMatchObject({ code: "ENOENT" });
 
-        const recreatedIdentity = await fs.stat(databasePath, { bigint: true });
-        expect({
-          birthtimeNs: recreatedIdentity.birthtimeNs,
-          dev: recreatedIdentity.dev,
-          ino: recreatedIdentity.ino,
-        }).not.toEqual({
-          birthtimeNs: originalIdentity.birthtimeNs,
-          dev: originalIdentity.dev,
-          ino: originalIdentity.ino,
+          await createAgentSessions(client, workspace);
+          await expect(client.request("health", { probe: true })).resolves.toBeDefined();
+
+          const recreatedIdentity = await fs.stat(databasePath, { bigint: true });
+          expect({
+            birthtimeNs: recreatedIdentity.birthtimeNs,
+            dev: recreatedIdentity.dev,
+            ino: recreatedIdentity.ino,
+          }).not.toEqual({
+            birthtimeNs: originalIdentity.birthtimeNs,
+            dev: originalIdentity.dev,
+            ino: originalIdentity.ino,
+          });
+          expect(inspectOpenClawAgentDatabaseOwner(databasePath)).toEqual({
+            agentId: AGENT_ID,
+            status: "owned",
+          });
+          expect(listOpenClawRegisteredAgentDatabases({ env: process.env })).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({ agentId: AGENT_ID, path: databasePath }),
+            ]),
+          );
         });
-        expect(inspectOpenClawAgentDatabaseOwner(databasePath)).toEqual({
-          agentId: AGENT_ID,
-          status: "owned",
-        });
-        expect(listOpenClawRegisteredAgentDatabases({ env: process.env })).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({ agentId: AGENT_ID, path: databasePath }),
-          ]),
-        );
       } finally {
-        if (client) {
-          await disconnectGatewayClient(client);
-        }
-        await server.close({ reason: "agent database recreation product proof complete" });
         closeOpenClawAgentDatabasesForTest();
         closeOpenClawStateDatabaseForTest();
       }
@@ -379,20 +376,7 @@ describe("agent deletion product proof with a state dir outside home and the tem
           async () => {
             expect(isPathInside(await fs.realpath(os.homedir()), stateDir)).toBe(false);
             expect(isPathInside(await fs.realpath(os.tmpdir()), stateDir)).toBe(false);
-            const portClaim = await acquireTestPortBlock({ offsets: [0, 1, 2, 3, 4] });
-            const server = await startTestGatewayServer(portClaim, {
-              bind: "loopback",
-              auth: { mode: "token", token },
-              controlUiEnabled: false,
-            });
-            let client: GatewayClient | undefined;
-            try {
-              client = await connectGatewayClient({
-                url: `ws://127.0.0.1:${portClaim.port}`,
-                token,
-                role: "operator",
-                scopes: ["operator.admin", "operator.read", "operator.write"],
-              });
+            await withProductGateway(token, async (client) => {
               const workspace = path.join(stateDir, "workspace-external-state-agent");
               await expect(
                 client.request("agents.create", { name: "External State Agent", workspace }),
@@ -436,26 +420,19 @@ describe("agent deletion product proof with a state dir outside home and the tem
                 },
                 async () => {
                   try {
-                    const opened = await memory.runtime.getMemorySearchManager({
-                      cfg: memoryConfig,
-                      agentId: EXTERNAL_STATE_AGENT_ID,
-                    });
-                    expect(opened.manager, opened.error).not.toBeNull();
-                    await expect(
-                      opened.manager!.probeEmbeddingAvailability(),
-                    ).resolves.toMatchObject({
-                      ok: true,
-                    });
-                    const survivor = await memory.runtime.getMemorySearchManager({
-                      cfg: memoryConfig,
-                      agentId: "main",
-                    });
-                    expect(survivor.manager, survivor.error).not.toBeNull();
-                    await expect(
-                      survivor.manager!.probeEmbeddingAvailability(),
-                    ).resolves.toMatchObject({
-                      ok: true,
-                    });
+                    const openMemory = async (agentId: string) => {
+                      const opened = await memory.runtime.getMemorySearchManager({
+                        cfg: memoryConfig,
+                        agentId,
+                      });
+                      expect(opened.manager, opened.error).not.toBeNull();
+                      await expect(
+                        opened.manager!.probeEmbeddingAvailability(),
+                      ).resolves.toMatchObject({ ok: true });
+                      return opened;
+                    };
+                    await openMemory(EXTERNAL_STATE_AGENT_ID);
+                    const survivor = await openMemory("main");
                     const deleted = await memoryClient.request<AgentsDeleteResult>(
                       "agents.delete",
                       {
@@ -488,12 +465,7 @@ describe("agent deletion product proof with a state dir outside home and the tem
                 expect.arrayContaining([{ path: workspace, method: "trash" }]),
               );
               await expect(fs.stat(workspace)).rejects.toMatchObject({ code: "ENOENT" });
-            } finally {
-              if (client) {
-                await disconnectGatewayClient(client);
-              }
-              await server.close({ reason: "agent delete external state dir test complete" });
-            }
+            });
           },
         );
       } finally {

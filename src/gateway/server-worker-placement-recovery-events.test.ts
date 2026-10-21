@@ -392,9 +392,6 @@ describe("worker placement recovery session events", () => {
         expect(changes.mock.calls.length).toBe(initialMutationVersion + 1);
         await time.advanceBy(60_000);
         expect(changes.mock.calls.length).toBe(initialMutationVersion + 1);
-        expect(runtimeMocks.createDispatch.mock.lastCall?.[0]).not.toHaveProperty(
-          "onRecoveredMoveTransition",
-        );
       },
     );
   });

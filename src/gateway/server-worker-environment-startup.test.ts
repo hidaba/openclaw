@@ -122,9 +122,7 @@ it("cleans transfer scratch before serving and removes it on shutdown", async ()
     const registry = createEmptyPluginRegistry();
     const runtime = await createWorkerStartupRuntime(startup, () => registry);
     const service = runtime.workerEnvironmentService;
-    if (!service) {
-      throw new Error("worker environment service was not created");
-    }
+    assert(service, "worker environment service was not created");
     try {
       await expect(fs.readdir(transferRoot)).resolves.toEqual([]);
     } finally {

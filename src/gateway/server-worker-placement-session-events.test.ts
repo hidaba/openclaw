@@ -60,10 +60,7 @@ function startRuntime(
   warn: RuntimeOptions["warn"],
   placements: RuntimeOptions["placements"] = placementAsyncDefaults() as never,
 ) {
-  runtimeFactoryMocks.createDiskSpace.mockReturnValue({
-    ...createIdleDiskSpace(),
-    version: () => 0,
-  });
+  runtimeFactoryMocks.createDiskSpace.mockReturnValue(createIdleDiskSpace());
   setDispatchMock(runtimeFactoryMocks.createDispatch, { reconcileActive });
   return startSidecar(
     createRuntime({

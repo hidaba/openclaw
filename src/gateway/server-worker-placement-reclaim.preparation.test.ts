@@ -15,6 +15,10 @@ import {
 import { coordinateWorkerPlacementDispatch } from "./worker-environments/placement-dispatch-coordinator.js";
 import { REQUEST } from "./worker-environments/placement-dispatch-test-fixtures.js";
 import { createHarness } from "./worker-environments/placement-dispatch-test-harness.js";
+import {
+  placementSource as source,
+  placementTransition,
+} from "./worker-environments/placement-suite.test-support.js";
 import { prepareSessionWorkerPlacementStop } from "./worker-environments/session-placement-lifecycle.js";
 
 const fixtures = useReclaimFixtures();
@@ -25,18 +29,6 @@ function waitFor(gate: Promise<unknown>, operation: Promise<unknown>) {
       throw result;
     }),
   ]);
-}
-
-function source(placement: {
-  generation: number;
-  environmentId: string;
-  activeOwnerEpoch: number;
-}) {
-  return {
-    generation: placement.generation,
-    environmentId: placement.environmentId,
-    ownerEpoch: placement.activeOwnerEpoch,
-  };
 }
 
 async function cancellationLoadFixture(
@@ -167,12 +159,7 @@ it.each(["same-owner", "replacement", "incarnation", "authorization"] as const)(
         .catch((error: unknown) => error);
       await waitFor(secondLoading.promise, second);
       if (change === "replacement") {
-        await f.placements.startDrain({
-          sessionId: active.sessionId,
-          environmentId: active.environmentId,
-          ownerEpoch: active.activeOwnerEpoch,
-          expectedGeneration: active.generation,
-        });
+        await f.placements.startDrain(placementTransition(active));
       } else if (change === "incarnation") {
         f.entry.lifecycleRevision = "replacement";
         await replaceSessionEntry({ ...REQUEST, storePath: f.storePath }, f.entry);
@@ -509,12 +496,7 @@ it.each([
         if (current?.state !== "active") {
           throw new Error("Replacement fixture requires a completed active dispatch");
         }
-        await f.placements.startDrain({
-          sessionId: current.sessionId,
-          environmentId: current.environmentId,
-          ownerEpoch: current.activeOwnerEpoch,
-          expectedGeneration: current.generation,
-        });
+        await f.placements.startDrain(placementTransition(current));
       } else if (advance === "incarnation") {
         f.entry.lifecycleRevision = "replacement";
         await replaceSessionEntry({ ...REQUEST, storePath: f.storePath }, f.entry);
