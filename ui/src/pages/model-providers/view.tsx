@@ -1,4 +1,4 @@
-import { createMemo, For, Show } from "solid-js";
+import { createMemo, Errored, For, Loading, Show } from "solid-js";
 import type { ModelsProbeResult } from "../../api/types.ts";
 import { ShellLayoutBoundary } from "../../app/shell-layout-traits-solid.tsx";
 import { Icon } from "../../components/solid/icon.tsx";
@@ -18,7 +18,7 @@ import {
 } from "../../components/solid/settings-ui.tsx";
 import { SettingsWorkspace } from "../../components/solid/settings-workspace.tsx";
 import { registerSettingsEnglish } from "../../i18n/locales/en-settings.ts";
-import { formatUiExternalText } from "../../lib/format-error.ts";
+import { formatUiError, formatUiExternalText } from "../../lib/format-error.ts";
 import { formatCompactTokenCount, formatCost, formatTimeMs } from "../../lib/format.ts";
 import { registerEnglishCatalog, t } from "../../lib/reactive/i18n.ts";
 import type { JSX } from "../../types/solid-elements.js";
@@ -26,6 +26,7 @@ import { MODEL_SETTINGS_TARGET_IDS } from "../config/route-data.ts";
 import "../../styles/model-providers.css";
 import "../../styles/usage.css";
 import type { ModelProviderRowMessage } from "./config-mutation.ts";
+import type { ModelProviderCoreReceipt } from "./core-load.ts";
 import type { DefaultModelSelection, ModelProviderCard } from "./data.ts";
 import { DefaultModels, type DefaultModelsViewProps } from "./default-models-view.tsx";
 import { MODEL_PROVIDERS_COST_DAYS } from "./load.ts";
@@ -516,6 +517,60 @@ export function ModelProviders(props: ModelProvidersViewProps) {
   );
 }
 
+function CoreReadFeedback(props: {
+  receipt: ModelProviderCoreReceipt | null;
+  error: string | null;
+}) {
+  const result = createMemo(() => props.receipt?.promise);
+  const feedback = createMemo(() => {
+    result();
+    if (props.error) {
+      throw new Error(props.error);
+    }
+    return undefined;
+  });
+  return <>{feedback()}</>;
+}
+
+function ProviderReadFeedback(props: ModelProvidersViewProps) {
+  // Data rollback can clear an accepted error without starting another core read.
+  const feedback = createMemo(() => ({ receipt: props.coreReceipt, error: props.error }), {
+    equals: (before, after) => before.receipt === after.receipt && before.error === after.error,
+  });
+  return (
+    <Show when={props.scopeError ?? props.error}>
+      <SettingsGroup>
+        <Show
+          when={props.scopeError}
+          fallback={
+            <Show when={feedback()} keyed>
+              {(current) => (
+                <Errored fallback={(error) => renderProviderNoticeRow(formatUiError(error()))}>
+                  <Loading
+                    fallback={current.error ? renderProviderNoticeRow(current.error) : undefined}
+                  >
+                    <CoreReadFeedback {...current} />
+                  </Loading>
+                </Errored>
+              )}
+            </Show>
+          }
+        >
+          {(error) => renderProviderNoticeRow(error())}
+        </Show>
+        <button
+          type="button"
+          class="btn btn--sm"
+          disabled={props.refreshing}
+          onClick={() => props.onRefresh()}
+        >
+          {t("common.retry")}
+        </button>
+      </SettingsGroup>
+    </Show>
+  );
+}
+
 function ProviderAccess(props: ModelProvidersViewProps) {
   const query = () => (props.providerQuery ?? "").trim().toLocaleLowerCase();
   const matchingCards = createMemo(() =>
@@ -537,19 +592,7 @@ function ProviderAccess(props: ModelProvidersViewProps) {
         />
       </label>
       <div class="model-providers__provider-list">
-        {props.error ? (
-          <SettingsGroup>
-            {renderProviderNoticeRow(props.error)}
-            <button
-              type="button"
-              class="btn btn--sm"
-              disabled={props.refreshing}
-              onClick={() => props.onRefresh()}
-            >
-              {t("common.retry")}
-            </button>
-          </SettingsGroup>
-        ) : undefined}
+        <ProviderReadFeedback {...props} />
         {props.providerUsageFailed ? (
           <SettingsGroup>
             {renderProviderNoticeRow(t("usage.providerUsage.unavailable"))}

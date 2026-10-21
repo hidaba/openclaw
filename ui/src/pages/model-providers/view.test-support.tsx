@@ -31,6 +31,8 @@ export function props(overrides: Partial<ModelProvidersViewProps> = {}): ModelPr
     connected: true,
     loading: false,
     refreshing: false,
+    coreReceipt: null,
+    scopeError: null,
     error: null,
     providerUsageFailed: false,
     supplementalLoading: false,
