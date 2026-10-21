@@ -468,15 +468,12 @@ it("session reset ignores already terminal subagents without failing on unavaila
       requesterDisplayKey: "global",
     },
   );
-  await mutateSubagentRuns((runs) => {
-    const existing = runs.get("historical");
-    if (existing) {
-      existing.execution = {
-        ...existing.execution,
-        status: "terminal",
-        endedAt: Date.now() - 60000,
-      };
-    }
+  await updateRun("historical", (entry) => {
+    entry.execution = {
+      ...entry.execution,
+      status: "terminal",
+      endedAt: Date.now() - 60_000,
+    };
   });
   const result = await killSessionSubagentRuns({ cfg, sessionKey: "global", agentId: "main" });
   expect(result).toMatchObject({ status: "ok", killed: 0 });
