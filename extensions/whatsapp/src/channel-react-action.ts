@@ -98,11 +98,6 @@ function decodeUploadFileMediaPayload(params: {
     throw new Error("WhatsApp upload-file buffer must be valid base64 or a base64 data URL.");
   }
   const buffer = Buffer.from(canonicalPayload, "base64");
-  if (params.maxBytes !== undefined && buffer.byteLength > params.maxBytes) {
-    throw new Error(
-      `WhatsApp upload-file buffer exceeds configured media limit (${buffer.byteLength} bytes > ${params.maxBytes} bytes).`,
-    );
-  }
   return {
     buffer,
     ...(contentType ? { contentType } : {}),
