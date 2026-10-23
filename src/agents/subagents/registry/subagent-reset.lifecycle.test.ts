@@ -26,6 +26,7 @@ import { createDeferredCore } from "../../../shared/deferred.js";
 import * as stateWorker from "../../../state/openclaw-state-worker-store.js";
 import { isSubagentRegistryWriteCommand } from "../../subagent-test-fixtures.test-helpers.js";
 import { killAllControlledSubagentRuns, killSessionSubagentRuns } from "./subagent-control-kill.js";
+import { prepareSessionSubagentKillSelection } from "./subagent-control-scope.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
 import { mutateSubagentRuns } from "./subagent-registry-persistence.js";
 import { markSubagentRunPausedAfterYield } from "./subagent-registry-run-pause.js";
@@ -448,19 +449,19 @@ it.each(["sessionId", "lifecycleRevision"] as const)(
   },
 );
 
-it("session reset ignores already terminal subagents without failing on unavailable delivery", async () => {
+it("lifecycle reset prunes inert terminal runs from kill selection while preserving runs with pending wakes", async () => {
   const cfg = getRuntimeConfig();
   await writeSubagentSessionEntry({
     stateDir: fixture.stateDir,
     agentId: "main",
-    sessionKey: "agent:main:subagent:historical",
-    defaultSessionId: "historical",
+    sessionKey: "agent:main:subagent:inert-run",
+    defaultSessionId: "inert-run",
   });
   await registerChild(
-    "historical",
-    { sessionId: "historical" },
+    "inert-run",
+    { sessionId: "inert-run" },
     {
-      childSessionKey: "agent:main:subagent:historical",
+      childSessionKey: "agent:main:subagent:inert-run",
       childAgentId: "main",
       requesterSessionKey: "global",
       controllerSessionKey: "global",
@@ -468,13 +469,21 @@ it("session reset ignores already terminal subagents without failing on unavaila
       requesterDisplayKey: "global",
     },
   );
-  await updateRun("historical", (entry) => {
+  await updateRun("inert-run", (entry) => {
     entry.execution = {
       ...entry.execution,
       status: "terminal",
       endedAt: Date.now() - 60_000,
     };
   });
+
+  const selection = await prepareSessionSubagentKillSelection({
+    cfg,
+    sessionKey: "global",
+    agentId: "main",
+  });
+  expect([...selection.runs].map((r) => r.runId)).not.toContain("inert-run");
+
   const result = await killSessionSubagentRuns({ cfg, sessionKey: "global", agentId: "main" });
   expect(result).toMatchObject({ status: "ok", killed: 0 });
 });

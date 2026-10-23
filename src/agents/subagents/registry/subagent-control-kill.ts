@@ -345,9 +345,7 @@ async function killSubagentRunTree(
             return;
           }
           if (stopped.result.error) {
-            if (!stopped.result.error.includes("Session delivery generation is unavailable")) {
-              tree.errors.add(stopped.result.error);
-            }
+            tree.errors.add(stopped.result.error);
           }
           if (
             stopped.result.error ||
@@ -419,9 +417,7 @@ async function killSubagentRoot(params: Parameters<typeof killLatestSubagentRun>
     // Explicit root cancellation also reconciles terminal execution state.
     stopped = await killLatestSubagentRun(params);
     if (stopped.result.error) {
-      if (!stopped.result.error.includes("Session delivery generation is unavailable")) {
-        params.tree.errors.add(stopped.result.error);
-      }
+      params.tree.errors.add(stopped.result.error);
     }
     for (let pending = params.tree.prepareRead(); pending; pending = params.tree.prepareRead()) {
       await pending;
