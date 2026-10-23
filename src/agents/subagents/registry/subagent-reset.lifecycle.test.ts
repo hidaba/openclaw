@@ -487,4 +487,3 @@ it("lifecycle reset prunes inert terminal runs from kill selection while preserv
   const result = await killSessionSubagentRuns({ cfg, sessionKey: "global", agentId: "main" });
   expect(result).toMatchObject({ status: "ok", killed: 0 });
 });
-
