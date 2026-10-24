@@ -517,17 +517,18 @@ it("lifecycle reset retains terminal runs that have active command owners", asyn
   });
 
   const commandControl = await import("../../bash-process-control.js");
+  const actualCapture = commandControl.captureExecRequestCancellation;
   const spy = vi
     .spyOn(commandControl, "captureExecRequestCancellation")
-    .mockImplementation((target) => {
+    .mockImplementation((target, accept) => {
+      const base = actualCapture(target, accept);
       if (target.runId === "terminal-command-run") {
         return {
+          ...base,
           owners: [{ signal: { aborted: false }, identity: target } as never],
-          cancel: () => true,
-          settle: async () => {},
         };
       }
-      return { owners: [], cancel: () => false, settle: async () => {} };
+      return base;
     });
 
   try {
