@@ -613,6 +613,7 @@ it("lifecycle reset waits for terminal child's retained controller-source dispos
   const { markReplyOperationExecutionStarted } =
     await import("../../../sessions/session-controller.state.js");
   const { awaitGateBeforeSettlement } = await import("../../../../test/helpers/promise.js");
+  const subagentKillSettlement = await import("./subagent-control-kill-settlement.js");
   const { expectDefined } = await import("@openclaw/normalization-core/expect");
   type RpcSourceRef = import("../../../sessions/session-controller.rpc-sources.js").RpcSourceRef;
 
@@ -696,6 +697,17 @@ it("lifecycle reset waits for terminal child's retained controller-source dispos
   });
   expect([...selectionBefore.runs].map((r) => r.runId)).toContain(runId);
 
+  const settlementReached = createDeferredCore();
+  const originalSettle = subagentKillSettlement.settleSubagentKillSources;
+  const settleSpy = vi
+    .spyOn(subagentKillSettlement, "settleSubagentKillSources")
+    .mockImplementation((params) => {
+      if (params.execution === registration.entry) {
+        settlementReached.resolve();
+      }
+      return originalSettle(params);
+    });
+
   let resetCompleted = false;
   const resetPromise = killSessionSubagentRuns({
     cfg,
@@ -706,12 +718,18 @@ it("lifecycle reset waits for terminal child's retained controller-source dispos
     return res;
   });
 
-  await new Promise<void>((resolve) => {
-    setTimeout(resolve, 50);
-  });
-  expect(resetCompleted).toBe(false);
+  try {
+    await awaitGateBeforeSettlement(
+      settlementReached.promise,
+      resetPromise,
+      "Reset returned before its retained controller-source disposal settled",
+    );
+    expect(resetCompleted).toBe(false);
+  } finally {
+    releaseTail.resolve();
+    settleSpy.mockRestore();
+  }
 
-  releaseTail.resolve();
   const result = await resetPromise;
   expect(result).toMatchObject({ status: "ok" });
   await execution;
