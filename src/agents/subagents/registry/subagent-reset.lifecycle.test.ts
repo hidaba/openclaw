@@ -554,7 +554,7 @@ it("lifecycle reset retains terminal runs that have active command owners and ab
   );
 
   expect(command).toBeDefined();
-  expect(command.status).toBe("running");
+  expect(command.exited).toBe(false);
 
   const selection = await prepareSessionSubagentKillSelection({
     cfg,
@@ -566,7 +566,8 @@ it("lifecycle reset retains terminal runs that have active command owners and ab
   const result = await killSessionSubagentRuns({ cfg, sessionKey: "global", agentId: "main" });
   expect(result).toMatchObject({ status: "ok" });
   await waitForExecSession(command);
-  expect(command.status).toBe("killed");
+  expect(command.exited).toBe(true);
+  expect(command.cancellationRequested).toBe(true);
 });
 
 it("lifecycle reset waits for terminal child's retained controller-source disposal after embedded execution has detached", async () => {
@@ -589,16 +590,24 @@ it("lifecycle reset waits for terminal child's retained controller-source dispos
     },
   );
 
-  const { bindGatewayContextResolver, retireSubagentGatewayBinding } =
-    await import("./subagent-registry-execution-cleanup.js");
-  const { registerChatAbortController } =
-    await import("../../../gateway/server-methods/chat-abort.js");
-  const { captureSessionTarget, startSourceExecution } =
+  const { retireSubagentGatewayBinding } = await import("./subagent-registry-execution-cleanup.js");
+  const { registerChatAbortController } = await import("../../../gateway/chat-abort.js");
+  const { captureSessionTarget } =
     await import("../../../sessions/session-controller.lifecycle.js");
-  const { withPluginRuntimeGatewayContextResolver } =
+  const { bindGatewayContextResolver, withPluginRuntimeGatewayContextResolver } =
     await import("../../../plugins/runtime/gateway-request-scope.js");
   const { createDirectChatContext } =
     await import("../../../gateway/server-chat.agent-events.test-helpers.js");
+  const { withSessionTurn } = await import("../../../sessions/session-controller.admission.js");
+  const { withSessionControllerSource } =
+    await import("../../../sessions/session-controller.context.js");
+  const { trackSessionControllerSourceWork } =
+    await import("../../../sessions/session-controller.mailbox.js");
+  const { markReplyOperationExecutionStarted } =
+    await import("../../../sessions/session-controller.state.js");
+  const { awaitGateBeforeSettlement } = await import("../../../../test/helpers/promise.js");
+  const { expectDefined } = await import("@openclaw/normalization-core/expect");
+  type RpcSourceRef = import("../../../sessions/session-controller.rpc-sources.js").RpcSourceRef;
 
   const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
   const entry = subagentRuns.get(runId)!;
@@ -621,6 +630,46 @@ it("lifecycle reset waits for terminal child's retained controller-source dispos
         timeoutMs: 60_000,
       }),
   );
+
+  async function startSourceExecution(
+    source: RpcSourceRef,
+    run: () => Promise<void>,
+    cleanup: () => void,
+  ) {
+    const started = createDeferredCore();
+    const target = source.input.target!;
+    const execute = async () => {
+      started.resolve();
+      try {
+        await run();
+      } finally {
+        cleanup();
+      }
+    };
+    const completion = withSessionControllerSource(source.input, async () => {
+      await withSessionTurn(
+        {
+          sessionKey: target.sessionKey,
+          sessionId: target.incarnation,
+          agentId: target.agentId,
+          target,
+          controllerInput: source.input,
+        },
+        async (operation) => {
+          markReplyOperationExecutionStarted(expectDefined(operation, "claimed source operation"));
+          await execute();
+        },
+      );
+    });
+    void completion.catch(() => {});
+    trackSessionControllerSourceWork(source.input, completion);
+    await awaitGateBeforeSettlement(
+      started.promise,
+      completion,
+      "Source did not enter its real controller turn",
+    );
+    return { completion };
+  }
 
   const releaseTail = createDeferredCore();
   const { completion: execution } = await startSourceExecution(
