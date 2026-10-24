@@ -578,18 +578,15 @@ it("lifecycle reset waits for terminal child's retained controller-source dispos
   const runId = "terminal-disposing-run";
 
   const storePath = await writeSession(sessionKey, sessionId);
-  await registerChild(
-    runId,
-    { sessionId },
-    {
-      childSessionKey: sessionKey,
-      childAgentId: "main",
-      requesterSessionKey: "global",
-      controllerSessionKey: "global",
-      requesterAgentId: "main",
-      requesterDisplayKey: "global",
-    },
-  );
+  const { read } = sessions(storePath);
+  await registerChild(runId, read(sessionKey), {
+    childSessionKey: sessionKey,
+    childAgentId: "main",
+    requesterSessionKey: "global",
+    controllerSessionKey: "global",
+    requesterAgentId: "main",
+    requesterDisplayKey: "global",
+  });
 
   await updateRun(runId, (r) => {
     delete r.requesterSettleWake;
@@ -620,25 +617,24 @@ it("lifecycle reset waits for terminal child's retained controller-source dispos
   type RpcSourceRef = import("../../../sessions/session-controller.rpc-sources.js").RpcSourceRef;
 
   const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
+  const resolveGatewayContext = () => context;
   const entry = subagentRuns.get(runId)!;
-  bindGatewayContextResolver(entry, () => context);
+  bindGatewayContextResolver(entry, resolveGatewayContext);
 
-  const registration = withPluginRuntimeGatewayContextResolver(
-    () => context,
-    () =>
-      registerChatAbortController({
-        target: captureSessionTarget({
-          storeScope: storePath,
-          sessionKey,
-          agentId: "main",
-          incarnation: sessionId,
-        }),
-        runId,
+  const registration = withPluginRuntimeGatewayContextResolver(resolveGatewayContext, () =>
+    registerChatAbortController({
+      target: captureSessionTarget({
+        storeScope: storePath,
         sessionKey,
-        sessionId,
-        kind: "agent",
-        timeoutMs: 60_000,
+        agentId: "main",
+        incarnation: sessionId,
       }),
+      runId,
+      sessionKey,
+      sessionId,
+      kind: "agent",
+      timeoutMs: 60_000,
+    }),
   );
 
   async function startSourceExecution(
