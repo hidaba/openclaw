@@ -488,7 +488,7 @@ it("lifecycle reset prunes inert terminal runs from kill selection while preserv
   expect(result).toMatchObject({ status: "ok", killed: 0 });
 });
 
-it("lifecycle reset retains terminal runs that have active command owners", async () => {
+it("lifecycle reset retains terminal runs that have active command owners and aborts them", async () => {
   const cfg = getRuntimeConfig();
   await writeSubagentSessionEntry({
     stateDir: fixture.stateDir,
@@ -516,31 +516,163 @@ it("lifecycle reset retains terminal runs that have active command owners", asyn
     };
   });
 
-  const commandControl = await import("../../bash-process-control.js");
-  const actualCapture = commandControl.captureExecRequestCancellation;
-  const spy = vi
-    .spyOn(commandControl, "captureExecRequestCancellation")
-    .mockImplementation((target, accept) => {
-      const base = actualCapture(target, accept);
-      if (target.runId === "terminal-command-run") {
-        return {
-          ...base,
-          owners: [{ signal: { aborted: false }, identity: target } as never],
-        };
-      }
-      return base;
-    });
+  const { createLazyExecTool } = await import("../../lazy-exec-tool.js");
+  const { getSession, waitForExecSession } = await import("../../bash-process-registry.js");
+  const { withEnvAsync } = await import("../../../test-utils/env.js");
+  const { withExecRequestTurn } = await import("../../../infra/exec-request-context.js");
 
-  try {
-    const selection = await prepareSessionSubagentKillSelection({
-      cfg,
-      sessionKey: "global",
-      agentId: "main",
-    });
-    expect([...selection.runs].map((r) => r.runId)).toContain("terminal-command-run");
-  } finally {
-    spy.mockRestore();
-  }
+  const identity = {
+    runId: "terminal-command-run",
+    sessionKey: "agent:main:subagent:terminal-command-run",
+    sessionId: "terminal-command-run",
+    agentId: "main",
+  };
+
+  const command = await withEnvAsync({ OPENCLAW_EXEC_SHELL_SNAPSHOT: "0" }, () =>
+    withExecRequestTurn({ identity }, async () => {
+      const exec = createLazyExecTool({
+        ...identity,
+        config: cfg,
+        cwd: fixture.stateDir,
+        scopeKey: identity.sessionKey,
+        host: "gateway",
+        mode: "full",
+        ask: "off",
+        allowBackground: true,
+        notifyOnExit: false,
+        preparedStoreEnvironment: {},
+      });
+      const result = await exec.execute("child-command", {
+        command: `node -e "require('fs').watch('.', () => {})"`,
+        background: true,
+        timeoutSeconds: 60,
+      });
+      const details = result.details as { sessionId: string; status: string };
+      expect(details?.status).toBe("running");
+      return getSession(details.sessionId)!;
+    }),
+  );
+
+  expect(command).toBeDefined();
+  expect(command.status).toBe("running");
+
+  const selection = await prepareSessionSubagentKillSelection({
+    cfg,
+    sessionKey: "global",
+    agentId: "main",
+  });
+  expect([...selection.runs].map((r) => r.runId)).toContain("terminal-command-run");
+
+  const result = await killSessionSubagentRuns({ cfg, sessionKey: "global", agentId: "main" });
+  expect(result).toMatchObject({ status: "ok" });
+  await waitForExecSession(command);
+  expect(command.status).toBe("killed");
+});
+
+it("lifecycle reset waits for terminal child's retained controller-source disposal after embedded execution has detached", async () => {
+  const cfg = getRuntimeConfig();
+  const sessionKey = "agent:main:subagent:terminal-disposing-run";
+  const sessionId = "terminal-disposing-session";
+  const runId = "terminal-disposing-run";
+
+  const storePath = await writeSession(sessionKey, sessionId);
+  await registerChild(
+    runId,
+    { sessionId },
+    {
+      childSessionKey: sessionKey,
+      childAgentId: "main",
+      requesterSessionKey: "global",
+      controllerSessionKey: "global",
+      requesterAgentId: "main",
+      requesterDisplayKey: "global",
+    },
+  );
+
+  const { bindGatewayContextResolver, retireSubagentGatewayBinding } =
+    await import("./subagent-registry-execution-cleanup.js");
+  const { registerChatAbortController } =
+    await import("../../../gateway/server-methods/chat-abort.js");
+  const { captureSessionTarget, startSourceExecution } =
+    await import("../../../sessions/session-controller.lifecycle.js");
+  const { withPluginRuntimeGatewayContextResolver } =
+    await import("../../../plugins/runtime/gateway-request-scope.js");
+  const { createDirectChatContext } =
+    await import("../../../gateway/server-chat.agent-events.test-helpers.js");
+
+  const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
+  const entry = subagentRuns.get(runId)!;
+  bindGatewayContextResolver(entry, () => context);
+
+  const registration = withPluginRuntimeGatewayContextResolver(
+    () => context,
+    () =>
+      registerChatAbortController({
+        target: captureSessionTarget({
+          storeScope: storePath,
+          sessionKey,
+          agentId: "main",
+          incarnation: sessionId,
+        }),
+        runId,
+        sessionKey,
+        sessionId,
+        kind: "agent",
+        timeoutMs: 60_000,
+      }),
+  );
+
+  const releaseTail = createDeferredCore();
+  const { completion: execution } = await startSourceExecution(
+    registration.entry!,
+    async () => {
+      await releaseTail.promise;
+      registration.cleanup();
+    },
+    registration.cleanup,
+  );
+
+  await updateRun(runId, (r) => {
+    delete r.requesterSettleWake;
+    r.execution = {
+      ...r.execution,
+      status: "terminal",
+      endedAt: Date.now() - 60_000,
+    };
+  });
+  retireSubagentGatewayBinding(entry);
+
+  const selectionBefore = await prepareSessionSubagentKillSelection({
+    cfg,
+    sessionKey: "global",
+    agentId: "main",
+  });
+  expect([...selectionBefore.runs].map((r) => r.runId)).toContain(runId);
+
+  let resetCompleted = false;
+  const resetPromise = killSessionSubagentRuns({
+    cfg,
+    sessionKey: "global",
+    agentId: "main",
+  }).then((res) => {
+    resetCompleted = true;
+    return res;
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(resetCompleted).toBe(false);
+
+  releaseTail.resolve();
+  const result = await resetPromise;
+  expect(result).toMatchObject({ status: "ok" });
+  await execution;
+
+  const selectionAfter = await prepareSessionSubagentKillSelection({
+    cfg,
+    sessionKey: "global",
+    agentId: "main",
+  });
+  expect([...selectionAfter.runs].map((r) => r.runId)).not.toContain(runId);
 });
 
 it("lifecycle reset retains terminal roots that have live descendants", async () => {

@@ -33,7 +33,10 @@ import {
 } from "./subagent-exec-request-ownership.js";
 import { observeSubagentExecution } from "./subagent-execution-observation.js";
 import { captureSubagentListReadContext, type SubagentListReadContext } from "./subagent-list.js";
-import { captureSubagentEmbeddedExecution } from "./subagent-registry-execution-cleanup.js";
+import {
+  captureSubagentEmbeddedExecution,
+  hasRetainedControllerExecution,
+} from "./subagent-registry-execution-cleanup.js";
 import {
   getCurrentSubagentRunOwner,
   getSubagentRunsForRequesterSession,
@@ -83,6 +86,7 @@ function hasLiveSubagentDescendants(
         candidate.pauseReason === "sessions_yield" ||
         candidate.requesterSettleWake ||
         captureSubagentEmbeddedExecution(candidate) !== undefined ||
+        hasRetainedControllerExecution(candidate) ||
         captureExecRequestCancellation({
           runId: candidate.runId,
           sessionKey: candidate.childSessionKey,
@@ -107,7 +111,10 @@ export function hasRetainedSubagentWork(entry: SubagentRunRecord): boolean {
   ) {
     return true;
   }
-  if (captureSubagentEmbeddedExecution(entry) !== undefined) {
+  if (
+    captureSubagentEmbeddedExecution(entry) !== undefined ||
+    hasRetainedControllerExecution(entry)
+  ) {
     return true;
   }
   const commands = captureExecRequestCancellation({
