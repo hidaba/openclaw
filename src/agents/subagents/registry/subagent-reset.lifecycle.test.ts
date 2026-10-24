@@ -706,7 +706,9 @@ it("lifecycle reset waits for terminal child's retained controller-source dispos
     return res;
   });
 
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, 50);
+  });
   expect(resetCompleted).toBe(false);
 
   releaseTail.resolve();
