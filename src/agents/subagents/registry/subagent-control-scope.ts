@@ -14,6 +14,7 @@ import {
   parseAgentSessionKey,
 } from "../../../routing/session-key.js";
 import { resolveSessionAgentId } from "../../agent-scope.js";
+import { captureExecRequestCancellation } from "../../bash-process-control.js";
 import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
 import {
   resolveInternalSessionKey,
@@ -32,6 +33,7 @@ import {
 } from "./subagent-exec-request-ownership.js";
 import { observeSubagentExecution } from "./subagent-execution-observation.js";
 import { captureSubagentListReadContext, type SubagentListReadContext } from "./subagent-list.js";
+import { captureSubagentEmbeddedExecution } from "./subagent-registry-execution-cleanup.js";
 import {
   getCurrentSubagentRunOwner,
   getSubagentRunsForRequesterSession,
@@ -62,6 +64,63 @@ import {
 
 export const DEFAULT_RECENT_MINUTES = 30;
 export const MAX_RECENT_MINUTES = 24 * 60;
+
+function hasLiveSubagentDescendants(
+  parentSessionKey: string,
+  visited = new Set<string>(),
+): boolean {
+  if (!parentSessionKey || visited.has(parentSessionKey)) {
+    return false;
+  }
+  visited.add(parentSessionKey);
+  for (const candidate of subagentRuns.values()) {
+    if (
+      (candidate.controllerSessionKey?.trim() || candidate.requesterSessionKey) === parentSessionKey
+    ) {
+      if (
+        candidate.execution.status !== "terminal" ||
+        !candidate.execution.endedAt ||
+        candidate.pauseReason === "sessions_yield" ||
+        candidate.requesterSettleWake ||
+        captureSubagentEmbeddedExecution(candidate) !== undefined ||
+        captureExecRequestCancellation({
+          runId: candidate.runId,
+          sessionKey: candidate.childSessionKey,
+          sessionId: candidate.childSessionIdentity?.sessionId,
+          agentId: candidate.childAgentId,
+        }).owners.length > 0 ||
+        hasLiveSubagentDescendants(candidate.childSessionKey, visited)
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+export function hasRetainedSubagentWork(entry: SubagentRunRecord): boolean {
+  if (
+    entry.execution.status !== "terminal" ||
+    !entry.execution.endedAt ||
+    entry.pauseReason === "sessions_yield" ||
+    entry.requesterSettleWake
+  ) {
+    return true;
+  }
+  if (captureSubagentEmbeddedExecution(entry) !== undefined) {
+    return true;
+  }
+  const commands = captureExecRequestCancellation({
+    runId: entry.runId,
+    sessionKey: entry.childSessionKey,
+    sessionId: entry.childSessionIdentity?.sessionId,
+    agentId: entry.childAgentId,
+  });
+  if (commands.owners.length > 0) {
+    return true;
+  }
+  return hasLiveSubagentDescendants(entry.childSessionKey);
+}
 
 /** Lifecycle cleanup owns both the requester and its separately scoped controller. */
 export async function prepareSessionSubagentKillSelection(params: {
@@ -118,9 +177,10 @@ export async function prepareSessionSubagentKillSelection(params: {
       runs.delete(entry.runId);
       continue;
     }
-    // Completed historical runs without pending requester wakes are inert.
-    // Pruning them avoids re-cancellation and dormant delivery queue errors during reset.
-    if (!entry.requesterSettleWake) {
+    // Historical completed runs that retain neither active commands nor live descendants
+    // are inert. Pruning them avoids re-cancellation and dormant delivery queue errors during reset,
+    // while preserving completed-child command and descendant cleanup for live work (#166832).
+    if (!hasRetainedSubagentWork(entry)) {
       runs.delete(entry.runId);
     }
   }

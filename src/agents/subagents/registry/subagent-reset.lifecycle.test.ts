@@ -487,3 +487,117 @@ it("lifecycle reset prunes inert terminal runs from kill selection while preserv
   const result = await killSessionSubagentRuns({ cfg, sessionKey: "global", agentId: "main" });
   expect(result).toMatchObject({ status: "ok", killed: 0 });
 });
+
+it("lifecycle reset retains terminal runs that have active command owners", async () => {
+  const cfg = getRuntimeConfig();
+  await writeSubagentSessionEntry({
+    stateDir: fixture.stateDir,
+    agentId: "main",
+    sessionKey: "agent:main:subagent:terminal-command-run",
+    defaultSessionId: "terminal-command-run",
+  });
+  await registerChild(
+    "terminal-command-run",
+    { sessionId: "terminal-command-run" },
+    {
+      childSessionKey: "agent:main:subagent:terminal-command-run",
+      childAgentId: "main",
+      requesterSessionKey: "global",
+      controllerSessionKey: "global",
+      requesterAgentId: "main",
+      requesterDisplayKey: "global",
+    },
+  );
+  await updateRun("terminal-command-run", (entry) => {
+    entry.execution = {
+      ...entry.execution,
+      status: "terminal",
+      endedAt: Date.now() - 60_000,
+    };
+  });
+
+  const commandControl = await import("../../bash-process-control.js");
+  const spy = vi
+    .spyOn(commandControl, "captureExecRequestCancellation")
+    .mockImplementation((target) => {
+      if (target.runId === "terminal-command-run") {
+        return {
+          owners: [{ signal: { aborted: false }, identity: target } as never],
+          cancel: () => true,
+          settle: async () => {},
+        };
+      }
+      return { owners: [], cancel: () => false, settle: async () => {} };
+    });
+
+  try {
+    const selection = await prepareSessionSubagentKillSelection({
+      cfg,
+      sessionKey: "global",
+      agentId: "main",
+    });
+    expect([...selection.runs].map((r) => r.runId)).toContain("terminal-command-run");
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+it("lifecycle reset retains terminal roots that have live descendants", async () => {
+  const cfg = getRuntimeConfig();
+  await writeSubagentSessionEntry({
+    stateDir: fixture.stateDir,
+    agentId: "main",
+    sessionKey: "agent:main:subagent:terminal-parent",
+    defaultSessionId: "terminal-parent",
+  });
+  await registerChild(
+    "terminal-parent",
+    { sessionId: "terminal-parent" },
+    {
+      childSessionKey: "agent:main:subagent:terminal-parent",
+      childAgentId: "main",
+      requesterSessionKey: "global",
+      controllerSessionKey: "global",
+      requesterAgentId: "main",
+      requesterDisplayKey: "global",
+    },
+  );
+  await updateRun("terminal-parent", (entry) => {
+    entry.execution = {
+      ...entry.execution,
+      status: "terminal",
+      endedAt: Date.now() - 60_000,
+    };
+  });
+
+  await writeSubagentSessionEntry({
+    stateDir: fixture.stateDir,
+    agentId: "main",
+    sessionKey: "agent:main:subagent:live-nested-child",
+    defaultSessionId: "live-nested-child",
+  });
+  await registerChild(
+    "live-nested-child",
+    { sessionId: "live-nested-child" },
+    {
+      childSessionKey: "agent:main:subagent:live-nested-child",
+      childAgentId: "main",
+      requesterSessionKey: "agent:main:subagent:terminal-parent",
+      controllerSessionKey: "agent:main:subagent:terminal-parent",
+      requesterAgentId: "main",
+      requesterDisplayKey: "terminal-parent",
+    },
+  );
+  await pauseRun("live-nested-child");
+
+  const selection = await prepareSessionSubagentKillSelection({
+    cfg,
+    sessionKey: "global",
+    agentId: "main",
+  });
+  expect([...selection.runs].map((r) => r.runId)).toContain("terminal-parent");
+
+  const result = await killSessionSubagentRuns({ cfg, sessionKey: "global", agentId: "main" });
+  expect(result).toMatchObject({ status: "ok" });
+  expect(displayStatus("live-nested-child")).toBe("killed");
+});
