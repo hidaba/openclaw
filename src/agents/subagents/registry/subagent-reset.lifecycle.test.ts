@@ -509,6 +509,7 @@ it("lifecycle reset retains terminal runs that have active command owners and ab
     },
   );
   await updateRun("terminal-command-run", (entry) => {
+    delete entry.requesterSettleWake;
     entry.execution = {
       ...entry.execution,
       status: "terminal",
@@ -544,7 +545,7 @@ it("lifecycle reset retains terminal runs that have active command owners and ab
       });
       const result = await exec.execute("child-command", {
         command: `node -e "require('fs').watch('.', () => {})"`,
-        background: true,
+        yieldMs: 10,
         timeoutSeconds: 60,
       });
       const details = result.details as { sessionId: string; status: string };
@@ -589,6 +590,15 @@ it("lifecycle reset waits for terminal child's retained controller-source dispos
       requesterDisplayKey: "global",
     },
   );
+
+  await updateRun(runId, (r) => {
+    delete r.requesterSettleWake;
+    r.execution = {
+      ...r.execution,
+      status: "terminal",
+      endedAt: Date.now() - 60_000,
+    };
+  });
 
   const { retireSubagentGatewayBinding } = await import("./subagent-registry-execution-cleanup.js");
   const { registerChatAbortController } = await import("../../../gateway/chat-abort.js");
@@ -681,14 +691,6 @@ it("lifecycle reset waits for terminal child's retained controller-source dispos
     registration.cleanup,
   );
 
-  await updateRun(runId, (r) => {
-    delete r.requesterSettleWake;
-    r.execution = {
-      ...r.execution,
-      status: "terminal",
-      endedAt: Date.now() - 60_000,
-    };
-  });
   retireSubagentGatewayBinding(entry);
 
   const selectionBefore = await prepareSessionSubagentKillSelection({
