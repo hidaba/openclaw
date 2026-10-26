@@ -6,19 +6,12 @@ import {
   createApiKeyCredential,
   createOAuthRefreshCredential,
 } from "../auth-profiles/credential-fixtures.test-support.js";
-import { providerConfig } from "../model-auth.fixtures.test-support.js";
+import { createPlatformAuthRoute, providerConfig } from "../model-auth.fixtures.test-support.js";
 import type { prepareAgentRuntimeAuth } from "./prepare-auth.js";
 import type { AgentRuntimeAuthPlan } from "./types.js";
 
 export const authProvider = { providerForAuth: "openai", authProfileProviderForAuth: "openai" };
-export const platformRoute = {
-  provider: "openai",
-  modelId: "gpt-5.5",
-  api: "openai-responses",
-  baseUrl: "https://api.openai.com/v1",
-  authRequirement: "api-key",
-  requestTransportOverrides: "none",
-} as const;
+export const platformRoute = createPlatformAuthRoute();
 export const subscriptionRoute = {
   ...platformRoute,
   api: "openai-chatgpt-responses",
@@ -60,6 +53,31 @@ export const apiKey = (key = "platform-key") => createApiKeyCredential("openai",
 export const oauth = createOAuthRefreshCredential;
 export const openAIConfig = providerConfig.bind(null, "openai");
 export const apiRoute = { api: "openai-responses", authRequirement: "api-key" } as const;
+
+export function profilePlan(
+  profileId: string,
+  overrides: Partial<AgentRuntimeAuthPlan> = {},
+): AgentRuntimeAuthPlan {
+  return {
+    ...authProvider,
+    forwardedAuthProfileId: profileId,
+    forwardedAuthProfileSource: "auto",
+    forwardedAuthProfileCandidateIds: [profileId],
+    ...overrides,
+  };
+}
+
+export function subscriptionPlan(
+  overrides: Partial<AgentRuntimeAuthPlan> = {},
+): AgentRuntimeAuthPlan {
+  return {
+    ...authProvider,
+    forwardedAuthProfileId: "openai:subscription",
+    selectedAuthMode: "token",
+    modelRoute: { ...subscriptionRoute },
+    ...overrides,
+  };
+}
 
 export function authStore(
   profiles: AuthProfileStore["profiles"],

@@ -51,9 +51,8 @@ const DETECTED_TEXT_MIME_TYPES = new Set([
   "application/x-ms-regedit",
   "model/stl",
 ]);
-const SEARCH_SKIP_DIRS = new Set([
-  ".git",
-  ".hg",
+const SEARCH_IGNORED_DIRS = new Set([".git", ".hg"]);
+const SEARCH_INCOMPLETE_DIRS = new Set([
   ".next",
   ".turbo",
   ".yarn",
@@ -167,7 +166,7 @@ async function toSessionFileEntry(
     authorizeHostRead?: () => Promise<boolean>;
     onOutsideBoundary?: () => void;
   } = {},
-): Promise<SessionFileEntry> {
+): Promise<SessionFileEntry | undefined> {
   const target = await resolveSessionFileReadTarget(
     { root, fileRoot, authorizeHostRead: opts.authorizeHostRead },
     touched.path,
@@ -186,6 +185,10 @@ async function toSessionFileEntry(
   const browserPath = target.path;
   const readRoot = target.outside ? target.root : (opts.workspaceRoot ?? target.root);
   const stat = await statWorkspacePath(readRoot, browserPath, opts.assertCurrent);
+  // Confirmed directories belong to the browser, not file-only activity.
+  if (stat?.isDirectory && !opts.includeContent) {
+    return undefined;
+  }
   if (!stat?.isFile) {
     return { ...base, missing: true };
   }
@@ -325,8 +328,15 @@ export async function listSessionWorkspaceFiles(
               entries.push(entry);
             }
           }
-          if (dirent.isDirectory && !SEARCH_SKIP_DIRS.has(dirent.name)) {
-            await visit(browserPath);
+          if (dirent.isDirectory) {
+            if (SEARCH_INCOMPLETE_DIRS.has(dirent.name)) {
+              // The public result only has a boolean completeness signal. A skipped
+              // directory can contain another filename match, so searches that saw
+              // one must not be presented as workspace-wide unique.
+              truncated = true;
+            } else if (!SEARCH_IGNORED_DIRS.has(dirent.name)) {
+              await visit(browserPath);
+            }
           }
         }
       };
@@ -369,7 +379,7 @@ export async function listSessionWorkspaceFiles(
   return {
     ...(root ? { root } : {}),
     ...(gitCheckout === undefined ? {} : { gitCheckout }),
-    files,
+    files: files.filter((file) => file !== undefined),
     ...(browser ? { browser } : {}),
   };
 }
@@ -422,7 +432,7 @@ export async function getSessionWorkspaceFile(
           params.root,
           options,
         );
-        if (!file.missing) {
+        if (file && !file.missing) {
           return { root: params.root, file };
         }
       }
